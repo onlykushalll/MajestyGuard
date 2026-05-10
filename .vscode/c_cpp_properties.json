@@ -1,0 +1,52 @@
+{
+    "configurations": [
+        {
+            "name": "MSVC x64 (Credential Provider)",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um",
+                "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared",
+                "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/winrt",
+                "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/ucrt",
+                "C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.51.36231/include"
+            ],
+            "defines": [
+                "_DEBUG",
+                "UNICODE",
+                "_UNICODE",
+                "WIN32",
+                "_WINDOWS",
+                "_USRDLL",
+                "NTDDI_VERSION=0x0A000008",
+                "_WIN32_WINNT=0x0A00",
+                "WIN32_LEAN_AND_MEAN",
+                "NOMINMAX",
+                "STRICT",
+                "SECURITY_WIN32"
+            ],
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe",
+            "intelliSenseMode": "windows-msvc-x64",
+            "cStandard":   "c17",
+            "cppStandard": "c++17",
+            "forcedInclude": [],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/um",
+                    "C:/Program Files (x86)/Windows Kits/10/Include/10.0.26100.0/shared",
+                    "C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.51.36231/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true,
+                "databaseFilename": ""
+            }
+        },
+        {
+            "name": "C# Projects (no C++ analysis)",
+            "includePath": ["${workspaceFolder}/**"],
+            "defines": [],
+            "intelliSenseMode": "windows-msvc-x64",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}

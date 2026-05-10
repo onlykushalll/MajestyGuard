@@ -1,0 +1,15 @@
+# MajestyGuard.CVEngine/requirements.txt
+# Install with: pip install -r requirements.txt
+
+# Core CV
+insightface>=0.7.3
+onnxruntime-directml>=1.17.0    # GPU via DirectML on Windows (recommended)
+# onnxruntime>=1.17.0            # CPU-only fallback (uncomment if DirectML fails)
+opencv-python>=4.9.0
+numpy>=1.26.0
+
+# Windows named pipes
+pywin32>=306
+
+# Utilities
+Pillow>=10.2.0

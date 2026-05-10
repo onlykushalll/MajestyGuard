@@ -1,0 +1,64 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build MajestyGuard (Debug)",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Build.ps1"],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared"
+            },
+            "problemMatcher": [
+                "$msCompile",
+                "$gcc"
+            ]
+        },
+        {
+            "label": "Build MajestyGuard (Release)",
+            "type": "shell",
+            "command": "powershell",
+            "args": ["-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/Build.ps1", "-Release"],
+            "group": "build",
+            "problemMatcher": ["$msCompile"]
+        },
+        {
+            "label": "Install MajestyGuard (Admin)",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "Start-Process powershell -Verb RunAs -ArgumentList '-ExecutionPolicy Bypass -File ${workspaceFolder}/build/staged/Install.ps1'"
+            ],
+            "group": "none",
+            "presentation": { "reveal": "always" }
+        },
+        {
+            "label": "Run CV Engine (test)",
+            "type": "shell",
+            "command": "python",
+            "args": ["${workspaceFolder}/src/MajestyGuard.CVEngine/cv_server.py"],
+            "group": "test",
+            "presentation": { "reveal": "always", "panel": "dedicated" }
+        },
+        {
+            "label": "Download Models",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "${workspaceFolder}/src/MajestyGuard.CVEngine/download_models.py",
+                "${workspaceFolder}/models"
+            ],
+            "group": "none",
+            "presentation": { "reveal": "always" }
+        }
+    ]
+}

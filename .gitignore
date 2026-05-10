@@ -1,0 +1,35 @@
+﻿
+# Models (too large for GitHub)
+
+models/
+
+**/models/
+
+# Build output
+
+build/
+
+obj/
+
+bin/
+
+# Python cache
+
+__pycache__/
+
+*.pyc
+
+.venv/
+
+# VS files
+
+.vs/
+
+*.user
+
+# Sensitive
+
+*.mgd
+
+config.json
+

@@ -1,0 +1,34 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/src/MajestyGuard.CVEngine/.venv/Scripts/python.exe",
+    "python.analysis.extraPaths": ["src/MajestyGuard.CVEngine"],
+
+    "files.associations": {
+        "*.h":   "cpp",
+        "*.cpp": "cpp",
+        "*.def": "plaintext"
+    },
+
+    "C_Cpp.intelliSenseEngine": "default",
+    "C_Cpp.errorSquiggles": "enabled",
+    "C_Cpp.exclusionPolicy": "checkFolderNames",
+
+    "clangd.enable": false,
+
+    "editor.formatOnSave": false,
+    "[cpp]": {
+        "editor.defaultFormatter": "ms-vscode.cpptools"
+    },
+    "[csharp]": {
+        "editor.defaultFormatter": "ms-dotnettools.csharp"
+    },
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.python"
+    },
+
+    "search.exclude": {
+        "**/build/**": true,
+        "**/obj/**":   true,
+        "**/__pycache__/**": true,
+        "**/models/**": true
+    }
+}

@@ -21,6 +21,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -40,6 +41,15 @@ namespace MajestyGuard.Service
         private readonly InactivityWatcher _inactivityWatcher;
         private readonly SocialLockEngine _socialLockEngine;
         private readonly ProcessRestrictor _processRestrictor;
+        private readonly DesktopWatchdog   _desktopWatchdog;   // B-030: declared once
+        // CC-2: Volatile long (Interlocked.Read/Write) instead of DateTime? across threads
+        private long _verifyingStartTicks;  // 0 = not verifying. Interlocked-accessed only.
+
+        private volatile bool _embeddingsLoaded;     // HB-1: gate PresenceMonitor until embeddings ready
+
+        // C5: Serialized state-change dispatch — prevents async void races and out-of-order overlay commands
+        private readonly Channel<StateChangedEventArgs> _stateChangeQueue =
+            Channel.CreateUnbounded<StateChangedEventArgs>();
 
         // IPC servers
         private MajestyPipeServer? _cvPipe;
@@ -212,6 +222,7 @@ namespace MajestyGuard.Service
 
             _cvPipe.MessageReceived       += OnCvMessageAsync;
             _credProvPipe.MessageReceived += OnCredProvMessageAsync;
+            _overlayPipe.MessageReceived  += OnOverlayMessageAsync;  // H-003: wire overlay messages
 
             // Wire PresenceMonitor to CV pipe for FPS commands
             _presenceMonitor.CvPipeServer = _cvPipe;
@@ -220,9 +231,6 @@ namespace MajestyGuard.Service
                 _cvPipe.StartAsync(ct),
                 _overlayPipe.StartAsync(ct),
                 _credProvPipe.StartAsync(ct));
-
-            // Desktop watchdog — detects CreateDesktop bypass attacks
-            var desktopWatchdogTask = _desktopWatchdog.RunAsync(ct);
 
             // Brief pause so pipe servers are listening before child processes connect
             await Task.Delay(800, ct);
@@ -235,10 +243,11 @@ namespace MajestyGuard.Service
             _overlayProcess = LaunchOverlay();
 
             // ── STEP 6: Start monitoring loops ────────────────────────
-            var monitorTask    = _presenceMonitor.RunAsync(ct);
+            var monitorTask    = RunPresenceMonitorAsync(ct);  // HB-1: gate until embeddings loaded
             var inactivityTask = _inactivityWatcher.RunAsync(ct);
-            var desktopTask    = _desktopWatchdog.RunAsync(ct);  // CreateDesktop attack detection
+            var desktopTask    = _desktopWatchdog.RunAsync(ct);  // B-030: single instance
             var watchdogTask   = RunChildWatchdogAsync(ct);
+            var dispatchTask   = RunStateChangeDispatchAsync(ct);  // C5: serialized state-change handler
 
             // ── STEP 7: Start session watcher (Win+L detection) ──────
             _sessionWatcher = new SessionWatcher(
@@ -267,6 +276,31 @@ namespace MajestyGuard.Service
                 });
             _sessionWatcher.Start();
 
+            // FIX-007: Verifying state 5-second timeout watchdog (CC-2: Interlocked long)
+            // If CVEngine crashes during Verifying, state machine would hang forever.
+            _ = Task.Run(async () =>
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(1000, ct);
+                    if (_stateMachine.Current == GuardState.Verifying)
+                    {
+                        long existing = Interlocked.CompareExchange(ref _verifyingStartTicks, DateTime.UtcNow.Ticks, 0);
+                        long startTicks = existing == 0 ? Interlocked.Read(ref _verifyingStartTicks) : existing;
+                        if (startTicks != 0 && (DateTime.UtcNow - new DateTime(startTicks, DateTimeKind.Utc)).TotalSeconds > 5)
+                        {
+                            _logger.LogWarning("Verifying timeout (5s) — forcing HostileLock");
+                            _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
+                            Interlocked.Exchange(ref _verifyingStartTicks, 0);
+                        }
+                    }
+                    else
+                    {
+                        Interlocked.Exchange(ref _verifyingStartTicks, 0);
+                    }
+                }
+            }, ct);
+
             // Signal initial state
             _stateMachine.RequestTransition(TransitionTrigger.ProfileValidated);
 
@@ -274,14 +308,35 @@ namespace MajestyGuard.Service
             _ = LoadEmbeddingsAsync();
 
             // ── WAIT ──────────────────────────────────────────────────
-            await Task.WhenAll(pipeTasks, monitorTask, inactivityTask, watchdogTask);
+            await Task.WhenAll(pipeTasks, monitorTask, inactivityTask, watchdogTask, dispatchTask);
         }
 
         // ─────────────────────────────────────────────────────────────
         // STATE CHANGE HANDLER
         // Dispatches side effects when the state machine transitions
         // ─────────────────────────────────────────────────────────────
-        private async void OnStateChanged(object? sender, StateChangedEventArgs e)
+        // C5: Sync handler — enqueues to channel for serialized dispatch (no async void)
+        private void OnStateChanged(object? sender, StateChangedEventArgs e)
+        {
+            _stateChangeQueue.Writer.TryWrite(e);
+        }
+
+        private async Task RunStateChangeDispatchAsync(CancellationToken ct)
+        {
+            await foreach (var e in _stateChangeQueue.Reader.ReadAllAsync(ct))
+            {
+                try
+                {
+                    await DispatchStateChangeAsync(e);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "B-031: State change dispatch failed — state:{State}", e.Current);
+                }
+            }
+        }
+
+        private async Task DispatchStateChangeAsync(StateChangedEventArgs e)
         {
             _logger.LogInformation("Handling state transition: {Prev} → {Current}", e.Previous, e.Current);
 
@@ -290,6 +345,9 @@ namespace MajestyGuard.Service
                 await _presenceMonitor.SetCvDetSizeAsync(320, 320);
             else if (e.Current == GuardState.Unlocked)
                 await _presenceMonitor.SetCvDetSizeAsync(160, 160);
+
+            // C-003: BlockInput from Session 0 is silently ineffective (Service runs SYSTEM/Session 0).
+            // Input blocking is handled by the Overlay process in Session 1.
 
             // Build overlay command for every state
             var overlayCmd = e.Current switch
@@ -306,9 +364,11 @@ namespace MajestyGuard.Service
             if (_overlayPipe != null)
                 await _overlayPipe.SendAsync(overlayCmd);
 
-            // Send auth decision to Credential Provider on unlock
+            // C2: Only send AuthDecision on face recognition path — NOT on ManualFallback.
+            // ManualFallback means user chose PIN; CredProvider handles PIN locally.
             if (e.Current == GuardState.Unlocked &&
-                e.Previous is GuardState.Verifying or GuardState.BootScan)
+                e.Previous == GuardState.Verifying &&
+                e.Trigger == TransitionTrigger.FaceRecognized)
             {
                 if (_credProvPipe != null)
                     await _credProvPipe.SendAsync(new AuthDecisionMsg { Granted = true, Reason = "FaceMatch" });
@@ -392,6 +452,10 @@ namespace MajestyGuard.Service
                 return Task.CompletedTask;
             }
 
+            // B-003: Reset stranger tracking when only primary user is present
+            if (result.FaceCount == 1 && _stateMachine.Current == GuardState.Unlocked)
+                _stateMachine.ResetStrangerTracking();
+
             // Primary user recognition
             if (result.PrimaryUserPresent &&
                 result.RecognitionScore >= _config.RecognitionThreshold)
@@ -408,26 +472,61 @@ namespace MajestyGuard.Service
 
         private Task OnCredProvMessageAsync(IpcMessage message)
         {
-            // CODEX: Handle messages from the Credential Provider
-            // e.g., ManualFallback when user clicks "Enter Password Instead"
-            if (message is StateChangeMsg { Current: GuardState.Unlocked })
+            // S-3: Use dedicated ManualFallbackRequestMsg, not StateChangeMsg{Unlocked}
+            // StateChangeMsg with Current:Unlocked was an auth bypass — any process could send it
+            if (message is ManualFallbackRequestMsg)
                 _stateMachine.RequestTransition(TransitionTrigger.ManualFallback);
 
             return Task.CompletedTask;
+        }
+
+        private Task OnOverlayMessageAsync(IpcMessage message)
+        {
+            // H-003: Handle messages from overlay (idle/activity reported from Session 1)
+            // GetLastInputInfo from Session 0 SYSTEM service is blind to user input (FIX-016)
+            switch (message)
+            {
+                case UserIdleMsg idle:
+                    _logger.LogDebug("Overlay reports user idle: {Ms}ms", idle.IdleMs);
+                    if (idle.IdleMs >= (ulong)(_config.InactivityTimeoutSeconds * 1000))
+                        _stateMachine.RequestTransition(TransitionTrigger.InactivityThresholdHit);
+                    break;
+
+                case UserActivityMsg:
+                    _stateMachine.RequestTransition(TransitionTrigger.UserInputDetected);
+                    break;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        // HB-1: Gate PresenceMonitor until CV engine has loaded embeddings.
+        // Starting presence scan before embeddings are loaded causes every frame
+        // to report FaceUnrecognized → HostileLock storm at startup.
+        private async Task RunPresenceMonitorAsync(CancellationToken ct)
+        {
+            var timeout = DateTime.UtcNow.AddSeconds(30);
+            while (!_embeddingsLoaded && DateTime.UtcNow < timeout && !ct.IsCancellationRequested)
+                await Task.Delay(500, ct);
+
+            if (!_embeddingsLoaded)
+                _logger.LogWarning("HB-1: PresenceMonitor starting without confirmed embedding load (timeout)");
+
+            await _presenceMonitor.RunAsync(ct);
         }
 
         // ─────────────────────────────────────────────────────────────
         // CHILD PROCESS LAUNCHERS
         // ─────────────────────────────────────────────────────────────
 
-        private Process LaunchCvEngine()
+        private Process? LaunchCvEngine()  // H-005: nullable return
         {
             var pythonExe = FindPython();
             if (pythonExe == null)
             {
                 _logger.LogError("Python not found. CV engine cannot start.");
                 _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
-                return null!;
+                return null;  // H-005: was null! which threw NRE in watchdog
             }
 
             var scriptPath = Path.Combine(AppContext.BaseDirectory, "CVEngine", "cv_server.py");
@@ -479,7 +578,7 @@ namespace MajestyGuard.Service
             return null;
         }
 
-        private Process LaunchOverlay()
+        private Process? LaunchOverlay()
         {
             // CODEX: Path to the WinUI 3 overlay executable
             var psi = new ProcessStartInfo
@@ -491,7 +590,12 @@ namespace MajestyGuard.Service
 
             psi.EnvironmentVariables["MG_OVERLAY_PIPE"] = _config.OverlayPipeName;
 
-            var proc = Process.Start(psi)!;
+            var proc = Process.Start(psi);
+            if (proc == null)
+            {
+                _logger.LogError("Overlay process failed to start");
+                return null;
+            }
             _logger.LogInformation("Overlay launched (PID {Pid})", proc.Id);
             return proc;
         }
@@ -500,7 +604,7 @@ namespace MajestyGuard.Service
         // CHILD PROCESS WATCHDOG + MEMORY TRIM (B4)
         // ─────────────────────────────────────────────────────────────
 
-        private DateTime _lastCvHeartbeat = DateTime.UtcNow;
+        private long _lastCvHeartbeatTicks = DateTime.UtcNow.Ticks;  // V2: Interlocked-safe
         private DateTime _lastGcTrim = DateTime.UtcNow;
 
         private async Task RunChildWatchdogAsync(CancellationToken ct)
@@ -510,7 +614,7 @@ namespace MajestyGuard.Service
             {
                 _cvPipe.MessageReceived += msg =>
                 {
-                    if (msg is HeartbeatMsg) _lastCvHeartbeat = DateTime.UtcNow;
+                    if (msg is HeartbeatMsg) Interlocked.Exchange(ref _lastCvHeartbeatTicks, DateTime.UtcNow.Ticks);
                     return Task.CompletedTask;
                 };
             }
@@ -527,13 +631,13 @@ namespace MajestyGuard.Service
                     await Task.Delay(5000, ct);
                     _cvEngineProcess = LaunchCvEngine();
                 }
-                else if ((DateTime.UtcNow - _lastCvHeartbeat).TotalSeconds > 20)
+                else if ((DateTime.UtcNow - new DateTime(Interlocked.Read(ref _lastCvHeartbeatTicks), DateTimeKind.Utc)).TotalSeconds > 20)
                 {
                     _logger.LogWarning("No heartbeat from CV Engine for 20s. Restarting...");
                     try { _cvEngineProcess?.Kill(entireProcessTree: true); } catch { }
                     await Task.Delay(3000, ct);
                     _cvEngineProcess = LaunchCvEngine();
-                    _lastCvHeartbeat = DateTime.UtcNow;
+                    Interlocked.Exchange(ref _lastCvHeartbeatTicks, DateTime.UtcNow.Ticks);
                 }
 
                 // Overlay watchdog
@@ -685,6 +789,7 @@ namespace MajestyGuard.Service
                         await _cvPipe.SendRawAsync(cmd);
 
                     _logger.LogInformation("Loaded {Count} embeddings via DpapiHelper", embeddings.Length);
+                    _embeddingsLoaded = true;  // HB-1: ungate PresenceMonitor
                 }
                 finally
                 {

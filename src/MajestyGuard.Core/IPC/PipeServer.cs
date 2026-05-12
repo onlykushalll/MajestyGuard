@@ -123,13 +123,13 @@ namespace MajestyGuard.Core.IPC
         {
             var security = new PipeSecurity();
 
-            // Allow SYSTEM full control
+            // SYSTEM: full control
             security.AddAccessRule(new PipeAccessRule(
                 new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                 PipeAccessRights.FullControl,
                 AccessControlType.Allow));
 
-            // Allow enrolled user read/write (use config SID, not current process identity)
+            // Enrolled user: read/write
             if (!string.IsNullOrEmpty(_enrolledUserSid))
             {
                 security.AddAccessRule(new PipeAccessRule(
@@ -138,21 +138,15 @@ namespace MajestyGuard.Core.IPC
                     AccessControlType.Allow));
             }
 
-            // DENY everyone else — evaluated before Allow but specific SIDs above take precedence
-            security.AddAccessRule(new PipeAccessRule(
-                new SecurityIdentifier(WellKnownSidType.WorldSid, null),
-                PipeAccessRights.FullControl,
-                AccessControlType.Deny));
+            // No World Deny — would block enrolled user (World SID is in every token).
+            // Security by allowlist: unlisted callers have no Allow rule = denied by default.
 
-            // CODEX: Use NamedPipeServerStreamAcl.Create() on .NET 5+
-            // to apply the PipeSecurity correctly.
-            // See: https://learn.microsoft.com/dotnet/api/system.io.pipes.namedpipeserverstreamacl
             return NamedPipeServerStreamAcl.Create(
                 pipeName:          _pipeName,
                 direction:         PipeDirection.InOut,
                 maxNumberOfServerInstances: 1,
                 transmissionMode:  PipeTransmissionMode.Byte,
-                options:           PipeOptions.Asynchronous,
+                options:           PipeOptions.Asynchronous | PipeOptions.FirstPipeInstance,
                 inBufferSize:      1024,
                 outBufferSize:     1024,
                 pipeSecurity:      security);
@@ -200,7 +194,7 @@ namespace MajestyGuard.Core.IPC
                         PipeDirection.InOut,
                         PipeOptions.Asynchronous);
 
-                    await _pipe.ConnectAsync(timeoutMs: 3000, ct);
+                    await _pipe.ConnectAsync(3000, ct);
                     _writer = new StreamWriter(_pipe, Encoding.UTF8) { AutoFlush = true };
                     _logger.LogInformation("Connected to pipe: {Name}", _pipeName);
 
@@ -215,6 +209,11 @@ namespace MajestyGuard.Core.IPC
                     _logger.LogWarning("Pipe connect failed ({Attempt}/10), retry in {Delay}ms: {Err}",
                         attempt, delay, ex.Message);
                     await Task.Delay(delay, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError("Pipe connect failed after 10 attempts — giving up: {Err}", ex.Message);
+                    throw;
                 }
             }
         }

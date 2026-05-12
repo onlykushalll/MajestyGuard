@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Windowing;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.Effects;
+using Microsoft.Graphics.Canvas.UI.Xaml;
 using Windows.Graphics;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
@@ -23,6 +24,28 @@ using Microsoft.Extensions.Logging;
 
 namespace MajestyGuard.Overlay
 {
+    internal sealed class TransparentBackdrop : Microsoft.UI.Xaml.Media.SystemBackdrop
+    {
+        protected override void OnTargetConnected(
+            Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop connectedTarget,
+            Microsoft.UI.Xaml.XamlRoot xamlRoot)
+        {
+            base.OnTargetConnected(connectedTarget, xamlRoot);
+            if (connectedTarget is Microsoft.UI.Composition.Visual visual)
+            {
+                connectedTarget.SystemBackdrop = visual.Compositor.CreateColorBrush(
+                    Windows.UI.Color.FromArgb(0, 0, 0, 0));
+            }
+        }
+
+        protected override void OnTargetDisconnected(
+            Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop disconnectedTarget)
+        {
+            base.OnTargetDisconnected(disconnectedTarget);
+            disconnectedTarget.SystemBackdrop = null;
+        }
+    }
+
     public sealed partial class DynamicIslandWindow : Window
     {
         private readonly ILogger<DynamicIslandWindow> _logger;
@@ -77,6 +100,9 @@ namespace MajestyGuard.Overlay
         [DllImport("kernel32.dll")]
         private static extern nint GetModuleHandle(string? lpModuleName);
 
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+
         private delegate nint LowLevelKeyboardProc(int nCode, nint wParam, nint lParam);
 
         private const int WH_KEYBOARD_LL = 13;
@@ -119,6 +145,7 @@ namespace MajestyGuard.Overlay
             _idleSuppressTimer.Start();
 
             InitializeComponent();
+            SystemBackdrop = new TransparentBackdrop();
             Activated += OnFirstActivation;
         }
 
@@ -330,7 +357,7 @@ namespace MajestyGuard.Overlay
                     BeginStoryboard("CaptionFadeOut");
                     SocialLockContent.Visibility = Visibility.Visible;
                     SocialLockContent.Opacity = 1;
-                    AnimatePillTo(ActualWidth, 56, 0);
+                    AnimatePillTo(RootGrid.ActualWidth, 56, 0);
                     IslandPill.Margin = new Thickness(0);
                     SetPillGradient("#1A0F00", "#0F0900");
                     SetGlowColor("#FF9F0A");
@@ -486,7 +513,7 @@ namespace MajestyGuard.Overlay
             // Apply DPI scaling for high-resolution displays
             // 1.0 = 96dpi (1080p), 1.25 = 120dpi, 1.5 = 144dpi (4K)
             // Cap at 1.5x so pill doesn't become enormous on 4K
-            width  = Math.Min(width  * _dpiScale, ActualWidth  * 0.45);
+            width  = Math.Min(width  * _dpiScale, RootGrid.ActualWidth  * 0.45);
             height = Math.Min(height * _dpiScale, 120);
             radius = radius * Math.Min(_dpiScale, 1.3);
 
@@ -596,7 +623,8 @@ namespace MajestyGuard.Overlay
                 var appWindow = AppWindow.GetFromWindowId(
                     Microsoft.UI.Win32Interop.GetWindowIdFromWindow(_hwnd));
                 var displayArea = DisplayArea.GetFromWindowId(appWindow.Id, DisplayAreaFallback.Primary);
-                var item = GraphicsCaptureItem.TryCreateFromDisplayId(displayArea.DisplayId);
+                var item = GraphicsCaptureItem.TryCreateFromDisplayId(
+                    new Windows.Graphics.DisplayId { Value = displayArea.DisplayId.Value });
 
                 if (item == null)
                 {

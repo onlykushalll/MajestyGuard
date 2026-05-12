@@ -59,7 +59,28 @@ class LivenessDetector:
 
         # Optional ONNX anti-spoof model
         self._antispoof_session: Optional[Any] = None
+        # E-3: initialize attrs so _onnx_antispoof_score works even if model load fails midway
+        self._antispoof_input_name: str = "input"
+        self._antispoof_h: int = 128
+        self._antispoof_w: int = 128
+        # E-2: track consecutive ONNX failures — init in __init__ not lazily
+        self._onnx_consecutive_failures: int = 0
         self._load_antispoof_model(model_dir)
+
+    def reset_session(self) -> None:
+        self._score_history.clear()
+        self._frame_index = 0
+        self._eye_brightness_history.clear()
+        self._blink_count = 0
+        self._blink_cooldown = 0
+        self._last_blink_frame = 0
+        self._in_blink = False
+        self._face_center_history.clear()
+        self._frame_hashes.clear()
+        self._duplicate_frame_count = 0
+        self._landmark_ratios.clear()
+        self._hist_history.clear()
+        self._onnx_consecutive_failures = 0  # E-2: proper field reset
 
     # Candidate filenames — tries each in order so either naming works
     _ANTISPOOF_FILENAMES = [
@@ -116,7 +137,7 @@ class LivenessDetector:
     def score(self, frame: np.ndarray, face: Any) -> float:
         roi = self._extract_roi(frame, face)
         if roi is None:
-            return 0.5
+            return 0.0  # S-5: fail-closed — ROI failure = cannot verify liveness = deny
 
         self._frame_index += 1
 
@@ -183,9 +204,12 @@ class LivenessDetector:
 
         # Require minimum frames before allowing high scores
         if self._frame_index < self._MIN_FRAMES_FOR_PASS:
-            smoothed = min(float(np.mean(self._score_history)), 0.75)
+            smoothed = min(float(np.mean(self._score_history)), 0.75)  # Early frames: capped mean
         else:
-            smoothed = float(np.mean(self._score_history))
+            # B-021 FIX: use min() not mean()
+            # With mean: 9 genuine (0.9) + 1 spoof (0.1) = 0.82 → might pass (WRONG)
+            # With min:  same scenario → 0.1 → always fails (CORRECT)
+            smoothed = float(np.min(self._score_history))
 
         logger.debug(
             "Liveness: LBP=%.2f Spec=%.2f Color=%.2f Moire=%.2f Temp=%.2f "
@@ -523,9 +547,9 @@ class LivenessDetector:
             return None
 
         try:
-            h = getattr(self, "_antispoof_h", 128)
-            w = getattr(self, "_antispoof_w", 128)
-            input_name = getattr(self, "_antispoof_input_name", "input")
+            h = self._antispoof_h
+            w = self._antispoof_w
+            input_name = self._antispoof_input_name
 
             # Resize ROI to model's expected input size
             resized = cv2.resize(roi, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -554,9 +578,15 @@ class LivenessDetector:
             return float(np.clip(real_prob, 0.0, 1.0))
 
         except Exception as e:
-            logger.warning("ONNX anti-spoof inference failed: %s — skipping Layer 7", e)
-            self._antispoof_session = None  # Disable for remainder of session
-            return None
+            # B-029 FIX: do NOT null the session on single-frame failure.
+            # Attacker could trigger one ONNX error to permanently disable Layer 7.
+            self._onnx_consecutive_failures += 1
+            if self._onnx_consecutive_failures >= 5:
+                logger.warning("ONNX anti-spoof: %d consecutive failures — model may be broken: %s",
+                               self._onnx_consecutive_failures, e)
+            else:
+                logger.debug("ONNX inference failed this frame (retry next): %s", e)
+            return None  # Skip this frame only — session stays alive
 
     # ── ROI Extraction ───────────────────────────────────────────────
 
@@ -701,3 +731,26 @@ class LivenessDetector:
             return 0.5
         # Many duplicates = video loop or static photo
         return 0.1
+
+# ── FIX-022: rPPG stub — future liveness Layer 10 ────────────────────────
+class rPPGDetector:
+    """
+    Remote Photoplethysmography — detects blood flow from skin colour changes.
+    Real faces: periodic colour variation from cardiac cycle (60-100 BPM).
+    Photos, screens, masks: no pulsatile signal.
+
+    IMPLEMENTATION STATUS: Stub. Integrated at weight 0.0 (no effect yet).
+
+    Full implementation requires:
+      - 45 frames at 15 FPS = 3 second window
+      - Green channel (G) extracted from forehead ROI
+      - Bandpass filter 0.7–4.0 Hz (heart rate range)
+      - FFT peak detection: SNR > 2.0 = real face
+    LIBRARY: pip install pyVHR  (MIT, has ONNX export path)
+    LATENCY: 3s minimum — use AFTER recognition succeeds, not as a gate.
+    REFERENCE: De Haan & Jeanne (2013), CHROM algorithm.
+    """
+
+    def score(self, frame_history: list) -> float:
+        # TODO: implement CHROM rPPG algorithm
+        return 0.5  # Neutral — does not affect liveness decision until implemented

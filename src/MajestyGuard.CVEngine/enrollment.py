@@ -1,31 +1,8 @@
 # MajestyGuard.CVEngine/enrollment.py
-# One-time enrollment flow.
-# Captures face embeddings from multiple angles and returns them
-# to the Service for DPAPI-encrypted storage.
-#
-# FLOW:
-#   1. Service sends EnrollFrameMsg with angle name
-#   2. cv_server.py calls FaceEngine.capture_enrollment_frame()
-#   3. Returns 512-dim embedding via pipe as EnrollResult JSON
-#   4. Service (EmbeddingStore) encrypts and saves all embeddings
-#
-# QUALITY REQUIREMENTS (enforced here):
-#   - Only one face visible during enrollment
-#   - Face must pass liveness check (no photo enrollment)
-#   - Face must be within acceptable size range (not too far/close)
-#   - Min confidence: detection score ≥ 0.85
-#   - Minimum 3 angles required before enrollment is accepted
-#
-# CODEX: Wire this into the enrollment UI (a separate WinForms/WinUI
-#        window shown during first-run setup, NOT on Secure Desktop).
-
-import os
-import time
-import json
-import logging
+import os, time, json, logging
 import numpy as np
 import cv2
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import Optional
 from face_engine import FaceEngine
 
@@ -38,7 +15,8 @@ OPTIONAL_ANGLES = ["LookUp", "LookDown", "WithGlasses"]
 @dataclass
 class EnrollmentSession:
     user_sid: str
-    captured_angles: dict[str, list[float]] = field(default_factory=dict)
+    # FIX-020: store (embedding, quality) tuples per angle for weighted fusion
+    captured_angles: dict[str, tuple[list[float], float]] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -51,104 +29,71 @@ class EnrollmentSession:
 
 
 class EnrollmentManager:
-    """
-    Manages the enrollment session state.
-    Called by cv_server.py in response to EnrollFrame commands.
-    """
-
-    # Min/max face bounding box size relative to frame (quality gate)
-    MIN_FACE_RATIO = 0.10   # Face must occupy at least 10% of frame height
-    MAX_FACE_RATIO = 0.80   # Face must not be too close
-
-    # Min detection confidence score from InsightFace
-    MIN_DET_SCORE = 0.85
+    MIN_FACE_RATIO = 0.10
+    MAX_FACE_RATIO = 0.80
+    MIN_DET_SCORE  = 0.85
 
     def __init__(self, engine: FaceEngine):
         self._engine  = engine
         self._session: Optional[EnrollmentSession] = None
 
     def start_session(self, user_sid: str) -> dict:
-        """Begin a new enrollment session."""
         self._session = EnrollmentSession(user_sid=user_sid)
         logger.info("Enrollment session started for SID: %s", user_sid)
-        return {
-            "status": "started",
-            "required_angles": REQUIRED_ANGLES,
-            "optional_angles": OPTIONAL_ANGLES,
-        }
+        return {"status": "started", "required_angles": REQUIRED_ANGLES, "optional_angles": OPTIONAL_ANGLES}
 
     def capture_angle(self, angle: str) -> dict:
-        """
-        Capture and validate a face for the specified angle.
-        Returns dict with success, embedding (if success), and error message.
-        """
         if self._session is None:
             return {"success": False, "error": "No active enrollment session"}
-
         if angle in self._session.captured_angles:
             return {"success": False, "error": f"Angle '{angle}' already captured"}
 
         logger.info("Capturing enrollment frame for angle: %s", angle)
+        result = self._capture_best_frame(angle)
 
-        # Read a burst of frames and pick the best one
-        best_embedding, best_score, error_msg = self._capture_best_frame(angle)
+        if result is None:
+            err = "No valid face detected. Check lighting and position."
+            self._session.errors.append(f"{angle}: {err}")
+            return {"success": False, "error": err, "angle": angle}
 
-        if best_embedding is None:
-            self._session.errors.append(f"{angle}: {error_msg}")
-            return {"success": False, "error": error_msg, "angle": angle}
-
-        self._session.captured_angles[angle] = best_embedding.tolist()
-        logger.info(
-            "Angle '%s' captured (score: %.3f). Total: %d/%d",
-            angle, best_score,
-            len(self._session.captured_angles), len(REQUIRED_ANGLES),
-        )
-
+        embedding, quality = result
+        self._session.captured_angles[angle] = (embedding.tolist(), quality)
+        logger.info("Angle '%s' captured (quality: %.3f). Total: %d/%d",
+                    angle, quality, len(self._session.captured_angles), len(REQUIRED_ANGLES))
         return {
-            "success":   True,
-            "angle":     angle,
-            "score":     round(best_score, 4),
-            "complete":  self._session.is_complete,
-            "progress":  f"{len(self._session.captured_angles)}/{len(REQUIRED_ANGLES)} required",
+            "success":  True,
+            "angle":    angle,
+            "quality":  round(quality, 4),
+            "complete": self._session.is_complete,
+            "progress": f"{len(self._session.captured_angles)}/{len(REQUIRED_ANGLES)} required",
         }
 
     def finalize(self) -> dict:
-        """
-        Validate the complete session and return all embeddings.
-        Called after all required angles are captured.
-        """
         if self._session is None:
             return {"success": False, "error": "No session"}
-
         if not self._session.is_complete:
             missing = [a for a in REQUIRED_ANGLES if a not in self._session.captured_angles]
-            return {
-                "success": False,
-                "error": f"Missing required angles: {missing}",
-            }
+            return {"success": False, "error": f"Missing required angles: {missing}"}
 
-        # Cross-validation: verify all captured embeddings are similar to each other
-        # (ensures they're all the same person)
-        embeddings = [
-            np.array(v, dtype=np.float32)
-            for v in self._session.captured_angles.values()
-        ]
-        if not self._validate_embedding_consistency(embeddings):
-            return {
-                "success": False,
-                "error": "Captured faces don't appear to be the same person. Please retry.",
-            }
+        embeddings = [np.array(e, dtype=np.float32)
+                      for e, q in self._session.captured_angles.values()]
+        qualities  = [q for e, q in self._session.captured_angles.values()]
+
+        if not self._validate_consistency(embeddings):
+            return {"success": False, "error": "Captured faces don't appear to be the same person. Please retry."}
+
+        # FIX-020: quality-weighted fusion into single super-embedding
+        fused = self._quality_weighted_fusion(embeddings, qualities)
 
         result = {
-            "success":    True,
-            "user_sid":   self._session.user_sid,
-            "embeddings": list(self._session.captured_angles.items()),
-            "count":      self._session.embedding_count,
+            "success":          True,
+            "user_sid":         self._session.user_sid,
+            "fused_embedding":  fused.tolist(),       # primary embedding for recognition
+            "embeddings":       [(a, e) for a, (e, q)  # individual angles kept as backup
+                                 in self._session.captured_angles.items()],
+            "count":            self._session.embedding_count,
         }
-        logger.info(
-            "Enrollment finalized: %d embeddings for SID %s",
-            self._session.embedding_count, self._session.user_sid,
-        )
+        logger.info("Enrollment finalized: %d angles, fused embedding ready.", self._session.embedding_count)
         self._session = None
         return result
 
@@ -156,93 +101,101 @@ class EnrollmentManager:
         logger.info("Enrollment session cancelled")
         self._session = None
 
-    # ─────────────────────────────────────────────────────────────────
-    # INTERNAL
-    # ─────────────────────────────────────────────────────────────────
+    # ── INTERNAL ──────────────────────────────────────────────────────
 
-    def _capture_best_frame(
-        self, angle: str, attempts: int = 5
-    ) -> tuple[Optional[np.ndarray], float, str]:
-        """
-        Tries up to `attempts` times to capture a good frame.
-        Returns (embedding, score, error_message).
-        """
-        best_embedding = None
-        best_score     = 0.0
+    def _capture_best_frame(self, angle: str, attempts: int = 5) -> Optional[tuple[np.ndarray, float]]:
+        """Capture best frame over multiple attempts. Returns (embedding, quality) or None."""
+        self._engine.reset_liveness()  # AR6: reset liveness state between angle captures
+        best_embedding: Optional[np.ndarray] = None
+        best_quality   = 0.0
 
-        for i in range(attempts):
-            frame = self._engine._read_frame()
+        for _ in range(attempts):
+            frame = self._engine.read_frame()
             if frame is None:
                 continue
 
-            faces = self._engine._app.get(frame)
+            faces = self._engine.detect_faces(frame)
 
-            if len(faces) == 0:
-                self._engine._zero_frame(frame)
+            if len(faces) == 0 or len(faces) > 1:
+                self._engine.zero_frame(frame)
                 continue
-
-            if len(faces) > 1:
-                self._engine._zero_frame(frame)
-                return None, 0.0, "Multiple faces detected. Please ensure you're alone."
 
             face = faces[0]
-
-            # Quality gate 1: Detection confidence
             det_score = float(face.det_score)
             if det_score < self.MIN_DET_SCORE:
-                self._engine._zero_frame(frame)
+                self._engine.zero_frame(frame)
                 continue
 
-            # Quality gate 2: Face size relative to frame
             frame_h = frame.shape[0]
             x1, y1, x2, y2 = face.bbox
-            face_h = y2 - y1
-            face_ratio = face_h / frame_h
+            face_ratio = (y2 - y1) / frame_h
+            if not (self.MIN_FACE_RATIO <= face_ratio <= self.MAX_FACE_RATIO):
+                self._engine.zero_frame(frame)
+                continue
 
-            if face_ratio < self.MIN_FACE_RATIO:
-                self._engine._zero_frame(frame)
-                return None, 0.0, "Move closer to the camera"
-
-            if face_ratio > self.MAX_FACE_RATIO:
-                self._engine._zero_frame(frame)
-                return None, 0.0, "Move further from the camera"
-
-            # Quality gate 3: Liveness
-            liveness = self._engine._liveness.score(frame, face)
+            liveness = self._engine.check_liveness(frame, face)
             if liveness < 0.85:
-                self._engine._zero_frame(frame)
-                return None, 0.0, "Liveness check failed. Ensure good lighting."
+                self._engine.zero_frame(frame)
+                continue
 
-            # This frame passes — check if it's better than previous best
-            if det_score > best_score:
-                best_score     = det_score
-                best_embedding = face.normed_embedding.copy()
+            # FIX-020: compute frame quality score
+            quality = self.compute_frame_quality(frame, face)
 
-            self._engine._zero_frame(frame)
-            time.sleep(0.1)  # Brief pause between attempts
+            if quality > best_quality:
+                best_quality   = quality
+                best_embedding = self._engine.get_embedding(frame, face).copy()
+
+            self._engine.zero_frame(frame)
+            time.sleep(0.1)
 
         if best_embedding is None:
-            return None, 0.0, "No valid face detected. Check lighting and position."
+            return None
+        return best_embedding, best_quality
 
-        return best_embedding, best_score, ""
+    def compute_frame_quality(self, frame: np.ndarray, face) -> float:
+        """
+        FIX-020: Quality score 0.0-1.0 for a face frame.
+        Combines detection confidence, sharpness, and illumination balance.
+        """
+        det_score = float(face.det_score)
 
-    def _validate_embedding_consistency(
-        self, embeddings: list[np.ndarray], threshold: float = 0.35
-    ) -> bool:
+        # Sharpness: Laplacian variance on face ROI
+        x1, y1, x2, y2 = [int(v) for v in face.bbox]
+        roi = frame[max(0, y1):y2, max(0, x1):x2]
+        if roi.size == 0:
+            return det_score * 0.5
+
+        gray      = cv2.cvtColor(cv2.resize(roi, (64, 64)), cv2.COLOR_BGR2GRAY)
+        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+        sharpness_score = min(sharpness / 500.0, 1.0)
+
+        # Illumination balance: distance from neutral grey (128)
+        ycrcb  = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
+        mean_y = float(np.mean(ycrcb[:, :, 0]))
+        illum_score = 1.0 - abs(mean_y - 128) / 128.0
+
+        return det_score * 0.5 + sharpness_score * 0.3 + illum_score * 0.2
+
+    @staticmethod
+    def _quality_weighted_fusion(embeddings: list[np.ndarray], qualities: list[float]) -> np.ndarray:
         """
-        Ensures all captured embeddings are from the same person.
-        Computes pairwise cosine similarity — all pairs must exceed threshold.
-        If any pair is too dissimilar, enrollment is rejected.
+        FIX-020: Weighted average of embeddings using per-angle quality scores.
+        Higher quality angle gets more weight in the final embedding.
+        Result is L2-normalised.
         """
+        emb_array = np.array(embeddings, dtype=np.float32)    # (N, 512)
+        q_array   = np.array(qualities,  dtype=np.float32)    # (N,)
+        weights   = q_array / (q_array.sum() + 1e-8)          # normalise weights
+
+        fused = np.sum(emb_array * weights[:, np.newaxis], axis=0)
+        norm  = np.linalg.norm(fused)
+        return fused / (norm + 1e-8)
+
+    def _validate_consistency(self, embeddings: list[np.ndarray], threshold: float = 0.55) -> bool:
         for i in range(len(embeddings)):
             for j in range(i + 1, len(embeddings)):
-                # Both vectors are L2-normalized; dot product = cosine similarity in [-1, 1]
                 sim = float(np.dot(embeddings[i], embeddings[j]))
-                logger.debug("Embedding pair (%d,%d) similarity: %.3f", i, j, sim)
                 if sim < threshold:
-                    logger.warning(
-                        "Inconsistent embeddings (%.3f < %.3f) — possible different person",
-                        sim, threshold,
-                    )
+                    logger.warning("Inconsistent embeddings (%.3f < %.3f)", sim, threshold)
                     return False
         return True

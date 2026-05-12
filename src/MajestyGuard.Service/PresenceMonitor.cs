@@ -98,7 +98,7 @@ namespace MajestyGuard.Service
             if (state == GuardState.Unlocked)
             {
                 var idleMs = InactivityWatcher.GetIdleTimeMs();
-                var timeoutMs = _config.InactivityTimeoutSeconds * 1000UL;
+                var timeoutMs = (ulong)_config.InactivityTimeoutSeconds * 1000UL;
                 if (timeoutMs > 25_000UL && idleMs > timeoutMs - 25_000UL)
                     await SetCvFpsAsync(_config.EscalatedFps);
                 else if (timeoutMs <= 30_000UL || idleMs < timeoutMs - 30_000UL)

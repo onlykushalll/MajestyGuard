@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.Extensions.Logging;
 using MajestyGuard.Core.Models;
@@ -103,10 +104,11 @@ namespace MajestyGuard.Overlay
             }
 
             // ── NORMAL STARTUP: already enrolled ─────────────────────
+            var islandLogger = _logger as ILogger<DynamicIslandWindow>
                 ?? Microsoft.Extensions.Logging.LoggerFactory
                     .Create(b => b.AddConsole())
-                    .CreateLogger<DynamicIslandWindow>(),
-                _config);
+                    .CreateLogger<DynamicIslandWindow>();
+            _mainWindow = new DynamicIslandWindow(islandLogger, _config);
 
             _mainWindow.Activate();
             _logger.LogInformation("MajestyGuard Overlay started");

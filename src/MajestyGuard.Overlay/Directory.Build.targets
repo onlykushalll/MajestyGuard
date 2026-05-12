@@ -1,0 +1,26 @@
+<Project>
+  <!--
+    VS 2026 Insiders (v18.0) does not ship Microsoft.Build.AppxPackage.dll.
+    WindowsAppSDK NuGet targets declare RemovePayloadDuplicates unconditionally.
+    Override with inline no-op task matching the real parameter signature.
+  -->
+  <UsingTask
+    TaskName="Microsoft.Build.AppxPackage.RemovePayloadDuplicates"
+    TaskFactory="RoslynCodeTaskFactory"
+    AssemblyFile="$(MSBuildBinPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Inputs         ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="false" />
+      <ProjectName    ParameterType="System.String" Required="false" />
+      <Platform       ParameterType="System.String" Required="false" />
+      <VsTelemetrySession ParameterType="System.String" Required="false" />
+      <HasSharedItems ParameterType="System.String" Required="false" />
+      <MSBuildProjectDirectory ParameterType="System.String" Required="false" />
+      <Filtered       ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs">
+        Filtered = Inputs ?? System.Array.Empty&lt;Microsoft.Build.Framework.ITaskItem&gt;();
+      </Code>
+    </Task>
+  </UsingTask>
+</Project>

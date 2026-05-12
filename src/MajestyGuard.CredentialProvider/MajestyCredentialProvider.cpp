@@ -447,6 +447,11 @@ STDMETHODIMP CMajestyCredential::CommandLinkClicked(DWORD dwFieldID)
     return E_INVALIDARG;
 }
 
+// FIX-001 (B-024): DO NOT store or read passwords from Credential Manager.
+// The CP is a GATEKEEPER only — it controls whether the Windows
+// password prompt appears, not what the credential is.
+// Face recognition success → show standard password field with hint.
+// V2: Replace with TPM-backed Virtual Smart Card.
 STDMETHODIMP CMajestyCredential::GetSerialization(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*   pcpcs,
@@ -458,7 +463,6 @@ STDMETHODIMP CMajestyCredential::GetSerialization(
 
     if (m_fallbackMode)
     {
-        // Let Windows fall through to next credential provider (password)
         *pcpgsr = CPGSR_NO_CREDENTIAL_NOT_FINISHED;
         return S_OK;
     }
@@ -469,8 +473,14 @@ STDMETHODIMP CMajestyCredential::GetSerialization(
         return S_OK;
     }
 
-    // Face recognized — retrieve stored credential from Windows Credential Manager
-    return SerializeCredentials(pcpgsr, pcpcs);
+    // Face recognized. Show status hint and let user enter password normally.
+    // CPGSR_NO_CREDENTIAL_FINISHED signals LogonUI that we are done but
+    // have no serialized credential — Windows shows the next available
+    // credential provider (the password field).
+    SHStrDupW(L"Face recognized \u2014 enter your password to confirm", ppwszOptionalStatusText);
+    *pcpsiOptionalStatusIcon = CPSI_SUCCESS;
+    *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+    return S_OK;
 }
 
 HRESULT CMajestyCredential::SerializeCredentials(
@@ -571,33 +581,31 @@ STDMETHODIMP CMajestyCredential::ReportResult(
     return S_OK;
 }
 
+// FIX-018 (B-035): GetUserSid must return the ENROLLED user's SID, not SYSTEM.
+// OpenProcessToken(GetCurrentProcess()) returns SYSTEM SID in LogonUI context.
+// Read enrolled SID from HKLM\SOFTWARE\MajestyGuard\EnrolledUserSid instead.
 STDMETHODIMP CMajestyCredential::GetUserSid(WCHAR** ppszSid)
 {
     *ppszSid = nullptr;
 
-    HANDLE hToken = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\MajestyGuard",
+        0, KEY_READ, &hKey) != ERROR_SUCCESS)
         return E_FAIL;
 
-    DWORD dwLen = 0;
-    GetTokenInformation(hToken, TokenUser, nullptr, 0, &dwLen);
-    auto pBuf = static_cast<BYTE*>(HeapAlloc(GetProcessHeap(), 0, dwLen));
-    if (!pBuf) { CloseHandle(hToken); return E_OUTOFMEMORY; }
-
+    WCHAR sid[256] = {};
+    DWORD size = sizeof(sid);
+    DWORD type = REG_SZ;
     HRESULT hr = E_FAIL;
-    if (GetTokenInformation(hToken, TokenUser, pBuf, dwLen, &dwLen))
+
+    if (RegQueryValueExW(hKey, L"EnrolledUserSid", nullptr, &type,
+        reinterpret_cast<LPBYTE>(sid), &size) == ERROR_SUCCESS &&
+        type == REG_SZ && sid[0] != L'\0')
     {
-        auto pUser = reinterpret_cast<TOKEN_USER*>(pBuf);
-        LPWSTR sidStr = nullptr;
-        if (ConvertSidToStringSidW(pUser->User.Sid, &sidStr))
-        {
-            hr = SHStrDupW(sidStr, ppszSid);
-            LocalFree(sidStr);
-        }
+        hr = SHStrDupW(sid, ppszSid);
     }
 
-    HeapFree(GetProcessHeap(), 0, pBuf);
-    CloseHandle(hToken);
+    RegCloseKey(hKey);
     return hr;
 }
 
@@ -648,11 +656,23 @@ DWORD WINAPI CMajestyCredential::PipeReaderThread(LPVOID lpParam)
             std::string line = accumulated.substr(0, pos);
             accumulated = accumulated.substr(pos + 1);
 
-            // Simple JSON field search — no external parser dependency
-            if (line.find("\"AuthDecision\"") != std::string::npos)
+            // Skip lines that don't look like JSON objects
+            size_t first = line.find_first_not_of(" \t\r");
+            size_t last  = line.find_last_not_of(" \t\r");
+            if (first == std::string::npos || line[first] != '{' || line[last] != '}')
+                continue;
+
+            // FIX-002 (B-015): Safer JSON field check.
+            // Verify MessageType field is specifically AuthDecision,
+            // then check Granted field independently.
+            if (line.find("\"MessageType\":\"AuthDecision\"") != std::string::npos ||
+                line.find("\"MessageType\": \"AuthDecision\"") != std::string::npos)
             {
-                bool granted = line.find("\"Granted\":true") != std::string::npos ||
-                               line.find("\"Granted\": true") != std::string::npos;
+                // Verify Granted field is a boolean true — must follow : with no extra text
+                bool granted = (line.find("\"Granted\":true") != std::string::npos ||
+                                line.find("\"Granted\": true") != std::string::npos) &&
+                               (line.find("\"Granted\":false") == std::string::npos &&
+                                line.find("\"Granted\": false") == std::string::npos);
                 self->OnAuthDecision(granted);
             }
         }

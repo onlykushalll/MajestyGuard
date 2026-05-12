@@ -56,10 +56,6 @@
     xmlns:media="using:Microsoft.UI.Xaml.Media"
     Title="MajestyGuard.Overlay">
 
-    <Window.SystemBackdrop>
-        <TransparentBackdrop/>
-    </Window.SystemBackdrop>
-
     <Grid x:Name="RootGrid" Background="Transparent">
 
         <!-- LAYER 1: BLACK OVERLAY ───────────────────────────────── -->
@@ -488,13 +484,9 @@
             <!-- Scan ring continuous rotation (start separately, never stop while Verifying) -->
             <Storyboard x:Key="ScanRingRotation" RepeatBehavior="Forever">
                 <DoubleAnimation Storyboard.TargetName="ScanRingRotate" Storyboard.TargetProperty="Angle"
-                    From="0" To="360" Duration="0:0:4.5">
-                    <DoubleAnimation.EasingFunction><LinearEase/></DoubleAnimation.EasingFunction>
-                </DoubleAnimation>
+                    From="0" To="360" Duration="0:0:4.5"/>
                 <DoubleAnimation Storyboard.TargetName="ScanRingInnerRotate" Storyboard.TargetProperty="Angle"
-                    From="360" To="0" Duration="0:0:7">
-                    <DoubleAnimation.EasingFunction><LinearEase/></DoubleAnimation.EasingFunction>
-                </DoubleAnimation>
+                    From="360" To="0" Duration="0:0:7"/>
             </Storyboard>
 
             <!-- Scan rings disappear -->

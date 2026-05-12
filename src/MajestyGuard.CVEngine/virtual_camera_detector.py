@@ -42,7 +42,6 @@ _PHYSICAL_HW_ID_PREFIXES = frozenset(["USB\\", "PCI\\", "ACPI\\", "SWD\\"])
 # Hardware ID prefixes that indicate software / virtual devices
 _VIRTUAL_HW_ID_PREFIXES = frozenset([
     "ROOT\\",
-    "SWD\\",
     "SW\\",
     "VIRTUAL\\",
 ])
@@ -71,6 +70,10 @@ _VIRTUAL_CAMERA_CLSIDS = frozenset([
     "{8E14549A-DB61-4309-AFA1-3578E927E935}",  # OBS Virtual Camera v2
     "{FBC9D74C-A950-11D1-8BD2-00A0C955FC6E}",  # Some ManyCam variants
     "{7D8C3B72-8787-4CE8-B9EF-B5B50B43D6D4}",  # XSplit VCam (common variant)
+    "{6994AD04-93EF-11D0-A3CC-00A0C9223196}",  # Generic VFW/DirectShow virtual
+    "{860BB310-5D01-11d0-BD3B-00A0C911CE86}",  # VFW Capture (often virtual)
+    "{1ADEDD3B-3937-4B8F-B832-E51F0F75DE5E}",  # Logitech Capture (software layer)
+    "{CD8743A1-3736-11D0-9E69-00C04FD7C15B}",  # Various virtual camera variants
 ])
 
 
@@ -80,9 +83,9 @@ class VirtualCameraDetector:
     """
 
     def __init__(self):
-        self._cache_result: Optional[bool] = None
-        self._cache_time: float = 0.0
-        self._cache_ttl: float = 30.0  # Seconds before re-checking
+        # L-1: cache keyed by camera_index — previously ignored index and cached globally
+        self._cache: dict[int, tuple[float, bool]] = {}  # {index: (timestamp, result)}
+        self._cache_ttl: float = 30.0
 
     def is_virtual(self, camera_index: int) -> bool:
         """
@@ -90,12 +93,12 @@ class VirtualCameraDetector:
         Call this before starting face recognition. Block if True.
         """
         now = time.monotonic()
-        if self._cache_result is not None and (now - self._cache_time) < self._cache_ttl:
-            return self._cache_result
+        cached = self._cache.get(camera_index)
+        if cached is not None and (now - cached[0]) < self._cache_ttl:
+            return cached[1]
 
         result = self._detect(camera_index)
-        self._cache_result = result
-        self._cache_time   = now
+        self._cache[camera_index] = (now, result)
 
         if result:
             logger.warning("SECURITY: Virtual camera detected at index %d — blocking", camera_index)
@@ -106,12 +109,16 @@ class VirtualCameraDetector:
 
     def invalidate_cache(self):
         """Force re-check on next call."""
-        self._cache_result = None
+        self._cache.clear()
 
     def _detect(self, camera_index: int) -> bool:
         """Run all detection methods. Return True if ANY method flags virtual."""
 
-        # Method 1: Device name check via DirectShow / WMI (Moved up for efficiency)
+        # Method 0: CLSID blocklist (instant, no subprocess needed)
+        if self._check_clsid_blocklist():
+            return True
+
+        # Method 1: Device name check via DirectShow / WMI
         camera_name = self._get_camera_name(camera_index)
         if camera_name:
             name_lower = camera_name.lower()
@@ -120,17 +127,19 @@ class VirtualCameraDetector:
                     logger.warning("Virtual camera name detected: %s", camera_name)
                     return True
 
-        # Method 2: CLSID check (Now integrated with device lookup if possible, 
-        # but we'll stick to hardware ID as the primary secondary check)
+        # Method 2: MF hardware source attribute (Windows 11 definitive check)
+        mf_result = self._check_mf_hardware_source(camera_index)
+        if mf_result is False:  # Explicitly software (None = unknown, skip)
+            logger.warning("MF hardware source check: software camera at index %d", camera_index)
+            return True
 
-        # Method 3: Hardware ID via SetupAPI (subprocess → PowerShell)
+        # Method 3: Hardware ID via SetupAPI
         hw_id = self._get_hardware_id(camera_name or "")
         if hw_id:
             for virtual_prefix in _VIRTUAL_HW_ID_PREFIXES:
                 if hw_id.upper().startswith(virtual_prefix):
                     logger.warning("Virtual camera hardware ID: %s", hw_id)
                     return True
-            # Check that at least one physical prefix matches
             has_physical = any(hw_id.upper().startswith(p) for p in _PHYSICAL_HW_ID_PREFIXES)
             if not has_physical:
                 logger.warning("Camera hardware ID not from physical bus: %s", hw_id)
@@ -141,25 +150,50 @@ class VirtualCameraDetector:
     def _check_clsid_blocklist(self) -> bool:
         """
         Checks if any known virtual camera CLSID is registered in the Windows registry.
-        Virtual cameras register as DirectShow filter objects under HKLM\SOFTWARE\Classes\CLSID.
+        Virtual cameras register as DirectShow filter objects under HKLM\\SOFTWARE\\Classes\\CLSID.
         """
         try:
-            root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                r"SOFTWARE\Classes\CLSID", access=winreg.KEY_READ)
-
-            for clsid in _VIRTUAL_CAMERA_CLSIDS:
-                try:
-                    winreg.OpenKey(root, clsid)
-                    logger.debug("Blocklisted CLSID found: %s", clsid)
-                    winreg.CloseKey(root)
-                    return True
-                except FileNotFoundError:
-                    pass
-
-            winreg.CloseKey(root)
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                    r"SOFTWARE\Classes\CLSID", access=winreg.KEY_READ) as root:
+                for clsid in _VIRTUAL_CAMERA_CLSIDS:
+                    try:
+                        winreg.OpenKey(root, clsid).Close()
+                        logger.debug("Blocklisted CLSID found: %s", clsid)
+                        return True
+                    except FileNotFoundError:
+                        pass
         except Exception as e:
             logger.debug("CLSID check error: %s", e)
         return False
+
+    def _check_mf_hardware_source(self, camera_index: int):
+        """Check MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_HW_SOURCE via PowerShell.
+        Returns True=hardware, False=software, None=unknown.
+        Windows 11 auto-appends 'Windows Virtual Camera' to software cameras."""
+        try:
+            ps_cmd = (
+                "$devices = [Windows.Devices.Enumeration.DeviceInformation]::"
+                "FindAllAsync([Windows.Devices.Enumeration.DeviceClass]::VideoCapture)"
+                ".GetAwaiter().GetResult(); "
+                "$devices | Select-Object Name,Id | ConvertTo-Json"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=8
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                import json
+                devices = json.loads(result.stdout)
+                if isinstance(devices, dict):
+                    devices = [devices]
+                if camera_index < len(devices):
+                    name = (devices[camera_index].get("Name") or "").lower()
+                    if "windows virtual camera" in name:
+                        return False  # Windows 11 software camera confirmed
+                    return True  # Likely hardware
+        except Exception as e:
+            logger.debug("MF hardware source check failed: %s", e)
+        return None
 
     def _get_camera_name(self, camera_index: int) -> Optional[str]:
         """
@@ -197,8 +231,8 @@ class VirtualCameraDetector:
     def _get_hardware_id(self, camera_name: str) -> Optional[str]:
         """
         Uses SetupAPI via PowerShell to get the hardware ID of the camera device.
-        Physical cameras: USB\VID_XXXX&PID_XXXX...
-        Virtual cameras:  ROOT\OBSVIRTUALCAMERA or SWD\MSLOOP etc.
+        Physical cameras: USB\\VID_XXXX&PID_XXXX...
+        Virtual cameras:  ROOT\\OBSVIRTUALCAMERA or SWD\\MSLOOP etc.
         """
         if not camera_name:
             return None

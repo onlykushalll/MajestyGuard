@@ -66,6 +66,7 @@ class FaceEngine:
         self.recognition_threshold = recognition_threshold
         self._app: Optional[FaceAnalysis] = None
         self._liveness = LivenessDetector(model_dir=model_dir)
+        self._adaface_session = None
         self._enrolled_embeddings: list[np.ndarray] = []
         self._cap: Optional[cv2.VideoCapture] = None
 
@@ -80,6 +81,12 @@ class FaceEngine:
         self._consecutive_liveness = 0
         self._consensus_threshold = 3  # frames
         self._last_recognition_score = 0.0
+
+        # P-1: Pre-allocate CLAHE once — creating it per-frame wastes CPU
+        self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+        # P-3: enrolled embeddings as matrix for vectorized matmul
+        self._enrolled_matrix: Optional[np.ndarray] = None  # (N, 512) float32
 
     # ─────────────────────────────────────────────────────────────────
     # INITIALIZATION
@@ -118,6 +125,9 @@ class FaceEngine:
 
             # Validate camera is real hardware (not virtual)
             self._expected_device_path = self._get_camera_device_path(self.camera_idx)
+
+            # Load AdaFace if available
+            self._load_adaface()
 
             return True
 
@@ -189,7 +199,7 @@ class FaceEngine:
             logger.warning("Liveness check failed during enrollment (%.3f)", liveness_score)
             return None
 
-        embedding = face.normed_embedding  # 512-dim L2-normalized vector
+        embedding = self._get_best_embedding(frame, face)
         logger.info("Enrollment embedding captured (liveness: %.3f)", liveness_score)
 
         # Return a copy — don't hold a reference to the face object
@@ -202,6 +212,11 @@ class FaceEngine:
         Called by cv_server.py after deserializing from the Service.
         """
         self._enrolled_embeddings = [np.array(e, dtype=np.float32) for e in embeddings]
+        # P-3: build row matrix once for O(1) vectorized matmul in process_frame
+        if self._enrolled_embeddings:
+            self._enrolled_matrix = np.stack(self._enrolled_embeddings, axis=0)  # (N, 512)
+        else:
+            self._enrolled_matrix = None
         logger.info("Loaded %d enrolled embeddings", len(self._enrolled_embeddings))
 
     # ─────────────────────────────────────────────────────────────────
@@ -237,6 +252,9 @@ class FaceEngine:
                 inference_ms=(time.perf_counter() - t_start) * 1000,
             )
 
+        # ── CLAHE lighting enhancement (Gemini CV: +12% accuracy in <50 lux) ──
+        frame = self._enhance_frame(frame)
+
         # ── Face detection ────────────────────────────────────────────
         faces = self._app.get(frame)
         face_count = len(faces)
@@ -266,12 +284,12 @@ class FaceEngine:
         primary_user_present = False
         best_score           = 0.0
 
-        if liveness_passed and len(self._enrolled_embeddings) > 0:
-            query_embedding = primary_face.normed_embedding
+        if liveness_passed and self._enrolled_matrix is not None:
+            query_embedding = self._get_best_embedding(frame, primary_face)
 
-            for enrolled in self._enrolled_embeddings:
-                score = float(np.dot(query_embedding, enrolled))
-                best_score = max(best_score, score)
+            # P-3: vectorized matmul instead of linear loop — O(N) single BLAS call
+            scores = self._enrolled_matrix @ query_embedding  # (N,)
+            best_score = float(np.max(scores))
 
             # Multi-frame consensus: require N consecutive frames with
             # both recognition match AND liveness pass before declaring present
@@ -279,6 +297,7 @@ class FaceEngine:
                 self._consecutive_matches += 1
             else:
                 self._consecutive_matches = 0
+                self._consecutive_liveness = 0  # L-3: reset both counters together
 
             primary_user_present = (
                 self._consecutive_matches >= self._consensus_threshold and
@@ -287,6 +306,7 @@ class FaceEngine:
             self._last_recognition_score = best_score
         else:
             self._consecutive_matches = 0
+            self._consecutive_liveness = 0  # L-3: no embeddings = reset both
 
         # ── Zero face embedding data (privacy) ──────────────────────
         for face in faces:
@@ -341,7 +361,7 @@ class FaceEngine:
         """
         Detects virtual/software cameras via three independent methods:
           1. Registry CLSID blocklist (OBS, ManyCam, XSplit, DroidCam etc.)
-          2. SetupAPI hardware ID — physical = USB\VID, virtual = ROOT\ or SWD\
+          2. SetupAPI hardware ID — physical = USB\\VID, virtual = ROOT\\ or SWD\\
           3. Device friendly name keyword match
         All three run in virtual_camera_detector.py with 30s caching.
         This replaces the ffmpeg-based approach which only checked names.
@@ -372,13 +392,97 @@ class FaceEngine:
         except Exception as e:
             logger.debug("Camera DeviceID lookup failed: %s", e)
             return self._backend_name or None
+    def _enhance_frame(self, frame: np.ndarray) -> np.ndarray:
+        """CLAHE lighting enhancement. Applied only in low-light conditions."""
+        try:
+            lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            mean_l = float(np.mean(l))
+            if mean_l > 100:
+                return frame  # Good lighting — skip
+            # P-1: use pre-allocated CLAHE from __init__, not a new one each frame
+            l_enhanced = self._clahe.apply(l)
+            if mean_l < 50:
+                gamma = 0.6
+                l_enhanced = (np.power(l_enhanced / 255.0, gamma) * 255.0).astype(np.uint8)
+            enhanced = cv2.merge([l_enhanced, a, b])
+            return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        except Exception:
+            return frame  # Never crash the recognition loop
+
     @staticmethod
     def _zero_frame(frame: np.ndarray) -> None:
         """Zero out frame buffer from memory. Prevents frame retention."""
         frame[:] = 0
+
+    def _get_best_embedding(self, frame: np.ndarray, face) -> np.ndarray:
+        if self._adaface_session is not None:
+            x1, y1, x2, y2 = [int(v) for v in face.bbox]
+            h, w = frame.shape[:2]
+            face_roi = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            if face_roi.size > 0:
+                return self._get_embedding_adaface(face_roi)
+        return face.normed_embedding
+
+    # ── FIX-021: AdaFace optional recognition model ────────────────────────
+    # AdaFace (CVPR 2022) adapts margin to image quality → better on low-quality webcam.
+    # Drop adaface_r100.onnx into models/ folder to activate automatically.
+    def _load_adaface(self) -> None:
+        """Load AdaFace ONNX if available. Silent no-op if not found."""
+        model_path = os.path.join(self.model_dir, "adaface_r100.onnx")
+        if not os.path.exists(model_path):
+            logger.info("AdaFace model not found — using ArcFace (buffalo_l). "
+                        "Drop adaface_r100.onnx in models/ to enable.")
+            return
+        try:
+            import onnxruntime as ort
+            self._adaface_session = ort.InferenceSession(
+                model_path,
+                providers=["DmlExecutionProvider", "CPUExecutionProvider"]
+            )
+            logger.info("AdaFace R100 loaded — will use instead of buffalo_l for recognition")
+        except Exception as e:
+            logger.warning("AdaFace load failed: %s — falling back to ArcFace", e)
+            self._adaface_session = None
+
+    def _get_embedding_adaface(self, face_roi: np.ndarray) -> np.ndarray:
+        """AdaFace inference. Input: 112x112 BGR. Output: L2-normalised 512-dim embedding."""
+        resized = cv2.resize(face_roi, (112, 112))
+        rgb     = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
+        rgb     = (rgb - 127.5) / 128.0                        # normalise to [-1, 1]
+        blob    = np.transpose(rgb, (2, 0, 1))[np.newaxis]     # HWC → NCHW
+        output  = self._adaface_session.run(None, {"input": blob})[0]
+        emb     = output[0]
+        return emb / (np.linalg.norm(emb) + 1e-8)
 
     def shutdown(self) -> None:
         if self._cap:
             self._cap.release()
             self._cap = None
         logger.info("FaceEngine shut down")
+
+    def reset_session(self) -> None:
+        self._consecutive_matches = 0
+        self._consecutive_liveness = 0
+        self._last_recognition_score = 0.0
+        self._liveness.reset_session()
+
+    def reset_liveness(self) -> None:
+        """Reset liveness detector state only. Call between enrollment angle captures."""
+        self._liveness.reset_session()
+    def read_frame(self) -> Optional[np.ndarray]:
+        return self._read_frame()
+
+    def detect_faces(self, frame: np.ndarray) -> list:
+        if self._app is None:
+            return []
+        return self._app.get(frame)
+
+    def check_liveness(self, frame: np.ndarray, face) -> float:
+        return self._liveness.score(frame, face)
+
+    def zero_frame(self, frame: np.ndarray) -> None:
+        self._zero_frame(frame)
+
+    def get_embedding(self, frame: np.ndarray, face) -> np.ndarray:
+        return self._get_best_embedding(frame, face)

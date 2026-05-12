@@ -30,6 +30,7 @@ using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.UI;
 using MajestyGuard.Core.IPC;
+using MajestyGuard.Core.Security;
 using MajestyGuard.Core.Models;
 using Microsoft.Extensions.Logging;
 
@@ -38,8 +39,8 @@ namespace MajestyGuard.Overlay
     // ── Step model for the left rail ──────────────────────────────────
     public class EnrollStep : INotifyPropertyChanged
     {
-        public string Number  { get; init; } = "";
-        public string Label   { get; init; } = "";
+        public string Number  { get; set; } = "";
+        public string Label   { get; set; } = "";
 
         private StepState _state = StepState.Pending;
         public StepState State
@@ -58,12 +59,12 @@ namespace MajestyGuard.Overlay
         };
 
         public SolidColorBrush NumberFore => State == StepState.Active
-            ? new SolidColorBrush(Colors.White)
+            ? new SolidColorBrush(Color.FromArgb(255, 255, 255, 255))
             : new SolidColorBrush(Color.FromArgb(255, 80, 80, 88));
 
         public SolidColorBrush LabelFore => State switch
         {
-            StepState.Active    => new SolidColorBrush(Colors.White),
+            StepState.Active    => new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
             StepState.Complete  => new SolidColorBrush(Color.FromArgb(255, 48, 209, 88)),
             _                   => new SolidColorBrush(Color.FromArgb(255, 80, 80, 88)),
         };
@@ -88,7 +89,6 @@ namespace MajestyGuard.Overlay
 
         private int _currentStep = 0;
         private int _currentAngleIndex = 0;
-        private bool _captureSuccess = false;
 
         // Angle sequence for capture steps
         private static readonly (string Angle, string Title, string Subtitle, bool Optional)[] Angles =
@@ -307,23 +307,53 @@ namespace MajestyGuard.Overlay
 
         private async Task FinalizeEnrollmentAsync()
         {
-            // Send finalize command — Service persists embeddings via DpapiHelper
-            if (_pipe != null)
+            // FIX-008: Do NOT save EnrolledUserSid until storage is verified.
+            // Old code saved SID regardless of DPAPI outcome → permanent lockout on failure.
+            var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
+            if (string.IsNullOrEmpty(sid))
             {
-                var finalCmd = JsonSerializer.Serialize(new { cmd = "enrollment_finalize" });
-                // CODEX: Add a SendRawAsync helper to MajestyPipeClient if not present
-                await Task.CompletedTask;
+                ShowError("Cannot determine user identity. Run as a normal user account.");
+                return;
             }
 
-            // Save enrolled SID to config
-            var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
-            if (!string.IsNullOrEmpty(sid))
+            try
             {
+                // Tell CVEngine to finalize
+                if (_pipe != null)
+                {
+                    var finalCmd = JsonSerializer.Serialize(new { cmd = "enrollment_finalize", user_sid = sid });
+                    await Task.CompletedTask; // CODEX: pipe.SendRawAsync(finalCmd)
+                }
+
+                // Verify storage succeeded before touching config
+                var store = new MajestyGuard.Core.Security.EmbeddingStore(_config.EmbeddingStorePath);
+                EnrollmentRecord? record = null;
+                try { record = store.Load(); }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "EmbeddingStore.Load() failed after save");
+                    ShowError("Enrollment save failed — storage error. Please retry.");
+                    return; // Do NOT update config
+                }
+
+                if (record == null || record.Embeddings.Length < 3 || record.UserSid != sid)
+                {
+                    ShowError("Enrollment verification failed. Please retry the capture process.");
+                    return; // Do NOT update config
+                }
+
+                // Storage verified — NOW commit SID to config
                 _config.EnrolledUserSid = sid;
                 _config.Save();
-            }
 
-            _logger.LogInformation("Enrollment finalized for SID: {Sid}", sid);
+                _logger.LogInformation("Enrollment finalized and verified for SID: {Sid}", sid);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "FinalizeEnrollmentAsync threw");
+                ShowError($"Enrollment failed: {ex.Message}. Please retry.");
+                // EnrolledUserSid NOT updated — enrollment incomplete
+            }
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -385,7 +415,7 @@ namespace MajestyGuard.Overlay
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                var sb = (Storyboard)Resources["OvalPulseReady"];
+                var sb = (Storyboard)MainGrid.Resources["OvalPulseReady"];
                 sb.Begin();
             });
         }
@@ -394,7 +424,7 @@ namespace MajestyGuard.Overlay
         {
             DispatcherQueue.TryEnqueue(() =>
             {
-                var sb = (Storyboard)Resources["OvalPulseIdle"];
+                var sb = (Storyboard)MainGrid.Resources["OvalPulseIdle"];
                 sb.Begin();
             });
         }

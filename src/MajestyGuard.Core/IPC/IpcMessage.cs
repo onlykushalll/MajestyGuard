@@ -24,20 +24,33 @@ namespace MajestyGuard.Core.IPC
 
         public static IpcMessage? Deserialize(string json)
         {
-            // Peek at MessageType before full deserialization
-            using var doc = JsonDocument.Parse(json);
-            var type = doc.RootElement.GetProperty("MessageType").GetString();
+            if (string.IsNullOrWhiteSpace(json)) return null;
 
-            return type switch
+            try
             {
-                "DetectionResult"  => JsonSerializer.Deserialize<DetectionResultMsg>(json, _opts),
-                "StateChange"      => JsonSerializer.Deserialize<StateChangeMsg>(json, _opts),
-                "AuthDecision"     => JsonSerializer.Deserialize<AuthDecisionMsg>(json, _opts),
-                "OverlayCommand"   => JsonSerializer.Deserialize<OverlayCommandMsg>(json, _opts),
-                "Heartbeat"        => JsonSerializer.Deserialize<HeartbeatMsg>(json, _opts),
-                "EnrollFrame"      => JsonSerializer.Deserialize<EnrollFrameMsg>(json, _opts),
-                _ => null
-            };
+                using var doc = JsonDocument.Parse(json);
+                if (!doc.RootElement.TryGetProperty("MessageType", out var typeProp))
+                    return null;
+                var type = typeProp.GetString();
+
+                return type switch
+                {
+                    "DetectionResult"       => JsonSerializer.Deserialize<DetectionResultMsg>(json, _opts),
+                    "StateChange"           => JsonSerializer.Deserialize<StateChangeMsg>(json, _opts),
+                    "AuthDecision"          => JsonSerializer.Deserialize<AuthDecisionMsg>(json, _opts),
+                    "OverlayCommand"        => JsonSerializer.Deserialize<OverlayCommandMsg>(json, _opts),
+                    "Heartbeat"             => JsonSerializer.Deserialize<HeartbeatMsg>(json, _opts),
+                    "EnrollFrame"           => JsonSerializer.Deserialize<EnrollFrameMsg>(json, _opts),
+                    "UserIdleDetected"      => JsonSerializer.Deserialize<UserIdleMsg>(json, _opts),
+                    "UserActivityDetected"  => JsonSerializer.Deserialize<UserActivityMsg>(json, _opts),
+                    "ManualFallbackRequest" => JsonSerializer.Deserialize<ManualFallbackRequestMsg>(json, _opts),
+                    _ => null
+                };
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
         }
 
         private static readonly JsonSerializerOptions _opts = new()
@@ -162,5 +175,27 @@ namespace MajestyGuard.Core.IPC
         LookUp,
         LookDown,
         WithGlasses,    // Optional — prompt user
+    }
+
+    // FIX-016: Overlay (Session 1) reports idle/activity to Service (Session 0).
+    // GetLastInputInfo from a SYSTEM service is blind to user-session input.
+    public class UserIdleMsg : IpcMessage
+    {
+        public UserIdleMsg() : base("UserIdleDetected") { }
+        public ulong IdleMs { get; init; }
+    }
+
+    public class UserActivityMsg : IpcMessage
+    {
+        public UserActivityMsg() : base("UserActivityDetected") { }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // CREDENTIAL PROVIDER → SERVICE
+    // Sent when user clicks "Enter password instead"
+    // ─────────────────────────────────────────────────────────────────
+    public class ManualFallbackRequestMsg : IpcMessage
+    {
+        public ManualFallbackRequestMsg() : base("ManualFallbackRequest") { }
     }
 }

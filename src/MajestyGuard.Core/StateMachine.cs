@@ -6,6 +6,7 @@
 using System;
 using System.Threading;
 using Microsoft.Extensions.Logging;
+using MajestyGuard.Core.Models;
 
 namespace MajestyGuard.Core
 {
@@ -75,6 +76,12 @@ namespace MajestyGuard.Core
         private readonly TimeSpan _strangerHysteresis;   // default: 3 seconds
         private readonly int _maxAuthFailures;           // default: 3
 
+        /// <summary>
+        /// Fired OUTSIDE the state machine lock after every transition.
+        /// WARNING: Handlers MUST NOT call RequestTransition() synchronously —
+        /// Monitor.Enter is not reentrant and will deadlock. Use async handlers
+        /// with await Task.Yield() or a dispatch queue before calling back.
+        /// </summary>
         public event EventHandler<StateChangedEventArgs>? StateChanged;
 
         public GuardState Current
@@ -95,25 +102,30 @@ namespace MajestyGuard.Core
         /// </summary>
         public bool RequestTransition(TransitionTrigger trigger, object? context = null)
         {
+            GuardState previous;
+            GuardState next;
+
             lock (_lock)
             {
-                var previous = _current;
-                var next = ResolveNextState(trigger, context);
+                previous = _current;
+                var resolved = ResolveNextState(trigger, context);
 
-                if (next == null)
+                if (resolved == null)
                 {
                     _logger.LogDebug(
                         "Trigger {Trigger} ignored in state {State}", trigger, _current);
                     return false;
                 }
 
-                _current = next.Value;
+                next = resolved.Value;
+                _current = next;
                 _logger.LogInformation(
                     "State: {Prev} → {Next} (trigger: {Trigger})", previous, _current, trigger);
-
-                OnStateChanged(previous, _current, trigger);
-                return true;
             }
+
+            // Fire event OUTSIDE lock — handlers can safely call RequestTransition
+            OnStateChanged(previous, next, trigger);
+            return true;
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -140,7 +152,7 @@ namespace MajestyGuard.Core
                     => GuardState.Unlocked,  // User chose password; bypass face
 
                 (GuardState.BootScan, TransitionTrigger.CameraObstructed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 // ── FROM VERIFYING ────────────────────────────────────────────
                 (GuardState.Verifying, TransitionTrigger.FaceRecognized)
@@ -150,13 +162,13 @@ namespace MajestyGuard.Core
                     => HandleAuthFailure(),
 
                 (GuardState.Verifying, TransitionTrigger.LivenessCheckFailed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 (GuardState.Verifying, TransitionTrigger.NoFaceDetected)
                     => GuardState.BootScan,
 
                 (GuardState.Verifying, TransitionTrigger.CameraObstructed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 // ── FROM UNLOCKED ─────────────────────────────────────────────
                 (GuardState.Unlocked, TransitionTrigger.StrangerDetected)
@@ -166,36 +178,36 @@ namespace MajestyGuard.Core
                     => GuardState.InactivityLock,
 
                 (GuardState.Unlocked, TransitionTrigger.NoFaceDetected)
-                    => GuardState.InactivityLock,  // User walked away
+                    => GuardState.InactivityLock,
 
                 (GuardState.Unlocked, TransitionTrigger.CameraObstructed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 (GuardState.Unlocked, TransitionTrigger.LoginScreenDetected)
-                    => GuardState.BootScan,  // Win+L pressed
+                    => GuardState.BootScan,
 
                 // ── FROM INACTIVITY_LOCK ──────────────────────────────────────
                 (GuardState.InactivityLock, TransitionTrigger.FaceDetected)
                     => GuardState.Verifying,
 
                 (GuardState.InactivityLock, TransitionTrigger.UserInputDetected)
-                    => GuardState.Verifying,    // Input detected → demand re-verification
+                    => GuardState.Verifying,
 
                 (GuardState.InactivityLock, TransitionTrigger.ManualFallback)
-                    => GuardState.Unlocked,
+                    => GuardState.BootScan,  // Force re-verification — not direct Unlocked
 
                 (GuardState.InactivityLock, TransitionTrigger.LoginScreenDetected)
                     => GuardState.BootScan,
 
                 (GuardState.InactivityLock, TransitionTrigger.CameraObstructed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 // ── FROM SOCIAL_LOCK ──────────────────────────────────────────
                 (GuardState.SocialLock, TransitionTrigger.StrangerLeft)
-                    => HandleStrangerLeft(),
+                    => ClearStrangerAndGoBootScan(),
 
                 (GuardState.SocialLock, TransitionTrigger.CameraObstructed)
-                    => GuardState.HostileLock,
+                    => EnterHostileLock(),
 
                 (GuardState.SocialLock, TransitionTrigger.NoFaceDetected)
                     => GuardState.InactivityLock,
@@ -208,7 +220,7 @@ namespace MajestyGuard.Core
                     => GuardState.Verifying,
 
                 (GuardState.HostileLock, TransitionTrigger.ManualFallback)
-                    => GuardState.Unlocked,
+                    => HandleHostileFallback(),
 
                 (GuardState.HostileLock, TransitionTrigger.LoginScreenDetected)
                     => GuardState.BootScan,
@@ -222,9 +234,32 @@ namespace MajestyGuard.Core
         // GUARD CONDITIONS
         // ─────────────────────────────────────────────────────────────
 
+        // ── B-009: HostileLock cooldown ─────────────────────────────────────
+        private DateTime? _hostileLockEntryTime;
+
+        private GuardState HandleHostileFallback()
+        {
+            if (_hostileLockEntryTime.HasValue &&
+                (DateTime.UtcNow - _hostileLockEntryTime.Value).TotalSeconds < 30)
+            {
+                _logger.LogWarning("ManualFallback blocked — cooldown active ({Sec:F0}s remaining)",
+                    30 - (DateTime.UtcNow - _hostileLockEntryTime.Value).TotalSeconds);
+                return GuardState.HostileLock;
+            }
+            _hostileLockEntryTime = null;
+            return GuardState.Unlocked;
+        }
+
+        private GuardState EnterHostileLock()
+        {
+            _hostileLockEntryTime = DateTime.UtcNow;
+            return GuardState.HostileLock;
+        }
+
         private GuardState HandleAuthSuccess()
         {
             _authFailureCount = 0;
+            _hostileLockEntryTime = null;  // Clear cooldown on successful auth
             return GuardState.Unlocked;
         }
 
@@ -236,9 +271,27 @@ namespace MajestyGuard.Core
             if (_authFailureCount >= _maxAuthFailures)
             {
                 _authFailureCount = 0;
-                return GuardState.HostileLock;
+                return EnterHostileLock();
             }
             return GuardState.BootScan;  // Retry
+        }
+
+        // B-003 FIX: Reset stranger tracking when no stranger is in frame.
+        // Call from Worker when FaceCount==1. Prevents accumulated flicker time.
+        public void ResetStrangerTracking()
+        {
+            lock (_lock)
+            {
+                _strangerFirstSeen = null;
+                _strangerLastSeen = null;
+            }
+        }
+
+        private GuardState ClearStrangerAndGoBootScan()
+        {
+            _strangerFirstSeen = null;
+            _strangerLastSeen = null;
+            return GuardState.BootScan;
         }
 
         private GuardState HandleStrangerDetected()
@@ -255,23 +308,6 @@ namespace MajestyGuard.Core
             }
 
             return GuardState.Unlocked;  // Too brief — ignore
-        }
-
-        private GuardState HandleStrangerLeft()
-        {
-            // Record the first moment the stranger disappeared, not every call
-            _strangerLastSeen ??= DateTime.UtcNow;
-
-            var absenceDuration = DateTime.UtcNow - _strangerLastSeen.Value;
-            if (absenceDuration >= _strangerHysteresis)
-            {
-                _strangerFirstSeen = null;
-                _strangerLastSeen  = null;
-                _logger.LogInformation("Stranger cleared — restoring Unlocked state");
-                return GuardState.Unlocked;
-            }
-
-            return GuardState.SocialLock;  // Not clear yet
         }
 
         private void OnStateChanged(GuardState prev, GuardState next, TransitionTrigger trigger)

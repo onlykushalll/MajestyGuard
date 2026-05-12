@@ -77,7 +77,7 @@ namespace MajestyGuard.Service
         }
 
         private const int GWL_STYLE = -16;
-        private const nint WS_POPUP = unchecked((nint)0x80000000L);
+        private static readonly nint WS_POPUP = unchecked((nint)0x80000000L);
         private const uint MONITOR_DEFAULTTOPRIMARY = 1;
 
         // Track whether we've already fired the trigger to avoid spam
@@ -107,7 +107,7 @@ namespace MajestyGuard.Service
 
                     if (IsInLockableState())
                     {
-                        var timeoutMs = _config.InactivityTimeoutSeconds * 1000;
+                        var timeoutMs = (ulong)_config.InactivityTimeoutSeconds * 1000UL;
 
                         if (!_lockTriggered && idleMs >= timeoutMs && !IsFullscreenAppActive())
                         {
@@ -129,7 +129,7 @@ namespace MajestyGuard.Service
                         }
 
                         // Log approaching threshold as warning
-                        if (!_lockTriggered && idleMs >= timeoutMs - 20_000)
+                        if (!_lockTriggered && idleMs >= timeoutMs - 20_000UL)
                         {
                             _logger.LogDebug(
                                 "Approaching inactivity lock: {IdleSec}s idle",

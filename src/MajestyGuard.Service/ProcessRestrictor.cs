@@ -20,7 +20,7 @@ namespace MajestyGuard.Service
         private readonly ILogger<ProcessRestrictor> _logger;
 
         private readonly HashSet<int> _suspendedPids = new();
-        private readonly Dictionary<string, FileSecurity> _originalDacls = new();
+        private readonly Dictionary<string, DirectorySecurity> _originalDacls = new();
         private readonly Dictionary<string, string> _originalSddl = new();
         private bool _hostsModified;
 

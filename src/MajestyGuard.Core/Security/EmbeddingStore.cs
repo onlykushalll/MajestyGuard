@@ -313,10 +313,10 @@ namespace MajestyGuard.Core.Security
             }
             finally
             {
-                CryptographicOperations.ZeroMemory(
-                    System.Runtime.InteropServices.MemoryMarshal.CreateSpan(
-                        ref System.Runtime.InteropServices.Unsafe.AsRef<byte>((void*)pData),
-                        (int)cbData));
+                // Zero the native buffer before freeing — avoids Unsafe pointer interop issues
+                if (pData != IntPtr.Zero && cbData > 0)
+                    for (int i = 0; i < (int)cbData; i++)
+                        Marshal.WriteByte(pData, i, 0);
                 LocalFree(pData);
             }
         }

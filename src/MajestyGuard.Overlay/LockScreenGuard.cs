@@ -63,7 +63,7 @@ namespace MajestyGuard.Overlay
     {
         private readonly ILogger _logger;
         private CancellationTokenSource? _blockCts;
-        private bool _isBlocking;
+        private int _isBlocking;
 
         // ── P/Invoke ──────────────────────────────────────────────────
 
@@ -101,8 +101,7 @@ namespace MajestyGuard.Overlay
         // ─────────────────────────────────────────────────────────────
         public void Engage()
         {
-            if (_isBlocking) return;
-            _isBlocking = true;
+            if (Interlocked.CompareExchange(ref _isBlocking, 1, 0) != 0) return;
             _blockCts = new CancellationTokenSource();
 
             // DOOR LOCK — not a room freeze.
@@ -133,8 +132,7 @@ namespace MajestyGuard.Overlay
         // ─────────────────────────────────────────────────────────────
         public void Release()
         {
-            if (!_isBlocking) return;
-            _isBlocking = false;
+            if (Interlocked.CompareExchange(ref _isBlocking, 0, 1) != 1) return;
 
             _logger.LogInformation("LockScreenGuard: RELEASING — restoring input");
 
@@ -164,7 +162,7 @@ namespace MajestyGuard.Overlay
             {
                 try
                 {
-                    await Task.Delay(250, ct);
+                    await Task.Delay(16, ct);  // B-004: 16ms (~60Hz) closes the 250ms attack window
 
                     if (!BlockInput(true))
                     {
@@ -233,28 +231,31 @@ namespace MajestyGuard.Overlay
             Release();
             _blockCts?.Dispose();
         }
+
+        // ─────────────────────────────────────────────────────────────
+        // ACCESSIBILITY SHORTCUT SUPPRESSION
+        // Prevents StickyKeys, ToggleKeys, FilterKeys dialogs during lock.
+        // These can spawn high-IL processes that may interact with overlay.
+        // ─────────────────────────────────────────────────────────────
+        private static void SuppressAccessibilityShortcuts(bool suppress)
+        {
+            try
+            {
+                using var hkcu = Microsoft.Win32.Registry.CurrentUser;
+
+                // StickyKeys: "506" = disabled shortcut, "510" = enabled
+                using var sk = hkcu.CreateSubKey(@"Control Panel\Accessibility\StickyKeys");
+                sk?.SetValue("Flags", suppress ? "506" : "510", Microsoft.Win32.RegistryValueKind.String);
+
+                // ToggleKeys: "62" = disabled shortcut, "63" = enabled
+                using var tk = hkcu.CreateSubKey(@"Control Panel\Accessibility\ToggleKeys");
+                tk?.SetValue("Flags", suppress ? "62" : "63", Microsoft.Win32.RegistryValueKind.String);
+
+                // FilterKeys: "122" = disabled shortcut, "126" = enabled
+                using var fk = hkcu.CreateSubKey(@"Control Panel\Accessibility\Keyboard Response");
+                fk?.SetValue("Flags", suppress ? "122" : "126", Microsoft.Win32.RegistryValueKind.String);
+            }
+            catch { /* non-critical */ }
+        }
     }
 }
-
-    // SUPPRESSION BLOCK - appended by hardening pass
-    // Call SuppressAccessibilityShortcuts(true) in Engage(), false in Release()
-    private static void SuppressAccessibilityShortcuts(bool suppress)
-    {
-        try
-        {
-            using var hkcu = Microsoft.Win32.Registry.CurrentUser;
-
-            // StickyKeys: "506" = disabled shortcut, "510" = enabled
-            using var sk = hkcu.CreateSubKey(@"Control Panel\Accessibility\StickyKeys");
-            sk?.SetValue("Flags", suppress ? "506" : "510", Microsoft.Win32.RegistryValueKind.String);
-
-            // ToggleKeys: "62" = disabled shortcut, "63" = enabled
-            using var tk = hkcu.CreateSubKey(@"Control Panel\Accessibility\ToggleKeys");
-            tk?.SetValue("Flags", suppress ? "62" : "63", Microsoft.Win32.RegistryValueKind.String);
-
-            // FilterKeys: "122" = disabled shortcut, "126" = enabled
-            using var fk = hkcu.CreateSubKey(@"Control Panel\Accessibility\Keyboard Response");
-            fk?.SetValue("Flags", suppress ? "122" : "126", Microsoft.Win32.RegistryValueKind.String);
-        }
-        catch { /* non-critical */ }
-    }

@@ -5,6 +5,12 @@ models/
 
 **/models/
 
+*.onnx
+*.npy
+*.npz
+*.pkl
+*.pickle
+
 # Build output
 
 build/
@@ -13,13 +19,25 @@ obj/
 
 bin/
 
+# Local research/workspace buckets
+
+active/
+
+archive/
+
+external/
+
 # Python cache
+
+.pytest_cache/
 
 __pycache__/
 
 *.pyc
 
 .venv/
+
+.playwright-cli/
 
 # VS files
 
@@ -32,4 +50,22 @@ __pycache__/
 *.mgd
 
 config.json
+
+# Local agent/operator state
+
+.claude/
+.mcp.json
+CLAUDE_CONTEXT.md
+AGENT_CONTEXT.md
+scratchpad.txt
+CODEX_CURRENT_HANDOFF.md
+PHASE2_CHAT_SUMMARY_*.md
+admin-logs/
+diagnose_localsystem_cv.ps1
+MajestyGuard.CVEngine/
+docs/legacy-imports/logs/
+docs/legacy-imports/
+docs/ORIGINAL_ARCHITECTURE.md
+docs/OSS_SIGNING_READINESS_DRAFTS.md
+docs/SIGNING_APPLICATION_PACK.md
 

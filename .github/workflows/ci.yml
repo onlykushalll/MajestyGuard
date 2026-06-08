@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  dotnet-tests:
+    name: .NET tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore .\src\MajestyGuard.Tests\MajestyGuard.Tests.csproj
+
+      - name: Test
+        run: dotnet test .\src\MajestyGuard.Tests\MajestyGuard.Tests.csproj --configuration Release --no-restore
+
+  python-syntax:
+    name: Python syntax checks
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile CV engine
+        run: python -m compileall -q .\src\MajestyGuard.CVEngine

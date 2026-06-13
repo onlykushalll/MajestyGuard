@@ -5,18 +5,28 @@
     <AssemblyName>MajestyGuard.Overlay</AssemblyName>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- Platform: x64 only — matches Core, Service, DpapiHelper -->
     <Platforms>x64</Platforms>
-    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <PlatformTarget>x64</PlatformTarget>
+    <!-- NOTE: No <RuntimeIdentifier> here. Adding it moves output to a
+         win-x64\ subfolder, which breaks ProjectReference resolution for
+         the Tests project (it can't find Core at the new path). The
+         Service project uses RID because it's the actual executable. -->
+
     <OutputType>WinExe</OutputType>
-    <!-- Required for WinUI 3 -->
     <UseWinUI>true</UseWinUI>
-    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+
+    <!-- Disable all Appx/MSIX packaging — this is an unpackaged app.
+         ExpandPayloadDirectories is handled by Directory.Build.targets. -->
     <WindowsPackageType>None</WindowsPackageType>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <EnableMsixTooling>false</EnableMsixTooling>
     <AppxPackage>false</AppxPackage>
     <GenerateAppxPackageOnBuild>false</GenerateAppxPackageOnBuild>
+    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+    <GenerateProjectPriFile>false</GenerateProjectPriFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -35,9 +45,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.WindowsAppSDK"               Version="1.6.250108002"/>
-    <PackageReference Include="Microsoft.Graphics.Win2D"              Version="1.3.0"/>
-    <PackageReference Include="Microsoft.Extensions.Logging"          Version="8.0.0"/>
-    <PackageReference Include="Microsoft.Extensions.Logging.Console"  Version="8.0.0"/>
+    <PackageReference Include="Microsoft.WindowsAppSDK"              Version="1.6.250108002"/>
+    <PackageReference Include="Microsoft.Graphics.Win2D"             Version="1.3.0"/>
+    <PackageReference Include="Microsoft.Extensions.Logging"         Version="8.0.0"/>
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.0"/>
   </ItemGroup>
+
 </Project>

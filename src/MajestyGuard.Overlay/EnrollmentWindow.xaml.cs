@@ -1,24 +1,22 @@
-// MajestyGuard.Overlay/EnrollmentWindow.xaml.cs
+﻿// MajestyGuard.Overlay/EnrollmentWindow.xaml.cs
 // Full enrollment wizard logic.
-//
-// FLOW:
-//   Step 0  Welcome
-//   Step 1  Camera check (opens capture loop for preview)
-//   Step 2  Capture Front      → sends EnrollFrameMsg(Front) to Service
-//   Step 3  Capture SlightLeft → sends EnrollFrameMsg(SlightLeft)
-//   Step 4  Capture SlightRight→ sends EnrollFrameMsg(SlightRight)
-//   Step 5  Optional glasses   → sends EnrollFrameMsg(WithGlasses) or skip
-//   Step 6  Complete → Service calls DpapiHelper to save, shows finish
-//
-// LIVE PREVIEW:
-//   OpenCV is NOT available in C#. Preview is achieved by sending
-//   a "stream_frame" command to CVEngine via the enrollment pipe,
-//   receiving a JPEG base64 frame, and displaying it as a BitmapImage.
-//   Frame rate: 15 FPS during preview, 0 outside capture steps.
+//ha
+// FIXES IN THIS VERSION:
+//   FIX-CAPTURE: OnFrameArrived now saves _latestFrame copy (thread-safe).
+//                SendEnrollCaptureAsync uses BitmapEncoder on _latestFrame
+//                instead of CapturePhotoToStreamAsync (which conflicts with
+//                the running MediaFrameReader â€” "capture already running" error).
+//   FIX-FINALIZE: FinalizeEnrollmentAsync calls enroll_from_jpegs.py (Python
+//                subprocess) to extract face embeddings from the captured JPEGs,
+//                then saves them via EmbeddingStore with DPAPI-NG.
 
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
@@ -28,6 +26,11 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Graphics.Imaging;
+using Windows.Media.Capture;
+using Windows.Media.Capture.Frames;
+using Windows.Media.MediaProperties;
+using Windows.Storage.Streams;
 using Windows.UI;
 using MajestyGuard.Core.IPC;
 using MajestyGuard.Core.Security;
@@ -36,7 +39,6 @@ using Microsoft.Extensions.Logging;
 
 namespace MajestyGuard.Overlay
 {
-    // ── Step model for the left rail ──────────────────────────────────
     public class EnrollStep : INotifyPropertyChanged
     {
         public string Number  { get; set; } = "";
@@ -53,24 +55,21 @@ namespace MajestyGuard.Overlay
 
         public SolidColorBrush DotFill => State switch
         {
-            StepState.Active    => new SolidColorBrush(Color.FromArgb(255, 10, 132, 255)),  // #0A84FF
-            StepState.Complete  => new SolidColorBrush(Color.FromArgb(255, 48, 209, 88)),   // #30D158
-            _                   => new SolidColorBrush(Color.FromArgb(255, 30, 30, 34)),    // #1E1E22
+            StepState.Active    => new SolidColorBrush(Color.FromArgb(255, 10, 132, 255)),
+            StepState.Complete  => new SolidColorBrush(Color.FromArgb(255, 48, 209, 88)),
+            _                   => new SolidColorBrush(Color.FromArgb(255, 30, 30, 34)),
         };
-
         public SolidColorBrush NumberFore => State == StepState.Active
             ? new SolidColorBrush(Color.FromArgb(255, 255, 255, 255))
             : new SolidColorBrush(Color.FromArgb(255, 80, 80, 88));
-
         public SolidColorBrush LabelFore => State switch
         {
             StepState.Active    => new SolidColorBrush(Color.FromArgb(255, 255, 255, 255)),
             StepState.Complete  => new SolidColorBrush(Color.FromArgb(255, 48, 209, 88)),
             _                   => new SolidColorBrush(Color.FromArgb(255, 80, 80, 88)),
         };
-
-        public Visibility CheckVisible   => State == StepState.Complete ? Visibility.Visible : Visibility.Collapsed;
-        public Visibility NumberVisible  => State != StepState.Complete  ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility CheckVisible  => State == StepState.Complete ? Visibility.Visible : Visibility.Collapsed;
+        public Visibility NumberVisible => State != StepState.Complete  ? Visibility.Visible : Visibility.Collapsed;
 
         public event PropertyChangedEventHandler? PropertyChanged;
         private void OnPropertyChanged([CallerMemberName] string? n = null)
@@ -79,7 +78,6 @@ namespace MajestyGuard.Overlay
 
     public enum StepState { Pending, Active, Complete }
 
-    // ─────────────────────────────────────────────────────────────────
     public sealed partial class EnrollmentWindow : Window
     {
         private readonly ILogger<EnrollmentWindow> _logger;
@@ -90,16 +88,23 @@ namespace MajestyGuard.Overlay
         private int _currentStep = 0;
         private int _currentAngleIndex = 0;
 
-        // Angle sequence for capture steps
+        // Camera
+        private MediaCapture? _mediaCapture;
+        private MediaFrameReader? _frameReader;
+        private readonly SoftwareBitmapSource _previewSource = new();
+        private long _lastFrameTicks;
+        private readonly Dictionary<string, string> _capturedFramePaths = new();
+        private readonly object _frameLock = new();
+        private SoftwareBitmap? _latestFrame;  // populated by OnFrameArrived
+
         private static readonly (string Angle, string Title, string Subtitle, bool Optional)[] Angles =
         [
             ("Front",       "Look straight ahead",    "Keep your face centred in the oval and hold still.",              false),
-            ("SlightLeft",  "Turn slightly left",      "Rotate your head about 15° to your left.",                       false),
-            ("SlightRight", "Turn slightly right",     "Rotate your head about 15° to your right.",                      false),
+            ("SlightLeft",  "Turn slightly left",      "Rotate your head about 15Â° to your left.",                       false),
+            ("SlightRight", "Turn slightly right",     "Rotate your head about 15Â° to your right.",                      false),
             ("WithGlasses", "Put on your glasses",     "If you wear glasses, put them on now. Otherwise skip this step.", true),
         ];
 
-        // Observable step list for the left rail
         public ObservableCollection<EnrollStep> Steps { get; } =
         [
             new() { Number = "1", Label = "Welcome",       State = StepState.Active  },
@@ -115,13 +120,10 @@ namespace MajestyGuard.Overlay
             _logger = logger;
             _config = config;
             InitializeComponent();
-            // Size set in CenterOnScreen() — scales to display resolution
             CenterOnScreen();
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // NAVIGATION
-        // ─────────────────────────────────────────────────────────────
+        // â”€â”€ NAVIGATION â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         private void ShowStep(int step)
         {
@@ -134,14 +136,9 @@ namespace MajestyGuard.Overlay
 
         private void AdvanceStep()
         {
-            if (_currentStep < Steps.Count)
-                Steps[_currentStep].State = StepState.Complete;
-
+            if (_currentStep < Steps.Count) Steps[_currentStep].State = StepState.Complete;
             _currentStep++;
-
-            if (_currentStep < Steps.Count)
-                Steps[_currentStep].State = StepState.Active;
-
+            if (_currentStep < Steps.Count) Steps[_currentStep].State = StepState.Active;
             ShowStep(_currentStep);
             _ = OnStepEnteredAsync(_currentStep);
         }
@@ -150,39 +147,33 @@ namespace MajestyGuard.Overlay
         {
             switch (step)
             {
-                case 1:
-                    await StartCameraPreviewAsync();
-                    break;
-
-                case 2:
-                case 3:
-                case 4:
-                case 5:
+                case 1: await StartCameraPreviewAsync(); break;
+                case 2: case 3: case 4: case 5:
                     _currentAngleIndex = step - 2;
-                    var (angle, title, subtitle, optional) = Angles[_currentAngleIndex];
+                    var (_, title, subtitle, optional) = Angles[_currentAngleIndex];
                     CaptureTitle.Text    = title;
                     CaptureSubtitle.Text = subtitle;
                     BtnSkipAngle.Visibility = optional ? Visibility.Visible : Visibility.Collapsed;
                     BtnCapture.Visibility   = Visibility.Visible;
+                    BtnCapture.IsEnabled    = true;
                     BtnRetry.Visibility     = Visibility.Collapsed;
                     ResetOvalToIdle();
                     SetCaptureStatus("Position your face in the oval", "#666666");
                     break;
-
                 case 6:
+                    CompleteSubtitle.Text = "Generating your face profile — please wait...";
                     await FinalizeEnrollmentAsync();
+                    CompleteSubtitle.Text = "Face recognition is now active. Your PC will lock automatically when you step away.";
                     break;
             }
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // BUTTON HANDLERS
-        // ─────────────────────────────────────────────────────────────
+        // â”€â”€ BUTTON HANDLERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-        private void BtnGetStarted_Click(object s, RoutedEventArgs e)   => AdvanceStep();
-        private void BtnCameraOk_Click(object s, RoutedEventArgs e)     => AdvanceStep();
-        private void BtnSkipAngle_Click(object s, RoutedEventArgs e)    => AdvanceStep();
-        private void BtnFinish_Click(object s, RoutedEventArgs e)       => Close();
+        private void BtnGetStarted_Click(object s, RoutedEventArgs e) => AdvanceStep();
+        private void BtnCameraOk_Click(object s, RoutedEventArgs e)   => AdvanceStep();
+        private void BtnSkipAngle_Click(object s, RoutedEventArgs e)  => AdvanceStep();
+        private void BtnFinish_Click(object s, RoutedEventArgs e)     => Close();
 
         private void BtnSwitchCamera_Click(object s, RoutedEventArgs e)
         {
@@ -202,7 +193,7 @@ namespace MajestyGuard.Overlay
             if (success)
             {
                 SetOvalReady();
-                SetCaptureStatus("Captured ✓", "#30D158");
+                SetCaptureStatus("Captured âœ“", "#30D158");
                 CaptureDot.Fill = new SolidColorBrush(Color.FromArgb(255, 48, 209, 88));
                 await Task.Delay(900);
                 AdvanceStep();
@@ -212,7 +203,7 @@ namespace MajestyGuard.Overlay
                 BtnCapture.IsEnabled = true;
                 BtnRetry.Visibility  = Visibility.Visible;
                 ResetOvalToIdle();
-                SetCaptureStatus("Try again — face not detected clearly", "#FF453A");
+                SetCaptureStatus("Try again â€” face not detected clearly", "#FF453A");
                 CaptureDot.Fill = new SolidColorBrush(Color.FromArgb(255, 255, 69, 58));
             }
         }
@@ -232,9 +223,7 @@ namespace MajestyGuard.Overlay
             CompleteSubtitle.Text = "Face recognition is now active. Your PC will lock automatically when you step away.";
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // PIPE COMMS
-        // ─────────────────────────────────────────────────────────────
+        // â”€â”€ PIPE (unused in standalone enrollment mode) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         private async Task ConnectToPipeAsync()
         {
@@ -245,70 +234,82 @@ namespace MajestyGuard.Overlay
 
         private Task OnPipeMessage(IpcMessage msg) => Task.CompletedTask;
 
-        /// <summary>
-        /// Sends EnrollFrame command, waits for EnrollResult response.
-        /// Times out after 8 seconds.
-        /// </summary>
+        // â”€â”€ CAPTURE (FIX-CAPTURE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Uses _latestFrame stored by OnFrameArrived instead of
+        // CapturePhotoToStreamAsync (which fails when MediaFrameReader
+        // is already running â€” "capture is already running").
+
         private async Task<bool> SendEnrollCaptureAsync(string angle)
         {
-            if (_pipe == null)
-            {
-                try { await ConnectToPipeAsync(); }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Cannot connect to CV pipe for enrollment");
-                    ShowError("Cannot connect to the face engine. Is the service running?");
-                    return false;
-                }
-            }
-
-            var tcs = new TaskCompletionSource<bool>();
-
-            // Temporary handler for this capture's result
-            Func<IpcMessage, Task> resultHandler = msg =>
-            {
-                if (msg is EnrollResultMsg result && result.Angle == angle)
-                    tcs.TrySetResult(result.Success);
-                return Task.CompletedTask;
-            };
-
-            if (_pipe != null)
-                _pipe.MessageReceived += resultHandler;
-
             try
             {
-                var cmd = new EnrollFrameMsg { Angle = ParseAngle(angle) };
-                if (_pipe != null)
-                    await _pipe.SendAsync(cmd);
-
-                var timeout = Task.Delay(8000, _cts.Token);
-                var completed = await Task.WhenAny(tcs.Task, timeout);
-
-                if (completed == timeout)
+                // Grab a thread-safe copy of the latest frame
+                SoftwareBitmap? frameCopy;
+                lock (_frameLock)
                 {
-                    ShowError("Capture timed out. Ensure your face is clearly visible.");
-                    return false;
+                    if (_latestFrame == null)
+                    {
+                        ShowError("No camera frame yet â€” wait a moment for the preview to start.");
+                        return false;
+                    }
+                    // Copy so the reader can keep overwriting _latestFrame
+                    frameCopy = SoftwareBitmap.Copy(_latestFrame);
                 }
 
-                return tcs.Task.Result;
+                using (frameCopy)
+                {
+                    var enrollDir = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                        "MajestyGuard", "enrollment");
+                    Directory.CreateDirectory(enrollDir);
+                    var filePath = Path.Combine(enrollDir, $"{angle}.jpg");
+
+                    // Encode to JPEG using BitmapEncoder (no photo-capture conflict)
+                    using var memStream = new InMemoryRandomAccessStream();
+                    var encoder = await BitmapEncoder.CreateAsync(
+                        BitmapEncoder.JpegEncoderId, memStream);
+
+                    // BitmapEncoder requires Bgra8 Premultiplied
+                    SoftwareBitmap toEncode;
+                    if (frameCopy.BitmapPixelFormat == BitmapPixelFormat.Bgra8 &&
+                        frameCopy.BitmapAlphaMode  == BitmapAlphaMode.Premultiplied)
+                    {
+                        toEncode = frameCopy;
+                    }
+                    else
+                    {
+                        toEncode = SoftwareBitmap.Convert(
+                            frameCopy, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+                    }
+
+                    encoder.SetSoftwareBitmap(toEncode);
+                    await encoder.FlushAsync();
+                    if (toEncode != frameCopy) toEncode.Dispose();
+
+                    // Write to disk
+                    memStream.Seek(0);
+                    using var diskStream = File.Create(filePath);
+                    await memStream.AsStreamForRead().CopyToAsync(diskStream);
+
+                    _capturedFramePaths[angle] = filePath;
+                    _logger.LogInformation("Captured {Angle} â†’ {Path}", angle, filePath);
+                    return true;
+                }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Enrollment capture failed");
-                ShowError($"Error: {ex.Message}");
+                _logger.LogError(ex, "Capture failed for {Angle}", angle);
+                ShowError($"Capture failed: {ex.Message}");
                 return false;
-            }
-            finally
-            {
-                if (_pipe != null)
-                    _pipe.MessageReceived -= resultHandler;
             }
         }
 
+        // â”€â”€ FINALIZATION (FIX-FINALIZE) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Calls enroll_from_jpegs.py (Python) to extract face embeddings
+        // from the captured JPEG files, then saves them via EmbeddingStore.
+
         private async Task FinalizeEnrollmentAsync()
         {
-            // FIX-008: Do NOT save EnrolledUserSid until storage is verified.
-            // Old code saved SID regardless of DPAPI outcome → permanent lockout on failure.
             var sid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value;
             if (string.IsNullOrEmpty(sid))
             {
@@ -316,87 +317,388 @@ namespace MajestyGuard.Overlay
                 return;
             }
 
+            if (_capturedFramePaths.Count < 2)
+            {
+                ShowError($"Only {_capturedFramePaths.Count} angle(s) captured. Need at least 2.");
+                return;
+            }
+
+            SetCaptureStatus("Generating face embeddings...", "#0A84FF");
+
             try
             {
-                // Tell CVEngine to finalize
-                if (_pipe != null)
+                var cvEngineDir = ResolveCvEngineDirectory();
+                var pythonExe = ResolvePythonExe(cvEngineDir);
+                var scriptPath = Path.Combine(cvEngineDir, "enroll_from_jpegs.py");
+                var modelDir = ResolveModelDirectory(cvEngineDir);
+
+                if (!IsInsightFaceModelReady(modelDir))
                 {
-                    var finalCmd = JsonSerializer.Serialize(new { cmd = "enrollment_finalize", user_sid = sid });
-                    await Task.CompletedTask; // CODEX: pipe.SendRawAsync(finalCmd)
+                    ShowError(
+                        "Face models are not ready. Run the staged installer without -SkipModelDownload, " +
+                        "or run CVEngine\\download_models.py before enrollment.");
+                    _logger.LogError("InsightFace buffalo_l model missing from {ModelDir}", modelDir);
+                    return;
                 }
 
-                // Verify storage succeeded before touching config
-                var store = new MajestyGuard.Core.Security.EmbeddingStore(_config.EmbeddingStorePath);
-                EnrollmentRecord? record = null;
-                try { record = store.Load(); }
-                catch (Exception ex)
+                _logger.LogInformation("Running enrollment script: {Script}", scriptPath);
+
+                var psi = new ProcessStartInfo
                 {
-                    _logger.LogError(ex, "EmbeddingStore.Load() failed after save");
-                    ShowError("Enrollment save failed — storage error. Please retry.");
-                    return; // Do NOT update config
+                    FileName               = pythonExe,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError  = true,
+                    UseShellExecute        = false,
+                    CreateNoWindow         = true,
+                };
+                psi.ArgumentList.Add(scriptPath);
+                psi.ArgumentList.Add(modelDir);
+                foreach (var jpegPath in _capturedFramePaths.Values)
+                    psi.ArgumentList.Add(jpegPath);
+
+                using var proc = Process.Start(psi)
+                    ?? throw new InvalidOperationException("Failed to start Python process");
+
+                var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+                var stderrTask = proc.StandardError.ReadToEndAsync();
+                await Task.WhenAll(stdoutTask, stderrTask);
+                await proc.WaitForExitAsync();
+
+                var stdout = stdoutTask.Result;
+                var stderr = stderrTask.Result;
+
+                if (!string.IsNullOrWhiteSpace(stderr))
+                    _logger.LogDebug("enroll_from_jpegs.py stderr:\n{Stderr}", stderr);
+
+                if (proc.ExitCode != 0)
+                {
+                    var errMsg = TryParseJsonError(stdout) ?? $"Python exited {proc.ExitCode}";
+                    _logger.LogError("Enrollment script failed: {Msg}\nstdout:{Out}", errMsg, stdout);
+                    ShowError($"Face processing failed: {errMsg}");
+                    return;
                 }
 
-                if (record == null || record.Embeddings.Length < 3 || record.UserSid != sid)
+                // ONNX runtime prints "Applied providers: [...]" to stdout alongside our JSON.
+                // Extract only the line that is valid JSON (starts with '{').
+                var jsonLine = stdout
+                    .Split('\n')
+                    .Select(l => l.Trim())
+                    .LastOrDefault(l => l.StartsWith("{") && l.EndsWith("}"));
+
+                if (string.IsNullOrEmpty(jsonLine))
                 {
-                    ShowError("Enrollment verification failed. Please retry the capture process.");
-                    return; // Do NOT update config
+                    _logger.LogError("No JSON found in script output:\n{Out}", stdout);
+                    ShowError("Face processing failed — no output from embedding script. Check logs.");
+                    return;
                 }
 
-                // Storage verified — NOW commit SID to config
+                var doc = JsonDocument.Parse(jsonLine);
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("embeddings", out var embArray) ||
+                    embArray.GetArrayLength() < 2)
+                {
+                    ShowError("Not enough valid face angles. Please retry enrollment.");
+                    return;
+                }
+
+                // Build EnrollmentRecord
+                var embeddings = embArray.EnumerateArray()
+                    .Select(arr => new FaceEmbedding
+                    {
+                        Vector = arr.EnumerateArray().Select(v => v.GetSingle()).ToArray()
+                    })
+                    .ToArray();
+
+                var record = new EnrollmentRecord
+                {
+                    UserSid    = sid,
+                    Embeddings = embeddings,
+                    EnrolledAt = DateTime.UtcNow,
+                };
+
+                // Save via EmbeddingStore (DPAPI-NG encrypted)
+                var store = new EmbeddingStore(_config.EmbeddingStorePath);
+                store.Save(record);
+
+                // Verify the save
+                var verify = store.Load();
+                if (verify == null || verify.Embeddings.Length < 2 || verify.UserSid != sid)
+                {
+                    ShowError("Enrollment save verification failed. Please retry.");
+                    return;
+                }
+
+                // Write enrolled SID to HKLM for Credential Provider
+                TryWriteEnrolledSidToRegistry(sid);
+
+                // Commit to config â€” only after verified
                 _config.EnrolledUserSid = sid;
                 _config.Save();
 
-                _logger.LogInformation("Enrollment finalized and verified for SID: {Sid}", sid);
+                _logger.LogInformation(
+                    "Enrollment complete â€” {Count} embeddings saved for SID: {Sid}",
+                    embeddings.Length, sid);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "FinalizeEnrollmentAsync threw");
-                ShowError($"Enrollment failed: {ex.Message}. Please retry.");
-                // EnrolledUserSid NOT updated — enrollment incomplete
+                ShowError($"Enrollment failed: {ex.Message}");
             }
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // CAMERA PREVIEW (Step 1)
-        // Receives JPEG frames from CVEngine via pipe at 15 FPS.
-        // CODEX: Add a "stream_frames" command to cv_server.py that
-        //        sends {"type":"PreviewFrame","jpeg_b64":"..."} messages.
-        //        Here we decode and display them.
-        // ─────────────────────────────────────────────────────────────
+        private static string? TryParseJsonError(string json)
+        {
+            try
+            {
+                var doc = JsonDocument.Parse(json.Trim());
+                if (doc.RootElement.TryGetProperty("error", out var err))
+                    return err.GetString();
+            }
+            catch { }
+            return null;
+        }
+
+        private string ResolveCvEngineDirectory()
+        {
+            var candidates = new List<string>();
+            var baseDir = AppContext.BaseDirectory;
+
+            candidates.Add(Path.Combine(baseDir, "CVEngine"));
+            candidates.Add(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "MajestyGuard", "CVEngine"));
+
+            for (var dir = new DirectoryInfo(baseDir); dir != null; dir = dir.Parent)
+            {
+                candidates.Add(Path.Combine(dir.FullName, "CVEngine"));
+                candidates.Add(Path.Combine(dir.FullName, "MajestyGuard.CVEngine"));
+                candidates.Add(Path.Combine(dir.FullName, "src", "MajestyGuard.CVEngine"));
+            }
+
+            foreach (var candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (File.Exists(Path.Combine(candidate, "enroll_from_jpegs.py")))
+                    return candidate;
+            }
+
+            throw new DirectoryNotFoundException(
+                "Could not find MajestyGuard CVEngine. Rebuild with .\\Build.ps1 or reinstall the staged package.");
+        }
+
+        private string ResolvePythonExe(string cvEngineDir)
+        {
+            var candidates = new List<string>();
+            var configured = Environment.GetEnvironmentVariable("MG_PYTHON");
+            if (!string.IsNullOrWhiteSpace(configured))
+                candidates.Add(configured);
+
+            candidates.Add(Path.Combine(cvEngineDir, ".venv", "Scripts", "python.exe"));
+            candidates.Add(Path.Combine(AppContext.BaseDirectory, "python", "python.exe"));
+
+            var cvParent = Directory.GetParent(cvEngineDir);
+            if (cvParent != null)
+                candidates.Add(Path.Combine(cvParent.FullName, "python", "python.exe"));
+
+            for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
+            {
+                candidates.Add(Path.Combine(dir.FullName, "MajestyGuard.CVEngine", ".venv", "Scripts", "python.exe"));
+                candidates.Add(Path.Combine(dir.FullName, "src", "MajestyGuard.CVEngine", ".venv", "Scripts", "python.exe"));
+            }
+
+            var pythonExe = candidates
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(File.Exists);
+
+            return pythonExe ?? "python";
+        }
+
+        private string ResolveModelDirectory(string cvEngineDir)
+        {
+            var candidates = new List<string>();
+            var configured = Environment.GetEnvironmentVariable("MG_MODEL_DIR");
+            if (!string.IsNullOrWhiteSpace(configured))
+                candidates.Add(configured);
+
+            if (!string.IsNullOrWhiteSpace(_config.ModelDirectory))
+                candidates.Add(_config.ModelDirectory);
+
+            candidates.Add(Path.Combine(AppContext.BaseDirectory, "models"));
+            candidates.Add(Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "MajestyGuard", "models"));
+
+            for (var dir = new DirectoryInfo(cvEngineDir); dir != null; dir = dir.Parent)
+                candidates.Add(Path.Combine(dir.FullName, "models"));
+
+            var existing = candidates
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(Directory.Exists)
+                .ToList();
+
+            var ready = existing.FirstOrDefault(IsInsightFaceModelReady);
+            if (!string.IsNullOrEmpty(ready))
+                return ready;
+
+            return existing.FirstOrDefault()
+                ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                    "MajestyGuard", "models");
+        }
+
+        private static bool IsInsightFaceModelReady(string modelDir)
+        {
+            var buffaloDir = Path.Combine(modelDir, "models", "buffalo_l");
+            return File.Exists(Path.Combine(buffaloDir, "det_10g.onnx")) &&
+                   File.Exists(Path.Combine(buffaloDir, "w600k_r50.onnx"));
+        }
+
+        private static void TryWriteEnrolledSidToRegistry(string sid)
+        {
+            try
+            {
+                using var key = Microsoft.Win32.Registry.LocalMachine.CreateSubKey(
+                    @"SOFTWARE\MajestyGuard", writable: true);
+                key?.SetValue("EnrolledUserSid", sid,
+                    Microsoft.Win32.RegistryValueKind.String);
+            }
+            catch (Exception ex)
+            {
+                // Non-fatal â€” CP will fall back to reading from config file
+                System.Diagnostics.Debug.WriteLine($"Registry write failed: {ex.Message}");
+            }
+        }
+
+        // â”€â”€ CAMERA PREVIEW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         private async Task StartCameraPreviewAsync()
         {
-            CameraStatusText.Text = "Connecting to camera...";
-            BtnCameraOk.IsEnabled = false;
+            CameraStatusText.Text    = "Connecting to camera...";
+            BtnCameraOk.IsEnabled    = false;
             NoPreviewText.Visibility = Visibility.Collapsed;
 
             try
             {
-                if (_pipe == null) await ConnectToPipeAsync();
+                await StopCameraAsync();
 
-                // Ask CV engine to start preview stream
-                var startCmd = JsonSerializer.Serialize(new { cmd = "start_preview", fps = 15 });
-                // CODEX: pipe.SendRawAsync(startCmd)
+                _mediaCapture = new MediaCapture();
+                var settings = new MediaCaptureInitializationSettings
+                {
+                    StreamingCaptureMode = StreamingCaptureMode.Video,
+                    MemoryPreference     = MediaCaptureMemoryPreference.Cpu,
+                };
 
-                // Simulate camera found for now
-                await Task.Delay(600);
+                var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
+                    Windows.Devices.Enumeration.DeviceClass.VideoCapture);
+                var localDevices = devices
+                    .Where(d => d.IsEnabled
+                        && !d.Name.Contains("Phone", StringComparison.OrdinalIgnoreCase)
+                        && !d.Name.Contains("Virtual", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (localDevices.Count == 0)
+                    localDevices = devices.ToList();
+
+                if (localDevices.Count == 0)
+                {
+                    CameraStatusText.Text = "No camera found.";
+                    NoPreviewText.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                var cameraIndex = Math.Clamp(_config.CameraDeviceIndex, 0, localDevices.Count - 1);
+                settings.VideoDeviceId = localDevices[cameraIndex].Id;
+
+                await _mediaCapture.InitializeAsync(settings);
+
+                var colorSource = _mediaCapture.FrameSources.Values
+                    .FirstOrDefault(s => s.Info.MediaStreamType == MediaStreamType.VideoRecord)
+                    ?? _mediaCapture.FrameSources.Values
+                    .FirstOrDefault(s => s.Info.MediaStreamType == MediaStreamType.VideoPreview)
+                    ?? _mediaCapture.FrameSources.Values.FirstOrDefault();
+
+                if (colorSource == null)
+                {
+                    CameraStatusText.Text    = "Camera not found.";
+                    NoPreviewText.Visibility = Visibility.Visible;
+                    return;
+                }
+
+                _frameReader = await _mediaCapture.CreateFrameReaderAsync(
+                    colorSource, MediaEncodingSubtypes.Bgra8);
+                _frameReader.FrameArrived += OnFrameArrived;
+                await _frameReader.StartAsync();
+
+                // Wire preview Image source
+                PreviewImage.Source  = _previewSource;
+                CapturePreview.Source = _previewSource;
+
                 CameraStatusText.Text = "Camera ready";
                 BtnCameraOk.IsEnabled = true;
-
-                // CODEX: Subscribe to PreviewFrame messages here and update PreviewImage.Source
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Camera preview failed");
-                CameraStatusText.Text = "Camera not found. Check your webcam is connected.";
+                CameraStatusText.Text    = "Camera not found. Check your webcam is connected.";
                 NoPreviewText.Visibility = Visibility.Visible;
                 ShowError("Camera unavailable. Connect a webcam and try again.");
             }
         }
 
-        // ─────────────────────────────────────────────────────────────
-        // UI HELPERS
-        // ─────────────────────────────────────────────────────────────
+        private void OnFrameArrived(MediaFrameReader sender, MediaFrameArrivedEventArgs args)
+        {
+            // Throttle to ~15 FPS
+            var now = DateTime.UtcNow.Ticks;
+            if (now - Interlocked.Read(ref _lastFrameTicks) < TimeSpan.TicksPerSecond / 15)
+                return;
+            Interlocked.Exchange(ref _lastFrameTicks, now);
+
+            using var frameRef = sender.TryAcquireLatestFrame();
+            var softwareBitmap = frameRef?.VideoMediaFrame?.SoftwareBitmap;
+            if (softwareBitmap == null) return;
+
+            var converted = SoftwareBitmap.Convert(
+                softwareBitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied);
+
+            // FIX-CAPTURE: Save a copy for SendEnrollCaptureAsync to use.
+            // Must copy before DispatcherQueue async lambda takes ownership.
+            SoftwareBitmap captureCopy = SoftwareBitmap.Copy(converted);
+            lock (_frameLock)
+            {
+                _latestFrame?.Dispose();
+                _latestFrame = captureCopy;
+            }
+
+            bool queued = DispatcherQueue.TryEnqueue(async () =>
+            {
+                try   { await _previewSource.SetBitmapAsync(converted); }
+                finally { converted.Dispose(); }
+            });
+            if (!queued) converted.Dispose();
+        }
+
+        private async Task StopCameraAsync()
+        {
+            if (_frameReader != null)
+            {
+                _frameReader.FrameArrived -= OnFrameArrived;
+                await _frameReader.StopAsync();
+                _frameReader.Dispose();
+                _frameReader = null;
+            }
+            if (_mediaCapture != null)
+            {
+                _mediaCapture.Dispose();
+                _mediaCapture = null;
+            }
+            lock (_frameLock)
+            {
+                _latestFrame?.Dispose();
+                _latestFrame = null;
+            }
+        }
+
+        // â”€â”€ UI HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
         private void SetCaptureStatus(string text, string hexColor)
         {
@@ -445,18 +747,11 @@ namespace MajestyGuard.Overlay
         {
             var area = Microsoft.UI.Windowing.DisplayArea.GetFromWindowId(
                 AppWindow.Id, Microsoft.UI.Windowing.DisplayAreaFallback.Primary);
-
-            // Scale window size to display: 680×500 base, max 860×620
-            // Ensures it looks right on 1080p, 1440p, and 4K
             var displayW = area.WorkArea.Width;
             var displayH = area.WorkArea.Height;
-
-            // Use 40% of screen width, capped min/max
             var winW = Math.Clamp((int)(displayW * 0.40), 680, 860);
             var winH = Math.Clamp((int)(winW * (500.0 / 680.0)), 500, 630);
-
             AppWindow.Resize(new Windows.Graphics.SizeInt32(winW, winH));
-
             var x = (displayW - winW) / 2;
             var y = (displayH - winH) / 2;
             AppWindow.Move(new Windows.Graphics.PointInt32(x, y));
@@ -471,15 +766,14 @@ namespace MajestyGuard.Overlay
             _              => EnrollmentAngle.Front,
         };
 
-        // Cleanup
-        private void Window_Closed(object sender, WindowEventArgs args)
+        private async void Window_Closed(object sender, WindowEventArgs args)
         {
             _cts.Cancel();
+            await StopCameraAsync();
             _pipe?.Dispose();
         }
     }
 
-    // Extra IPC message type for enrollment results from CVEngine
     public class EnrollResultMsg : IpcMessage
     {
         public EnrollResultMsg() : base("EnrollResult") { }
@@ -488,3 +782,5 @@ namespace MajestyGuard.Overlay
         public string Error   { get; init; } = "";
     }
 }
+
+

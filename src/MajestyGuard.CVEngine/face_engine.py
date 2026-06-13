@@ -2,26 +2,23 @@
 # Core computer vision pipeline.
 # Handles: face detection, recognition, embedding generation, liveness check.
 #
-# MODEL: InsightFace with buffalo_l (ArcFace backbone)
-#   - Detection:    RetinaFace (bundled in buffalo_l)
-#   - Recognition:  ArcFace R100 — 512-dim embeddings
-#   - Liveness:     Custom LBP-based texture classifier (liveness_detector.py)
+# RECOGNITION MODEL PRIORITY:
+#   1. AdaFace R100 (adaface_r100.onnx) — quality-adaptive margin, best on webcam
+#   2. ArcFace R100 via InsightFace buffalo_l — fallback if AdaFace not present
 #
-# PERFORMANCE BUDGET:
-#   - Inference: ≤ 200ms per frame on Intel Iris Xe (no discrete GPU)
-#   - Use ONNX Runtime with DirectML execution provider on Windows
-#   - CPU fallback if DirectML unavailable
+# DETECTION: RetinaFace (bundled in buffalo_l)
+# LIVENESS:  12-layer passive anti-spoof stack (liveness_detector.py)
 #
-# CODEX NOTES:
-#   - buffalo_l downloads ~300MB on first run. Pre-download in installer.
-#   - Camera frames are NEVER written to disk. Zero after use.
-#   - All processing is 100% local. No network calls.
+# PREPROCESSING: CLAHE on L channel (LAB) for low-light (<100 lux) enhancement.
+# QUALITY GATE: det_score × sharpness × illumination × face_size → skip bad frames.
+#
+# Camera frames are NEVER written to disk. Zeroed after use.
+# All processing is 100% local. No network calls.
 
 import os
 import time
 import logging
 import subprocess
-import re
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
@@ -29,7 +26,6 @@ import cv2
 
 # InsightFace — install: pip install insightface onnxruntime-directml
 try:
-    import insightface
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
 except ImportError:
@@ -37,7 +33,7 @@ except ImportError:
     logging.warning("InsightFace not installed. Run: pip install insightface onnxruntime-directml")
 
 from liveness_detector import LivenessDetector
-from virtual_camera_detector import is_virtual_camera, invalidate_camera_cache
+from virtual_camera_detector import is_virtual_camera
 
 logger = logging.getLogger("MajestyGuard.CVEngine")
 
@@ -81,6 +77,7 @@ class FaceEngine:
         self._consecutive_liveness = 0
         self._consensus_threshold = 3  # frames
         self._last_recognition_score = 0.0
+        self._min_frame_quality = 0.35
 
         # P-1: Pre-allocate CLAHE once — creating it per-frame wastes CPU
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -271,6 +268,29 @@ class FaceEngine:
 
         # ── Liveness check (runs on LARGEST face = assumed primary) ──
         primary_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        quality_score = self._frame_quality(frame, primary_face)
+        if quality_score < self._min_frame_quality:
+            logger.debug(
+                "Frame quality too low (%.2f < %.2f) - skipping",
+                quality_score, self._min_frame_quality,
+            )
+            for face in faces:
+                if hasattr(face, "normed_embedding") and face.normed_embedding is not None:
+                    face.normed_embedding[:] = 0
+                if hasattr(face, "embedding") and face.embedding is not None:
+                    face.embedding[:] = 0
+            self._zero_frame(frame)
+            return FrameResult(
+                face_count=face_count,
+                primary_user_present=False,
+                recognition_score=0.0,
+                liveness_score=0.0,
+                liveness_passed=False,
+                virtual_camera_detected=False,
+                camera_obstructed=False,
+                inference_ms=(time.perf_counter() - t_start) * 1000,
+            )
+
         liveness_score  = self._liveness.score(frame, primary_face)
         liveness_passed = liveness_score >= 0.85
 
@@ -392,6 +412,40 @@ class FaceEngine:
         except Exception as e:
             logger.debug("Camera DeviceID lookup failed: %s", e)
             return self._backend_name or None
+
+    def _frame_quality(self, frame: np.ndarray, face) -> float:
+        """
+        Estimate whether a frame is sharp, lit, and large enough for recognition.
+        Low-quality frames are ignored instead of poisoning consensus state.
+        """
+        try:
+            det_score = float(getattr(face, "det_score", 0.75))
+            x1, y1, x2, y2 = [int(v) for v in face.bbox]
+            h, w = frame.shape[:2]
+            roi = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            if roi.size == 0:
+                return det_score * 0.5
+
+            gray = cv2.cvtColor(cv2.resize(roi, (64, 64)), cv2.COLOR_BGR2GRAY)
+            sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+            sharp_score = float(np.clip(sharpness / 400.0, 0.0, 1.0))
+
+            ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
+            mean_y = float(np.mean(ycrcb[:, :, 0]))
+            illum_score = float(np.clip(1.0 - abs(mean_y - 128.0) / 128.0, 0.0, 1.0))
+
+            face_area = max(0, x2 - x1) * max(0, y2 - y1)
+            size_score = float(np.clip(face_area / ((h * w + 1) * 0.15), 0.0, 1.0))
+
+            return float(
+                det_score * 0.40 +
+                sharp_score * 0.30 +
+                illum_score * 0.20 +
+                size_score * 0.10
+            )
+        except Exception:
+            return 0.5
+
     def _enhance_frame(self, frame: np.ndarray) -> np.ndarray:
         """CLAHE lighting enhancement. Applied only in low-light conditions."""
         try:
@@ -421,7 +475,10 @@ class FaceEngine:
             h, w = frame.shape[:2]
             face_roi = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
             if face_roi.size > 0:
-                return self._get_embedding_adaface(face_roi)
+                try:
+                    return self._get_embedding_adaface(face_roi)
+                except Exception as e:
+                    logger.warning("AdaFace inference failed, falling back to ArcFace: %s", e)
         return face.normed_embedding
 
     # ── FIX-021: AdaFace optional recognition model ────────────────────────
@@ -459,6 +516,8 @@ class FaceEngine:
         if self._cap:
             self._cap.release()
             self._cap = None
+        if hasattr(self._liveness, "close"):
+            self._liveness.close()
         logger.info("FaceEngine shut down")
 
     def reset_session(self) -> None:

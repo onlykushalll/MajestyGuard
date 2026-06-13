@@ -7,6 +7,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Platforms>x64</Platforms>
+
+    <!-- x64 target so the output DLL is AMD64, matching Service/Overlay.
+         No <RuntimeIdentifier> — Core is a library, not an executable.
+         Adding RID to a library moves its output to a win-x64\ subfolder,
+         breaking ProjectReferences from Tests (which looks at the default
+         path). Only executable projects (Service, DpapiHelper) need RID. -->
+    <PlatformTarget>x64</PlatformTarget>
   </PropertyGroup>
 
   <ItemGroup>

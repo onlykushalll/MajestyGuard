@@ -1,0 +1,10 @@
+<Project>
+  <!--
+    VS 2026 Insiders (v18.0) does not ship Microsoft.Build.AppxPackage.dll.
+    Pre-set AppxMSBuildToolsPath so the NuGet targets condition is false
+    and it picks up our stub from Directory.Build.targets instead.
+  -->
+  <PropertyGroup>
+    <AppxMSBuildToolsPath Condition="!Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\AppxPackage\Microsoft.Build.AppxPackage.dll')">$(MSBuildProjectDirectory)\build\</AppxMSBuildToolsPath>
+  </PropertyGroup>
+</Project>

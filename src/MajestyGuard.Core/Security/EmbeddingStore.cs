@@ -240,7 +240,7 @@ namespace MajestyGuard.Core.Security
         [DllImport("ncrypt.dll")]
         private static extern int NCryptCloseProtectionDescriptor(nint hDescriptor);
 
-        [DllImport("ncryptprotect.dll", CharSet = CharSet.Unicode)]
+        [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
         private static extern int NCryptProtectSecret(
             nint   hDescriptor,
             uint   dwFlags,
@@ -251,7 +251,7 @@ namespace MajestyGuard.Core.Security
             out nint pbProtectedBlob,
             out uint cbProtectedBlob);
 
-        [DllImport("ncryptprotect.dll", CharSet = CharSet.Unicode)]
+        [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
         private static extern int NCryptUnprotectSecret(
             nint   hDescriptor,
             uint   dwFlags,

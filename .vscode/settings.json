@@ -30,5 +30,6 @@
         "**/obj/**":   true,
         "**/__pycache__/**": true,
         "**/models/**": true
-    }
+    },
+    "git.ignoreLimitWarning": true
 }

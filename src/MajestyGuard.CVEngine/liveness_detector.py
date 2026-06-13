@@ -1,21 +1,35 @@
 # MajestyGuard.CVEngine/liveness_detector.py
-# Multi-layer passive anti-spoofing. No user action required.
+# 12-layer passive anti-spoofing. No user action required.
 #
-# LAYERS:
-#   1. LBP texture      — real skin has micro-texture, printed photos are flat
-#   2. Specular reflect  — screens have uniform glare, real faces don't
-#   3. Color space       — YCbCr skin-tone validation + chromatic moments
-#   4. Moiré/frequency   — FFT detects screen pixel-grid artifacts
-#   5. Temporal blink    — eye-region pixel tracking (works with 5-point landmarks)
-#   6. Face boundary     — detects rectangular photo/screen edges around face
-#   7. ONNX anti-spoof   — optional Silent-Face-Anti-Spoofing model (highest weight)
+# PER-FRAME LAYERS (fast, every frame):
+#   1. LBP texture       — real skin has micro-texture, printed photos are flat
+#   2. Specular reflect   — screens have uniform glare, real faces don't
+#   3. Color space        — YCbCr skin-tone + chromatic moments + Cr-Cb correlation
+#   4. Moiré/frequency    — FFT detects screen pixel-grid artifacts
+#   5. Temporal blink     — eye-region pixel tracking (works with 5-point landmarks)
+#   6. Face boundary      — detects rectangular photo/screen edges around face
+#   7. ONNX anti-spoof    — MiniFASNetV2 (highest per-frame weight)
+#   8. Depth geometry     — landmark ratio variance (flat images stay rigid)
+#   9. Histogram consist. — colour distribution temporal stability
+#  10. MiDaS depth        — monocular 3-D face map (strong spoof signal)
+#
+# TEMPORAL LAYERS (stateful, require multiple frames):
+#  11. rPPG blood flow    — CHROM cardiac signal from skin colour
+#  12. Attention/gaze     — MediaPipe iris: must look at camera
+#
+# Anti-replay gate: frame fingerprint dedup detects video loops.
 
 import cv2
 import numpy as np
+import hashlib
 import logging
 import os
 from collections import deque
 from typing import Any, Optional
+
+from attention_detector import AttentionDetector
+from depth_liveness import DepthLivenessDetector
+from rppg_detector import CHROMrPPGDetector
 
 logger = logging.getLogger("MajestyGuard.Liveness")
 
@@ -48,7 +62,7 @@ class LivenessDetector:
         self._face_center_history: deque[tuple[float, float]] = deque(maxlen=30)
 
         # Anti-replay: frame fingerprint history
-        self._frame_hashes: deque[int] = deque(maxlen=60)
+        self._frame_hashes: deque[bytes] = deque(maxlen=60)
         self._duplicate_frame_count = 0
 
         # Depth estimation: landmark geometry history
@@ -56,6 +70,11 @@ class LivenessDetector:
 
         # Color histogram consistency
         self._hist_history: deque[np.ndarray] = deque(maxlen=15)
+
+        # Add-on liveness layers from the Claude bundle.
+        self._depth_liveness = DepthLivenessDetector(model_dir) if model_dir else None
+        self._rppg = CHROMrPPGDetector()
+        self._attention = AttentionDetector()
 
         # Optional ONNX anti-spoof model
         self._antispoof_session: Optional[Any] = None
@@ -80,7 +99,14 @@ class LivenessDetector:
         self._duplicate_frame_count = 0
         self._landmark_ratios.clear()
         self._hist_history.clear()
+        if self._rppg is not None:
+            self._rppg.reset()
         self._onnx_consecutive_failures = 0  # E-2: proper field reset
+
+    def close(self) -> None:
+        """Release optional detector resources."""
+        if self._attention is not None:
+            self._attention.close()
 
     # Candidate filenames — tries each in order so either naming works
     _ANTISPOOF_FILENAMES = [
@@ -174,6 +200,16 @@ class LivenessDetector:
         # Layer 9: Color histogram temporal consistency
         hist_score = self._histogram_consistency_score(roi)
 
+        # Layer 10: MiDaS monocular depth (neutral if model is missing)
+        midas_score = (
+            self._depth_liveness.score(frame, face)
+            if self._depth_liveness is not None else 0.5
+        )
+
+        # Layer 11/12: rPPG blood-flow and MediaPipe iris attention.
+        rppg_score = self._rppg.update(frame, face)
+        attention_score = self._attention.score(frame)
+
         if onnx_score is not None:
             combined = (
                 onnx_score       * 0.28 +
@@ -200,6 +236,12 @@ class LivenessDetector:
                 replay_penalty   * 0.07
             )
 
+        if self._depth_liveness is not None and self._depth_liveness.available:
+            combined = combined * 0.80 + midas_score * 0.20
+
+        if self._rppg.has_signal:
+            combined = combined * 0.55 + rppg_score * 0.30 + attention_score * 0.15
+
         self._score_history.append(combined)
 
         # Require minimum frames before allowing high scores
@@ -213,10 +255,11 @@ class LivenessDetector:
 
         logger.debug(
             "Liveness: LBP=%.2f Spec=%.2f Color=%.2f Moire=%.2f Temp=%.2f "
-            "Bound=%.2f Depth=%.2f Hist=%.2f Replay=%.2f ONNX=%s -> %.3f",
+            "Bound=%.2f Depth=%.2f Hist=%.2f Replay=%.2f MiDaS=%.2f "
+            "rPPG=%.2f Attention=%.2f ONNX=%s -> %.3f",
             lbp_score, specular_score, color_score, moire_score,
             temporal_score, boundary_score, depth_score, hist_score,
-            replay_penalty,
+            replay_penalty, midas_score, rppg_score, attention_score,
             f"{onnx_score:.2f}" if onnx_score is not None else "N/A",
             smoothed)
 
@@ -712,7 +755,7 @@ class LivenessDetector:
     def _replay_detection(self, roi: np.ndarray) -> float:
         small = cv2.resize(roi, (16, 16))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        frame_hash = hash(gray.tobytes())
+        frame_hash = hashlib.md5(gray.tobytes(), usedforsecurity=False).digest()
 
         # Count how many recent frames have identical hash
         matches = sum(1 for h in self._frame_hashes if h == frame_hash)
@@ -732,25 +775,3 @@ class LivenessDetector:
         # Many duplicates = video loop or static photo
         return 0.1
 
-# ── FIX-022: rPPG stub — future liveness Layer 10 ────────────────────────
-class rPPGDetector:
-    """
-    Remote Photoplethysmography — detects blood flow from skin colour changes.
-    Real faces: periodic colour variation from cardiac cycle (60-100 BPM).
-    Photos, screens, masks: no pulsatile signal.
-
-    IMPLEMENTATION STATUS: Stub. Integrated at weight 0.0 (no effect yet).
-
-    Full implementation requires:
-      - 45 frames at 15 FPS = 3 second window
-      - Green channel (G) extracted from forehead ROI
-      - Bandpass filter 0.7–4.0 Hz (heart rate range)
-      - FFT peak detection: SNR > 2.0 = real face
-    LIBRARY: pip install pyVHR  (MIT, has ONNX export path)
-    LATENCY: 3s minimum — use AFTER recognition succeeds, not as a gate.
-    REFERENCE: De Haan & Jeanne (2013), CHROM algorithm.
-    """
-
-    def score(self, frame_history: list) -> float:
-        # TODO: implement CHROM rPPG algorithm
-        return 0.5  # Neutral — does not affect liveness decision until implemented

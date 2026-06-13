@@ -2,7 +2,7 @@
 
 MajestyGuard is an experimental Windows security project that brings a local-first, Face ID-inspired presence layer to the desktop.
 
-It combines webcam-based face recognition, passive liveness checks, a Windows service, a Dynamic Island-style overlay, and a Credential Provider research path. The goal is simple: protect the user's Windows session when the owner is away, while keeping biometric processing on the device.
+It combines webcam-based face recognition, passive liveness checks, a desktop soft-lock shield, a Dynamic Island-style overlay, a Windows service path, and Credential Provider research. The goal is simple: protect the user's Windows session when the owner is away, while keeping biometric processing on the device.
 
 > Status: active research prototype. MajestyGuard is not yet a production login replacement. Service and lock-screen integration require trusted code signing and careful deployment review.
 
@@ -13,6 +13,7 @@ Windows has strong authentication, but it does not provide an Apple/Samsung-styl
 - recognize the enrolled owner locally
 - detect presence changes while the desktop is active
 - apply protective lock or restricted states when the owner leaves
+- keep background apps running during ordinary desktop soft-lock
 - keep camera frames and biometric templates off the cloud
 - provide a clear, polished overlay instead of a noisy background utility
 
@@ -48,6 +49,7 @@ The service is intended to be the coordinator. It receives CV results, moves the
 - C#/.NET core state machine and IPC contracts
 - Windows service prototype with service-only validation flow
 - WinUI overlay and Dynamic Island-style status surface
+- User-space desktop soft-lock path that can cover the active desktop without storing passwords
 - Python CV engine with face recognition, liveness, attention, depth, and virtual camera checks
 - DPAPI-backed embedding storage work
 - Installer/uninstaller scripts with safety checks
@@ -58,6 +60,7 @@ The service is intended to be the coordinator. It receives CV results, moves the
 - Trusted production signing is not complete yet.
 - Credential Provider registration is not enabled by default.
 - Smart App Control can block self-signed binaries; production builds need a trusted signing path.
+- Lock-screen auto-unlock remains blocked until the service and Credential Provider are trusted-signed and validated.
 - Live camera validation requires supervised local testing.
 - This repository is being prepared for public open-source review and signing eligibility.
 

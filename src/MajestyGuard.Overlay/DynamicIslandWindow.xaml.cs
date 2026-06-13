@@ -24,28 +24,6 @@ using Microsoft.Extensions.Logging;
 
 namespace MajestyGuard.Overlay
 {
-    internal sealed class TransparentBackdrop : Microsoft.UI.Xaml.Media.SystemBackdrop
-    {
-        protected override void OnTargetConnected(
-            Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop connectedTarget,
-            Microsoft.UI.Xaml.XamlRoot xamlRoot)
-        {
-            base.OnTargetConnected(connectedTarget, xamlRoot);
-            if (connectedTarget is Microsoft.UI.Composition.Visual visual)
-            {
-                connectedTarget.SystemBackdrop = visual.Compositor.CreateColorBrush(
-                    Windows.UI.Color.FromArgb(0, 0, 0, 0));
-            }
-        }
-
-        protected override void OnTargetDisconnected(
-            Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop disconnectedTarget)
-        {
-            base.OnTargetDisconnected(disconnectedTarget);
-            disconnectedTarget.SystemBackdrop = null;
-        }
-    }
-
     public sealed partial class DynamicIslandWindow : Window
     {
         private readonly ILogger<DynamicIslandWindow> _logger;
@@ -79,6 +57,18 @@ namespace MajestyGuard.Overlay
 
         [DllImport("user32.dll")]
         private static extern bool SetWindowDisplayAffinity(nint hwnd, uint dwAffinity);
+
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmExtendFrameIntoClientArea(nint hwnd, ref MARGINS pMarInset);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MARGINS
+        {
+            public int cxLeftWidth;
+            public int cxRightWidth;
+            public int cyTopHeight;
+            public int cyBottomHeight;
+        }
 
         [DllImport("kernel32.dll")]
         private static extern IntPtr GetCurrentProcess();
@@ -145,7 +135,6 @@ namespace MajestyGuard.Overlay
             _idleSuppressTimer.Start();
 
             InitializeComponent();
-            SystemBackdrop = new TransparentBackdrop();
             Activated += OnFirstActivation;
         }
 
@@ -174,6 +163,10 @@ namespace MajestyGuard.Overlay
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
             SetWindowDisplayAffinity(_hwnd, WDA_EXCLUDEFROMCAPTURE);
+
+            // Make window background transparent via DWM
+            var margins = new MARGINS { cxLeftWidth = -1, cxRightWidth = -1, cyTopHeight = -1, cyBottomHeight = -1 };
+            DwmExtendFrameIntoClientArea(_hwnd, ref margins);
 
             // Explicitly block WM_CLOSE/WM_DESTROY regardless of sender IL.
             // MIC blocks these from lower-IL processes automatically,

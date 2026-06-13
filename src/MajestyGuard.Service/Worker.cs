@@ -12,9 +12,6 @@
 //   7. Start Overlay (WinUI 3 process)
 //   8. Subscribe to StateMachine.StateChanged → dispatch effects
 //
-// CODEX: The pipe servers and subprocess management are stubbed.
-//        Implement the TODO sections.
-
 using System;
 using System.Diagnostics;
 using System.IO;
@@ -194,6 +191,25 @@ namespace MajestyGuard.Service
             _desktopWatchdog   = desktopWatchdog;
         }
 
+        private void TryKillChildProcess(Process? process, string name)
+        {
+            if (process == null)
+                return;
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                    _logger.LogInformation("{Name} process terminated during service stop", name);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not terminate {Name} process during service stop", name);
+            }
+        }
+
         protected override async Task ExecuteAsync(CancellationToken ct)
         {
             _logger.LogInformation("MajestyGuard Service starting");
@@ -240,7 +256,14 @@ namespace MajestyGuard.Service
 
             // ── STEP 5: Launch Overlay process (after desktop init) ───
             await Task.Delay(2000, ct);
-            _overlayProcess = LaunchOverlay();
+            if (_config.EnableOverlayLaunch)
+            {
+                _overlayProcess = LaunchOverlay();
+            }
+            else
+            {
+                _logger.LogInformation("Service overlay launch disabled by config.");
+            }
 
             // ── STEP 6: Start monitoring loops ────────────────────────
             var monitorTask    = RunPresenceMonitorAsync(ct);  // HB-1: gate until embeddings loaded
@@ -519,27 +542,80 @@ namespace MajestyGuard.Service
         // CHILD PROCESS LAUNCHERS
         // ─────────────────────────────────────────────────────────────
 
-        private Process? LaunchCvEngine()  // H-005: nullable return
+        // Cached source root directory (walk-up result)
+        private static string? _sourceRoot;
+
+        private static string GetInstallBaseDirectory()
         {
-            var pythonExe = FindPython();
-            if (pythonExe == null)
+            var baseDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(
+                    Path.GetFileName(baseDir),
+                    "MajestyGuard.Service.Host",
+                    StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogError("Python not found. CV engine cannot start.");
-                _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
-                return null;  // H-005: was null! which threw NRE in watchdog
+                var parent = Directory.GetParent(baseDir)?.FullName;
+                if (!string.IsNullOrWhiteSpace(parent))
+                    return parent;
             }
 
-            var scriptPath = Path.Combine(AppContext.BaseDirectory, "CVEngine", "cv_server.py");
+            return AppContext.BaseDirectory;
+        }
+
+        private static string? FindSourceRoot()
+        {
+            if (_sourceRoot != null) return _sourceRoot;
+
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            for (int i = 0; i < 10 && dir != null; i++)
+            {
+                // Marker: if this dir has a .sln or src/ subdir with MajestyGuard.Core, it's the root
+                if (dir.GetFiles("MajestyGuard.sln").Length > 0 ||
+                    Directory.Exists(Path.Combine(dir.FullName, "src", "MajestyGuard.Core")))
+                {
+                    _sourceRoot = dir.FullName;
+                    return _sourceRoot;
+                }
+                dir = dir.Parent;
+            }
+            return null;
+        }
+
+        private Process? LaunchCvEngine()
+        {
+            var scriptPath = ResolveCvScriptPath();
+            var cvEngineDir = Path.GetDirectoryName(scriptPath);
+            if (string.IsNullOrWhiteSpace(cvEngineDir))
+            {
+                _logger.LogError("[CVEngine] FATAL: Invalid CV script path: {Script}", scriptPath);
+                _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
+                return null;
+            }
+
+            var pythonExe = ResolveCvPythonPath(cvEngineDir);
+            if (!ValidateCvPythonVersion(pythonExe))
+            {
+                throw new InvalidOperationException("Wrong CV Python selected. See MajestyGuard event log.");
+            }
+
+            _logger.LogInformation(
+                "[CVEngine] Pre-launch: pythonExe={Python} scriptPath={Script} workDir={WorkDir}",
+                pythonExe, scriptPath, cvEngineDir);
+
+            if (!ProbeCvScriptReadAccess(scriptPath))
+            {
+                _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
+                return null;
+            }
             var psi = new ProcessStartInfo
             {
-                FileName        = pythonExe,
-                Arguments       = $"\"{scriptPath}\"",
-                UseShellExecute = false,
-                CreateNoWindow  = true,
+                FileName               = pythonExe,
+                Arguments              = $"\"{scriptPath}\"",
+                WorkingDirectory       = cvEngineDir,
+                UseShellExecute        = false,
+                CreateNoWindow         = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError  = true,
             };
-
             psi.EnvironmentVariables["MG_CV_PIPE"]    = _config.CvPipeName;
             psi.EnvironmentVariables["MG_MODEL_DIR"]  = _config.ModelDirectory;
             psi.EnvironmentVariables["MG_CAMERA_IDX"] = _config.CameraDeviceIndex.ToString();
@@ -549,41 +625,188 @@ namespace MajestyGuard.Service
             proc.ErrorDataReceived  += (_, e) => { if (e.Data != null) _logger.LogError("[CVEngine] {Line}", e.Data); };
             proc.BeginOutputReadLine();
             proc.BeginErrorReadLine();
-
-            _logger.LogInformation("CV Engine launched (PID {Pid}) using {Python}", proc.Id, pythonExe);
+            _logger.LogInformation("[CVEngine] Started PID={Pid} using {Python}", proc.Id, pythonExe);
             return proc;
+        }
+
+        private string ResolveCvScriptPath()
+        {
+            if (!string.IsNullOrWhiteSpace(_config.CvScriptPath))
+                return _config.CvScriptPath;
+
+            var programDataScript = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                "MajestyGuard", "CVEngine", "cv_server.py");
+            if (File.Exists(programDataScript))
+                return programDataScript;
+
+            var root = FindSourceRoot() ?? @"C:\tmp\MajestyGuard";
+            var devScript = Path.Combine(root, "src", "MajestyGuard.CVEngine", "cv_server.py");
+            if (File.Exists(devScript))
+                return devScript;
+
+            return programDataScript;
+        }
+
+        private string ResolveCvPythonPath(string cvEngineDir)
+        {
+            var candidates = new[]
+            {
+                _config.CvPythonPath,
+                @"C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe",
+                Path.Combine(cvEngineDir, ".venv", "Scripts", "python.exe")
+            };
+
+            foreach (var candidate in candidates
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+
+            _logger.LogError(
+                "[CVEngine] FATAL: Python 3.11 venv not found. Set CvPythonPath to C:\\tmp\\MajestyGuard\\src\\MajestyGuard.CVEngine\\.venv\\Scripts\\python.exe");
+            throw new FileNotFoundException("No valid CV Python 3.11 venv found.");
+        }
+
+        private bool ValidateCvPythonVersion(string pythonExe)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = pythonExe,
+                    Arguments = "--version",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+
+                using var proc = Process.Start(psi);
+                if (proc == null)
+                    throw new InvalidOperationException("Process.Start returned null.");
+
+                var stdout = proc.StandardOutput.ReadToEnd();
+                var stderr = proc.StandardError.ReadToEnd();
+                if (!proc.WaitForExit(3000))
+                {
+                    try { proc.Kill(entireProcessTree: true); } catch { }
+                    throw new TimeoutException("python --version timed out.");
+                }
+
+                var version = string.IsNullOrWhiteSpace(stdout) ? stderr.Trim() : stdout.Trim();
+                if (proc.ExitCode != 0 || !version.StartsWith("Python 3.11.", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogError("[CVEngine] FATAL: Wrong Python selected: {Path} {Version}", pythonExe, version);
+                    return false;
+                }
+
+                _logger.LogInformation("[CVEngine] Python version OK: {Path} {Version}", pythonExe, version);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[CVEngine] FATAL: Wrong Python selected: {Path} {Version}", pythonExe, "unknown");
+                return false;
+            }
+        }
+
+        private bool ProbeCvScriptReadAccess(string scriptPath)
+        {
+            _logger.LogInformation("[CVEngine] File.Exists(script)={Exists}", File.Exists(scriptPath));
+            try
+            {
+                using var fs = File.OpenRead(scriptPath);
+                _logger.LogInformation("[CVEngine] FileStream read test: OK ({Bytes} bytes)", fs.Length);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[CVEngine] FileStream read test FAILED: {Error}", ex.Message);
+                return false;
+            }
         }
 
         private static string? FindPython()
         {
-            // 1. Bundled Python in install directory
-            var bundled = Path.Combine(AppContext.BaseDirectory, "python", "python.exe");
-            if (File.Exists(bundled)) return bundled;
-
-            // 2. System PATH
-            var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(';') ?? [];
-            foreach (var dir in pathDirs)
+            // 1. venv Python (PRIORITY — has all packages like insightface, onnxruntime)
+            var root = FindSourceRoot();
+            if (root != null)
             {
-                var candidate = Path.Combine(dir.Trim(), "python.exe");
-                if (File.Exists(candidate)) return candidate;
+                var venvPython = Path.Combine(root, "src", "MajestyGuard.CVEngine", ".venv", "Scripts", "python.exe");
+                if (File.Exists(venvPython)) return venvPython;
+                // Also check root-level CVEngine
+                venvPython = Path.Combine(root, "MajestyGuard.CVEngine", ".venv", "Scripts", "python.exe");
+                if (File.Exists(venvPython)) return venvPython;
             }
 
-            // 3. Microsoft Store Python
-            var storeDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Microsoft", "WindowsApps");
-            var storePython = Path.Combine(storeDir, "python.exe");
-            if (File.Exists(storePython)) return storePython;
+            // 2. Bundled Python in install directory
+            var bundled = Path.Combine(GetInstallBaseDirectory(), "python", "python.exe");
+            if (File.Exists(bundled)) return bundled;
 
             return null;
         }
 
+        private static string? FindCvServerScript()
+        {
+            // 1. Deployed layout: CVEngine folder next to Service.exe
+            var deployed = Path.Combine(GetInstallBaseDirectory(), "CVEngine", "cv_server.py");
+            if (File.Exists(deployed)) return deployed;
+
+            // 2. Dev layout: walk up to find src/MajestyGuard.CVEngine/cv_server.py
+            var root = FindSourceRoot();
+            if (root != null)
+            {
+                var dev = Path.Combine(root, "src", "MajestyGuard.CVEngine", "cv_server.py");
+                if (File.Exists(dev)) return dev;
+            }
+
+            // 3. Walk up manually
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            for (int i = 0; i < 10 && dir != null; i++)
+            {
+                var candidate = Path.Combine(dir.FullName, "src", "MajestyGuard.CVEngine", "cv_server.py");
+                if (File.Exists(candidate)) return candidate;
+                dir = dir.Parent;
+            }
+
+            return null;
+        }
+
+        private static string FindOverlayExe()
+        {
+            var deployed = Path.Combine(GetInstallBaseDirectory(), "MajestyGuard.Overlay.exe");
+            if (File.Exists(deployed)) return deployed;
+
+            // Walk up from Service bin dir to find the Overlay exe
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                // dev layout: src/MajestyGuard.Overlay/bin/Debug/.../win-x64/
+                foreach (var cfg in new[] { "Debug", "Release" })
+                {
+                    var candidate = Path.Combine(dir.FullName, "src", "MajestyGuard.Overlay",
+                        "bin", cfg, "net8.0-windows10.0.22621.0", "win-x64", "MajestyGuard.Overlay.exe");
+                    if (File.Exists(candidate)) return candidate;
+                    // non-self-contained
+                    candidate = Path.Combine(dir.FullName, "src", "MajestyGuard.Overlay",
+                        "bin", cfg, "net8.0-windows10.0.22621.0", "MajestyGuard.Overlay.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                dir = dir.Parent;
+            }
+            // fallback: same dir
+            return Path.Combine(GetInstallBaseDirectory(), "MajestyGuard.Overlay.exe");
+        }
+
         private Process? LaunchOverlay()
         {
-            // CODEX: Path to the WinUI 3 overlay executable
+            var overlayExe = FindOverlayExe();
             var psi = new ProcessStartInfo
             {
-                FileName        = $"{AppContext.BaseDirectory}\\MajestyGuard.Overlay.exe",
+                FileName        = overlayExe,
                 UseShellExecute = false,
                 CreateNoWindow  = false,
             };
@@ -680,7 +903,7 @@ namespace MajestyGuard.Service
             {
                 await Task.Delay(3000);
 
-                var helperPath = Path.Combine(AppContext.BaseDirectory, "MajestyGuard.DpapiHelper.exe");
+                var helperPath = Path.Combine(GetInstallBaseDirectory(), "MajestyGuard.DpapiHelper.exe");
                 if (!File.Exists(helperPath))
                 {
                     _logger.LogWarning("DpapiHelper.exe not found at {Path}. Embeddings not loaded.", helperPath);
@@ -856,8 +1079,8 @@ namespace MajestyGuard.Service
             _logger.LogInformation("MajestyGuard Service stopping");
 
             // Gracefully terminate child processes
-            try { _cvEngineProcess?.Kill(entireProcessTree: true); } catch { }
-            try { _overlayProcess?.Kill(entireProcessTree: true);  } catch { }
+            TryKillChildProcess(_cvEngineProcess, "CV Engine");
+            TryKillChildProcess(_overlayProcess, "Overlay");
 
             _sessionWatcher?.Dispose();
             _cvPipe?.Dispose();

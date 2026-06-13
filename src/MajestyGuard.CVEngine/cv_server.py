@@ -50,6 +50,8 @@ class CVServer:
         self._frame_count = 0
         self._last_heartbeat = 0.0
         self._paused = False
+        self._camera_ready = False
+        self._heartbeat_thread = None
 
         # Commands received from Service
         self._pending_commands: list[dict] = []
@@ -64,15 +66,19 @@ class CVServer:
         logger.info("  Model dir: %s", MODEL_DIR)
         logger.info("  Camera: %d", CAMERA_IDX)
 
+        self._running = True
+        self._connect_pipe()
+        self._start_heartbeat_thread()
+
         # Anti-debug: detect if someone attached a debugger
         self._check_debugger()
 
         if not self._engine.initialize():
-            logger.error("FaceEngine failed to initialize. Exiting.")
-            sys.exit(1)
+            logger.error("FaceEngine failed to initialize. Entering degraded camera-obstructed mode.")
+            self._camera_ready = False
+        else:
+            self._camera_ready = True
 
-        self._running = True
-        self._connect_pipe()
         self._main_loop()
 
     # ─────────────────────────────────────────────────────────────────
@@ -207,8 +213,17 @@ class CVServer:
                 time.sleep(0.5)
                 continue
 
-            # Process frame
-            result = self._engine.process_frame()
+            if not self._camera_ready:
+                result = self._camera_obstructed_result(loop_start)
+                self._send_result(result)
+                time.sleep(1.0)
+                continue
+
+            try:
+                result = self._engine.process_frame()
+            except Exception as e:
+                logger.error("Frame processing failed: %s", e)
+                result = self._camera_obstructed_result(loop_start)
 
             # Send result to Service
             self._send_result(result)
@@ -245,6 +260,18 @@ class CVServer:
         logger.info("Detection loop ended")
         self._engine.shutdown()
 
+    def _camera_obstructed_result(self, start_time: float) -> FrameResult:
+        return FrameResult(
+            face_count=0,
+            primary_user_present=False,
+            recognition_score=0.0,
+            liveness_score=0.0,
+            liveness_passed=False,
+            virtual_camera_detected=False,
+            camera_obstructed=True,
+            inference_ms=(time.perf_counter() - start_time) * 1000,
+        )
+
     # ─────────────────────────────────────────────────────────────────
     # PIPE WRITE
     # ─────────────────────────────────────────────────────────────────
@@ -262,6 +289,29 @@ class CVServer:
             "InferenceMs":          round(result.inference_ms, 1),
         }
         self._send(msg)
+
+    def _start_heartbeat_thread(self):
+        if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            daemon=True,
+            name="Heartbeat",
+        )
+        self._heartbeat_thread.start()
+
+    def _heartbeat_loop(self):
+        while self._running:
+            self._send_heartbeat()
+            time.sleep(5.0)
+
+    def _send_heartbeat(self):
+        self._send({
+            "MessageType": "Heartbeat",
+            "ProcessName": "CVEngine",
+            "CpuPercent": 0.0,
+            "RamBytes": 0,
+        })
 
     def _send(self, obj: dict):
         if self._pipe is None:

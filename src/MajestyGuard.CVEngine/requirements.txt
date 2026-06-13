@@ -7,9 +7,17 @@ onnxruntime-directml>=1.17.0    # GPU via DirectML on Windows (recommended)
 # onnxruntime>=1.17.0            # CPU-only fallback (uncomment if DirectML fails)
 opencv-python>=4.9.0
 numpy>=1.26.0
+mediapipe>=0.10.14
+scipy>=1.11.0
 
 # Windows named pipes
 pywin32>=306
 
+# Dynamic Island / desktop soft-lock UI
+PyQt6>=6.9.0
+
 # Utilities
 Pillow>=10.2.0
+
+scipy>=1.11.0
+mediapipe>=0.10.0

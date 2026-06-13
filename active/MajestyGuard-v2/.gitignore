@@ -1,0 +1,39 @@
+# Python
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+*.egg-info/
+
+# ONNX / model binaries — large, don't commit
+models/
+models_insightface/
+
+# Logs
+logs/
+*.log
+daemon.log
+
+# Build artifacts
+bin/
+obj/
+*.msix
+*.appxbundle
+*.appx
+
+# VS
+.vs/
+*.user
+*.suo
+vsconfig-current.json
+vswhere.json
+
+# Biometric data — never commit
+biometric.mgd
+enrollment/
+
+# OS
+Thumbs.db
+desktop.ini

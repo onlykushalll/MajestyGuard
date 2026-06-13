@@ -3,6 +3,7 @@
 import pytest
 import numpy as np
 import sys, os
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -215,6 +216,33 @@ def test_ipc_message_deserialize_coverage():
         serialized = json.dumps(m)
         parsed = json.loads(serialized)
         assert parsed["MessageType"] == m["MessageType"]
+
+
+def test_cv_server_connects_pipe_and_heartbeat_before_camera_init():
+    """Service watchdog must see CV liveness even if LocalSystem camera init blocks."""
+    source = Path(__file__).with_name("cv_server.py").read_text(encoding="utf-8")
+    start_body = source[source.index("    def start(self):"):source.index("    # ──", source.index("    def start(self):"))]
+
+    assert "self._running = True" in start_body
+    assert "self._connect_pipe()" in start_body
+    assert "self._start_heartbeat_thread()" in start_body
+    assert "self._engine.initialize()" in start_body
+    assert start_body.index("self._running = True") < start_body.index("self._connect_pipe()")
+    assert start_body.index("self._connect_pipe()") < start_body.index("self._start_heartbeat_thread()")
+    assert start_body.index("self._start_heartbeat_thread()") < start_body.index("self._engine.initialize()")
+    assert "sys.exit(1)" not in start_body
+
+
+def test_cv_server_heartbeat_loop_is_not_tied_to_frame_processing():
+    """Heartbeat must continue while camera frame reads or model inference are slow."""
+    source = Path(__file__).with_name("cv_server.py").read_text(encoding="utf-8")
+
+    assert "def _start_heartbeat_thread" in source
+    assert "def _heartbeat_loop" in source
+    assert "def _send_heartbeat" in source
+    assert "target=self._heartbeat_loop" in source
+    heartbeat_body = source[source.index("    def _heartbeat_loop"):source.index("    def ", source.index("    def _heartbeat_loop") + 1)]
+    assert "process_frame" not in heartbeat_body
 
 
 # ── AR6: Liveness state resets between enrollment angles ─────────────────────

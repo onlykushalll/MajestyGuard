@@ -69,7 +69,6 @@ namespace MajestyGuard.Core
 
         // Stranger presence tracking for hysteresis
         private DateTime? _strangerFirstSeen;
-        private DateTime? _strangerLastSeen;
         private int _authFailureCount;
 
         // Config values — injected from AppConfig
@@ -131,7 +130,6 @@ namespace MajestyGuard.Core
         // ─────────────────────────────────────────────────────────────
         // TRANSITION TABLE
         // Returns the next state or null if the trigger is invalid here.
-        // CODEX: Implement the guard conditions marked TODO.
         // ─────────────────────────────────────────────────────────────
         private GuardState? ResolveNextState(TransitionTrigger trigger, object? context)
         {
@@ -283,22 +281,18 @@ namespace MajestyGuard.Core
             lock (_lock)
             {
                 _strangerFirstSeen = null;
-                _strangerLastSeen = null;
             }
         }
 
         private GuardState ClearStrangerAndGoBootScan()
         {
             _strangerFirstSeen = null;
-            _strangerLastSeen = null;
             return GuardState.BootScan;
         }
 
         private GuardState HandleStrangerDetected()
         {
             _strangerFirstSeen ??= DateTime.UtcNow;
-            _strangerLastSeen = null; // Reset absence tracker — stranger is back
-
             var presenceDuration = DateTime.UtcNow - _strangerFirstSeen.Value;
             if (presenceDuration.TotalMilliseconds >= 500)
             {

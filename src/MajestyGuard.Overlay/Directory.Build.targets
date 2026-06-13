@@ -1,26 +1,103 @@
 <Project>
   <!--
-    VS 2026 Insiders (v18.0) does not ship Microsoft.Build.AppxPackage.dll.
-    WindowsAppSDK NuGet targets declare RemovePayloadDuplicates unconditionally.
-    Override with inline no-op task matching the real parameter signature.
+    ════════════════════════════════════════════════════════════════════
+    WHY THIS FILE EXISTS
+    ════════════════════════════════════════════════════════════════════
+    MajestyGuard.Overlay is an unpackaged WinUI 3 app. Despite setting
+    WindowsPackageType=None and AppxGeneratePriEnabled=false, the
+    WindowsAppSDK 1.6 build pipeline still invokes tasks from
+    Microsoft.Build.AppxPackage.dll (a stub at build\) that lack the
+    required input properties (Inputs, VsTelemetrySession), causing:
+      MSB4064: The "Inputs" parameter is not supported...
+
+    WHY CSPROJ TARGET OVERRIDES DIDN'T WORK
+    MSBuild SDK-style projects import their Sdk.targets AFTER the project
+    file body. Any <Target> defined inside the project file is overridden
+    by the same-named target in Sdk.targets (last-write wins).
+
+    WHY THIS FILE WORKS
+    Directory.Build.targets is imported by MSBuild at the very END of
+    Microsoft.Common.CurrentVersion.targets — after all Sdk.targets
+    and after MrtCore.PriGen.targets. A UsingTask defined here wins
+    over one defined earlier (last definition wins).
+
+    We use RoslynCodeTaskFactory (built into MSBuild) to declare
+    inline task implementations that accept all required parameters
+    and do nothing, making them safe no-ops for this unpackaged app.
+
+    SCOPE: This file is in src\MajestyGuard.Overlay\ so it only affects
+    the Overlay project. MSBuild searches for Directory.Build.targets
+    from the project directory upward — sibling projects are unaffected.
+    ════════════════════════════════════════════════════════════════════
   -->
+
+  <!-- ── ExpandPayloadDirectories ──────────────────────────────────── -->
+  <!-- Root cause of MSB4064 at MrtCore.PriGen.targets ~line 1183.
+       Expands Appx payload directory items — not needed for unpackaged. -->
   <UsingTask
-    TaskName="Microsoft.Build.AppxPackage.RemovePayloadDuplicates"
-    TaskFactory="RoslynCodeTaskFactory"
-    AssemblyFile="$(MSBuildBinPath)\Microsoft.Build.Tasks.Core.dll">
+      TaskName="Microsoft.Build.AppxPackage.ExpandPayloadDirectories"
+      TaskFactory="RoslynCodeTaskFactory"
+      AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
     <ParameterGroup>
-      <Inputs         ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="false" />
-      <ProjectName    ParameterType="System.String" Required="false" />
-      <Platform       ParameterType="System.String" Required="false" />
-      <VsTelemetrySession ParameterType="System.String" Required="false" />
-      <HasSharedItems ParameterType="System.String" Required="false" />
-      <MSBuildProjectDirectory ParameterType="System.String" Required="false" />
-      <Filtered       ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+      <Inputs                ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                             Required="false" />
+      <VsTelemetrySession    ParameterType="System.String"
+                             Required="false" />
+      <IntermediateDirectory ParameterType="System.String"
+                             Required="false" />
+      <Expanded              ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                             Output="true" />
+      <IntermediateFileWrites ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                              Output="true" />
     </ParameterGroup>
     <Task>
-      <Code Type="Fragment" Language="cs">
-        Filtered = Inputs ?? System.Array.Empty&lt;Microsoft.Build.Framework.ITaskItem&gt;();
-      </Code>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        Expanded              = Inputs ?? new Microsoft.Build.Framework.ITaskItem[0];
+        IntermediateFileWrites = new Microsoft.Build.Framework.ITaskItem[0];
+      ]]></Code>
     </Task>
   </UsingTask>
+
+  <!-- ── RemovePayloadDuplicates ───────────────────────────────────── -->
+  <!-- Preemptive override — may be invoked by other AppxPackage targets. -->
+  <UsingTask
+      TaskName="Microsoft.Build.AppxPackage.RemovePayloadDuplicates"
+      TaskFactory="RoslynCodeTaskFactory"
+      AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Inputs             ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                          Required="false" />
+      <VsTelemetrySession ParameterType="System.String"
+                          Required="false" />
+      <Unique             ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                          Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        Unique = Inputs ?? new Microsoft.Build.Framework.ITaskItem[0];
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <!-- ── AddAppxPayloadFiles ───────────────────────────────────────── -->
+  <!-- Belt-and-suspenders — covers any remaining AppxPackage task calls. -->
+  <UsingTask
+      TaskName="Microsoft.Build.AppxPackage.AddAppxPayloadFiles"
+      TaskFactory="RoslynCodeTaskFactory"
+      AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Inputs             ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                          Required="false" />
+      <VsTelemetrySession ParameterType="System.String"
+                          Required="false" />
+      <Result             ParameterType="Microsoft.Build.Framework.ITaskItem[]"
+                          Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        Result = Inputs ?? new Microsoft.Build.Framework.ITaskItem[0];
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
 </Project>

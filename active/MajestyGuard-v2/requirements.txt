@@ -1,0 +1,14 @@
+# MajestyGuard v2 local runtime
+
+# UI
+PyQt6>=6.9.0
+
+# Core CV and daemon
+insightface>=0.7.3
+onnxruntime-directml>=1.17.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+mediapipe>=0.10.14
+scipy>=1.11.0
+pywin32>=306
+Pillow>=10.2.0

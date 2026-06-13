@@ -233,6 +233,46 @@ public class StateMachineTests
         Assert.Contains("LogError", body);
     }
 
+    [Fact]
+    public void Worker_DotnetServiceHost_ResolvesInstallRootForChildProcesses()
+    {
+        var source = System.IO.File.ReadAllText(
+            @"..\..\..\..\MajestyGuard.Service\Worker.cs");
+
+        Assert.Contains("GetInstallBaseDirectory", source);
+        Assert.Contains("MajestyGuard.Service.Host", source);
+        Assert.Contains("Path.Combine(GetInstallBaseDirectory(), \"MajestyGuard.Overlay.exe\")", source);
+        Assert.Contains("Path.Combine(GetInstallBaseDirectory(), \"MajestyGuard.DpapiHelper.exe\")", source);
+    }
+
+    [Fact]
+    public void Worker_CvLaunch_PrefersConfiguredPythonPath()
+    {
+        var source = System.IO.File.ReadAllText(
+            @"..\..\..\..\MajestyGuard.Service\Worker.cs");
+
+        Assert.Contains("_config.CvPythonPath", source);
+        Assert.Contains("_config.CvScriptPath", source);
+        Assert.Contains("ValidateCvPythonVersion", source);
+        Assert.Contains("ProbeCvScriptReadAccess", source);
+        Assert.True(
+            source.IndexOf("_config.CvPythonPath", StringComparison.Ordinal) <
+            source.IndexOf("Path.Combine(cvEngineDir, \".venv\"", StringComparison.Ordinal),
+            "Configured CvPythonPath should be checked before a deployed/dev venv fallback.");
+    }
+
+    [Fact]
+    public void Worker_StopAsync_TerminatesChildProcesses()
+    {
+        var source = System.IO.File.ReadAllText(
+            @"..\..\..\..\MajestyGuard.Service\Worker.cs");
+
+        Assert.Contains("public override async Task StopAsync", source);
+        Assert.Contains("TryKillChildProcess(_cvEngineProcess", source);
+        Assert.Contains("TryKillChildProcess(_overlayProcess", source);
+        Assert.Contains("Kill(entireProcessTree: true)", source);
+    }
+
     // ── B-021: Liveness uses min not mean ─────────────────────────────────────
 
     [Fact]

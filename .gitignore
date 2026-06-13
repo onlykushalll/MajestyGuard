@@ -1,4 +1,4 @@
-﻿
+
 # Models (too large for GitHub)
 
 models/
@@ -21,7 +21,7 @@ bin/
 
 # Local research/workspace buckets
 
-active/
+# active/
 
 archive/
 

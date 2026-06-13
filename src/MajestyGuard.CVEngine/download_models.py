@@ -5,6 +5,7 @@
 # MODELS DOWNLOADED:
 #   1. InsightFace buffalo_l (~300MB) — face detection + recognition
 #   2. MiniFASNetV2 ONNX (~600KB)    — anti-spoof liveness Layer 7
+#   3. MiDaS v2.1 small ONNX (~21MB) — monocular depth liveness Layer 10
 #
 # ALL downloads are from official public repos.
 # After download, internet access is blocked by the firewall rule.
@@ -35,6 +36,16 @@ MODELS = {
         "filename": "antispoof_minifasv2.onnx",
         "sha256": "af2381b88f38769222ed93379e12444e2a50814575de1c46170de570c55a42b6",
         "size_mb": 0.6,
+    },
+    "midas_v21_small": {
+        "description": "MiDaS v2.1 small monocular depth model (21MB)",
+        "url": (
+            "https://github.com/isl-org/MiDaS"
+            "/releases/download/v2_1/model-small.onnx"
+        ),
+        "filename": "midas_v21_small_256.onnx",
+        "sha256": None,
+        "size_mb": 21,
     },
 }
 
@@ -115,6 +126,18 @@ def download_antispoof_model(model_dir: str) -> bool:
     return download_file(info["url"], dest, info["description"], info["sha256"])
 
 
+def download_midas_model(model_dir: str) -> bool:
+    """Download MiDaS ONNX depth model."""
+    info = MODELS["midas_v21_small"]
+    dest = os.path.join(model_dir, info["filename"])
+
+    if os.path.exists(dest):
+        logger.info("  MiDaS depth model already present: %s", dest)
+        return True
+
+    return download_file(info["url"], dest, info["description"], info["sha256"])
+
+
 def main():
     model_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
         os.path.dirname(__file__), "models"
@@ -128,6 +151,7 @@ def main():
     results = {}
     results["buffalo_l"]   = download_insightface_model(model_dir)
     results["antispoof"]   = download_antispoof_model(model_dir)
+    results["midas"]       = download_midas_model(model_dir)
 
     logger.info("")
     logger.info("Download summary:")

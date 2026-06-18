@@ -42,12 +42,14 @@ def test_space_triggers_verification():
 
 
 def test_keyboard_hook_blocks_task_manager():
-    """WH_KEYBOARD_LL hook must block Ctrl+Shift+Esc."""
+    """WH_KEYBOARD_LL hook uses allowlist — only Tab/Space pass, everything else blocked."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "WH_KEYBOARD_LL" in source
     assert "SetWindowsHookExW" in source
     assert "UnhookWindowsHookEx" in source
-    assert "VK_ESCAPE" in source or "0x1B" in source
+    assert "VK_TAB" in source
+    assert "VK_SPACE" in source
+    assert "return 1" in source
 
 
 def test_keyboard_hook_blocks_alt_tab():
@@ -57,17 +59,17 @@ def test_keyboard_hook_blocks_alt_tab():
 
 
 def test_keyboard_hook_blocks_win_combos():
-    """WH_KEYBOARD_LL hook must block Win+D, Win+N, Win+A, Win+Tab."""
+    """WH_KEYBOARD_LL hook blocks Win combos via allowlist — modifier check present."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "VK_LWIN" in source or "0x5B" in source
-    for key in ("VK_D", "VK_N", "VK_A"):
-        assert key in source
+    assert "_any_modifier_held" in source
 
 
 def test_keyboard_hook_blocks_alt_f4():
-    """WH_KEYBOARD_LL hook must block Alt+F4."""
+    """WH_KEYBOARD_LL allowlist blocks Alt+F4 — modifier held = Tab/Space also blocked."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
-    assert "VK_F4" in source or "0x73" in source
+    assert "VK_ALT" in source or "0x12" in source
+    assert "_any_modifier_held" in source
 
 
 def test_hook_uninstalled_on_unlock():

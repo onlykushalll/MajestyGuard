@@ -284,7 +284,7 @@ def test_soft_lock_verification_timeout_returns_to_passive_state(monkeypatch):
     now["value"] = 106.0
 
     assert daemon._is_soft_lock_passive() is True
-    assert daemon.ipc.states[-1] == ("locked_passive", {"detail": "Press Space to verify"})
+    assert daemon.ipc.states[-1] == ("verify_failed", {})
 
 
 def test_soft_lock_burst_uses_fast_liveness_before_full_path(monkeypatch):
@@ -456,3 +456,25 @@ def test_soft_lock_fast_owner_consensus_keeps_security_gates(monkeypatch):
     assert daemon._soft_lock_owner_candidate_frames == 0
     assert FaceState.is_authorized()[0] is False
     FaceState.clear()
+
+
+def test_windows_lock_used_command_schedules_exit(tmp_path, monkeypatch):
+    import time
+    # Mock _MG_STATE_DIR in daemon_main
+    mock_state_dir = tmp_path / "state"
+    mock_state_dir.mkdir()
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", mock_state_dir)
+    
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._exit_at = None
+    
+    # Invoke command handler
+    daemon._handle_ui_command("windows_lock_used", "ui")
+    
+    # Assertions
+    assert daemon._exit_at is not None
+    assert daemon._exit_at > time.monotonic()
+    
+    lock_state_file = mock_state_dir / "lock_state.txt"
+    assert lock_state_file.exists()
+    assert lock_state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"

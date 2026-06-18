@@ -196,7 +196,7 @@ class IslandWidget(QWidget):
         )
 
         self._state = state
-        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked"}:
+        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked", "verify_failed"}:
             self._target_w = 120.0
             self._target_h = 28.0
         else:
@@ -654,7 +654,7 @@ class IslandWidget(QWidget):
     def _paint_content(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
         if rect.height() < 16:
             return
-        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked"}:
+        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked", "verify_failed"}:
             return
         if state.mode == "enrollment":
             self._paint_enrollment(painter, rect, state)

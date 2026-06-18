@@ -10,9 +10,11 @@ from __future__ import annotations
 import math
 import ctypes
 import atexit
+import time
 
-from PyQt6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty
+from PyQt6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import (
+    QBrush,
     QColor,
     QFont,
     QGuiApplication,
@@ -26,31 +28,39 @@ from PyQt6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
 
 from states import IslandState, get_state
 
 
-_LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock"}
+_LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed"}
 
 WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
 WM_CLOSE = 0x0010
 WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
 WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+WM_MOUSEMOVE = 0x0200
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONUP = 0x0208
+WM_MOUSEWHEEL = 0x020A
+WM_MOUSEHWHEEL = 0x020E
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
+VK_TAB = 0x09
+VK_SPACE = 0x20
+VK_CTRL = 0x11
+VK_ALT = 0x12
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
-VK_LCONTROL = 0xA2
-VK_RCONTROL = 0xA3
-VK_LSHIFT = 0xA0
-VK_RSHIFT = 0xA1
-VK_LMENU = 0xA4  # Left Alt
-VK_RMENU = 0xA5  # Right Alt
-VK_TAB = 0x09
-VK_ESCAPE = 0x1B
-VK_F4 = 0x73
-VK_D = 0x44
-VK_N = 0x4E
-VK_A = 0x41
+
+import ctypes.wintypes as wintypes
 
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
@@ -63,119 +73,189 @@ class KBDLLHOOKSTRUCT(ctypes.Structure):
     ]
 
 
-_hook_id = None
-_callback_ref = None  # prevent GC of the callback
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", wintypes.POINT),
+        ("mouseData", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+_BLOCKED_MOUSE_MSGS = {
+    WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
+    WM_XBUTTONDOWN, WM_XBUTTONUP,
+}
+
+_kb_hook_id = None
+_mouse_hook_id = None
+_kb_callback_ref = None
+_mouse_callback_ref = None
 _hook_thread = None
 _hook_thread_stop = False
 _overlay_locked = False
+_mouse_locked = False
 
 
-def _is_key_down(vk: int) -> bool:
-    """Check if a key is currently held down."""
-    return bool(ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000)
+def _any_modifier_held() -> bool:
+    for vk in (VK_CTRL, VK_ALT, VK_LWIN, VK_RWIN):
+        if ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000:
+            return True
+    return False
 
 
 def _keyboard_ll_callback(nCode, wParam, lParam):
-    """Low-level keyboard hook callback. Returns 1 to block, calls next hook to allow."""
-    global _overlay_locked
-    if nCode >= 0 and _overlay_locked and wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+    if nCode >= 0 and _overlay_locked:
         kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-        vk = kb.vkCode
-
-        # Block Ctrl+Shift+Esc (Task Manager)
-        if vk == VK_ESCAPE and _is_key_down(VK_LCONTROL) and _is_key_down(VK_LSHIFT):
+        if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
+            if kb.vkCode in (VK_TAB, VK_SPACE) and not _any_modifier_held():
+                return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
             return 1
-        if vk == VK_ESCAPE and _is_key_down(VK_RCONTROL) and _is_key_down(VK_RSHIFT):
-            return 1
+        return 1
+    return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
 
-        # Block Alt+Tab (App Switcher)
-        if vk == VK_TAB and (_is_key_down(VK_LMENU) or _is_key_down(VK_RMENU)):
-            return 1
 
-        # Block Alt+F4
-        if vk == VK_F4 and (_is_key_down(VK_LMENU) or _is_key_down(VK_RMENU)):
-            return 1
+def _mouse_ll_callback(nCode, wParam, lParam):
+    if nCode >= 0 and _mouse_locked and wParam in _BLOCKED_MOUSE_MSGS:
+        return 1
+    return ctypes.windll.user32.CallNextHookEx(_mouse_hook_id, nCode, wParam, lParam)
 
-        # Block Win+key combos (Tab=TaskView, D=Desktop, N=Notifications, A=ActionCenter)
-        if _is_key_down(VK_LWIN) or _is_key_down(VK_RWIN):
-            if vk in (VK_TAB, VK_D, VK_N, VK_A):
-                return 1
 
-        # Block lone Win key press (Start Menu)
-        if vk in (VK_LWIN, VK_RWIN):
-            return 1
+def _engage_cursor_lock():
+    screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+    screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+    cx, cy = screen_w // 2, screen_h // 2
+    rect = wintypes.RECT(cx, cy, cx + 1, cy + 1)
+    ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
 
-    return ctypes.windll.user32.CallNextHookEx(_hook_id, nCode, wParam, lParam)
+
+def _release_cursor_lock():
+    ctypes.windll.user32.ClipCursor(None)
 
 
 def _hook_thread_func():
-    """Run the Windows message loop for the keyboard hook in a background thread."""
-    global _hook_id, _callback_ref, _hook_thread_stop
+    global _kb_hook_id, _kb_callback_ref, _mouse_hook_id, _mouse_callback_ref, _hook_thread_stop
     import time as _time
     HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p)
-    _callback_ref = HOOKPROC(_keyboard_ll_callback)
-    _hook_id = ctypes.windll.user32.SetWindowsHookExW(
-        WH_KEYBOARD_LL, _callback_ref, None, 0
+    _kb_callback_ref = HOOKPROC(_keyboard_ll_callback)
+    _kb_hook_id = ctypes.windll.user32.SetWindowsHookExW(
+        WH_KEYBOARD_LL, _kb_callback_ref, None, 0
     )
-    if not _hook_id:
-        return
+    _mouse_callback_ref = HOOKPROC(_mouse_ll_callback)
+    _mouse_hook_id = ctypes.windll.user32.SetWindowsHookExW(
+        WH_MOUSE_LL, _mouse_callback_ref, None, 0
+    )
 
     msg = ctypes.wintypes.MSG()
     while not _hook_thread_stop:
-        # PeekMessage with PM_REMOVE — non-blocking, keeps hook alive
         if ctypes.windll.user32.PeekMessageW(
-            ctypes.byref(msg), None, 0, 0, 1  # PM_REMOVE = 1
+            ctypes.byref(msg), None, 0, 0, 1
         ):
             ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
             ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
         else:
-            _time.sleep(0.01)  # Yield CPU when no messages
+            _time.sleep(0.01)
 
 
-def _install_keyboard_hook() -> None:
-    """Install WH_KEYBOARD_LL hook in a background thread."""
-    global _overlay_locked, _hook_thread, _hook_thread_stop
+def _install_hooks() -> None:
+    global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop
     _overlay_locked = True
-    if _hook_id is not None:
-        return  # Already installed
+    _mouse_locked = True
+    _engage_cursor_lock()
+    if _kb_hook_id is not None:
+        return
     _hook_thread_stop = False
     import threading
-    _hook_thread = threading.Thread(target=_hook_thread_func, name="mg-kb-hook", daemon=True)
+    _hook_thread = threading.Thread(target=_hook_thread_func, name="mg-input-hook", daemon=True)
     _hook_thread.start()
 
 
-def _uninstall_keyboard_hook() -> None:
-    """Uninstall the keyboard hook and stop the message loop thread."""
-    global _hook_id, _callback_ref, _overlay_locked, _hook_thread_stop, _hook_thread
+def _uninstall_hooks() -> None:
+    global _kb_hook_id, _kb_callback_ref, _mouse_hook_id, _mouse_callback_ref
+    global _overlay_locked, _mouse_locked, _hook_thread_stop, _hook_thread
     _overlay_locked = False
-    if _hook_id is not None:
-        ctypes.windll.user32.UnhookWindowsHookEx(_hook_id)
-        _hook_id = None
-        _callback_ref = None
+    _mouse_locked = False
+    _release_cursor_lock()
     _hook_thread_stop = True
+    if _kb_hook_id is not None:
+        try:
+            ctypes.windll.user32.UnhookWindowsHookEx(_kb_hook_id)
+        except Exception:
+            pass
+        _kb_hook_id = None
+        _kb_callback_ref = None
+    if _mouse_hook_id is not None:
+        try:
+            ctypes.windll.user32.UnhookWindowsHookEx(_mouse_hook_id)
+        except Exception:
+            pass
+        _mouse_hook_id = None
+        _mouse_callback_ref = None
+    t = _hook_thread
+    if t is not None and t.is_alive():
+        try:
+            t.join(timeout=1.0)
+        except Exception:
+            pass
     _hook_thread = None
 
 
+# Legacy aliases for backward compat with tests
+_install_keyboard_hook = _install_hooks
+_uninstall_keyboard_hook = _uninstall_hooks
+
+
 def _set_taskbar_visible(visible: bool) -> None:
-    """No-op — we don't hide/show the taskbar. Overlay covers it instead."""
     return
 
 
-atexit.register(lambda: (_uninstall_keyboard_hook(), _set_taskbar_visible(True)))
+def _atexit_release_all():
+    _uninstall_hooks()
+    _set_taskbar_visible(True)
+
+
+atexit.register(_atexit_release_all)
 
 
 class SoftLockOverlay(QWidget):
     """Fullscreen, topmost, frameless glass shield for desktop soft-lock."""
+    background_ready = pyqtSignal(QImage)
 
-    def __init__(self, on_verify_requested=None):
+    def __init__(self, on_verify_requested=None, on_windows_lock_used=None):
         super().__init__()
+        self.background_ready.connect(self._on_background_ready)
         self._state: IslandState = get_state("idle")
         self._on_verify_requested = on_verify_requested
+        self._on_windows_lock_used = on_windows_lock_used
         self._background = QPixmap()
-        self._noise = self._build_noise_texture()
+        self._noise_image = self._build_noise_texture()
+        self._noise = QPixmap.fromImage(self._noise_image)
         self._phase = 0.0
         self._opacity_value = 0.0
         self._allow_close = False
+        self._lock_shown_at = None
+
+        self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
+        self._fallback_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.08);
+                color: rgba(255,255,255,0.55);
+                border: 1px solid rgba(255,255,255,0.12);
+                border-radius: 8px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.16);
+                color: rgba(255,255,255,0.90);
+            }
+        """)
+        self._fallback_btn.setFixedHeight(32)
+        self._fallback_btn.clicked.connect(self._use_windows_lock)
+        self._fallback_btn.hide()
 
         self._setup_window()
         self._setup_motion()
@@ -213,6 +293,17 @@ class SoftLockOverlay(QWidget):
         self.setGeometry(rect)
         self.setMinimumSize(rect.size())
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        btn_w = 180
+        btn_h = 32
+        margin = max(24, min(42, self.width() // 48))
+        self._fallback_btn.setGeometry(
+            margin,
+            self.height() - btn_h - margin,
+            btn_w, btn_h
+        )
+
     def _force_topmost(self) -> None:
         try:
             import ctypes
@@ -248,8 +339,28 @@ class SoftLockOverlay(QWidget):
                 self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                 self._timer.start()
                 self._animate_opacity(0.0, 1.0)
-                _install_keyboard_hook()
+                _install_hooks()
                 _set_taskbar_visible(False)
+                
+                self._lock_shown_at = time.monotonic()
+                self._fallback_prominent = False
+                self._fallback_btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255,255,255,0.08);
+                        color: rgba(255,255,255,0.55);
+                        border: 1px solid rgba(255,255,255,0.12);
+                        border-radius: 8px;
+                        padding: 6px 14px;
+                        font-size: 12px;
+                        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255,255,255,0.16);
+                        color: rgba(255,255,255,0.90);
+                    }
+                """)
+                self._fallback_btn.show()
+                self._fallback_btn.raise_()
             else:
                 self._force_topmost()
                 self.raise_()
@@ -259,7 +370,7 @@ class SoftLockOverlay(QWidget):
             return
 
         if state.name not in _LOCK_NAMES:
-            _uninstall_keyboard_hook()
+            _uninstall_hooks()
             _set_taskbar_visible(True)
             if self.isVisible():
                 self.dissolve()
@@ -274,124 +385,142 @@ class SoftLockOverlay(QWidget):
         if shot.isNull():
             self._background = QPixmap()
             return
-        half = shot.scaled(
-            max(1, rect.width() // 2),
-            max(1, rect.height() // 2),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        first = half.scaled(
-            max(1, rect.width() // 8),
-            max(1, rect.height() // 8),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        second = first.scaled(
-            max(1, rect.width() // 3),
-            max(1, rect.height() // 3),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        blurred = second.scaled(
-            rect.width(),
-            rect.height(),
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
 
-        # Pre-render the glass atmosphere and noise once into a cached QPixmap
-        # to avoid extremely heavy linear and radial gradient rasterization at 60fps.
-        cache = QPixmap(blurred.size())
-        cache.fill(Qt.GlobalColor.transparent)
-        painter = QPainter(cache)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        shot_image = shot.toImage()
+        noise_image = self._noise_image
+        self._background = QPixmap()
 
-        # 1. Paint blurred background screenshot
-        painter.drawPixmap(0, 0, blurred)
+        def _worker():
+            try:
+                half = shot_image.scaled(
+                    max(1, rect.width() // 2),
+                    max(1, rect.height() // 2),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                first = half.scaled(
+                    max(1, rect.width() // 8),
+                    max(1, rect.height() // 8),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                second = first.scaled(
+                    max(1, rect.width() // 3),
+                    max(1, rect.height() // 3),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+                blurred = second.scaled(
+                    rect.width(),
+                    rect.height(),
+                    Qt.AspectRatioMode.IgnoreAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
 
-        # 2. Paint glass atmosphere
-        r = QRect(0, 0, rect.width(), rect.height())
-        painter.fillRect(r, QColor(246, 248, 252, 119))
+                # Pre-render atmosphere and noise on a QImage off-thread
+                cache = QImage(blurred.size(), QImage.Format.Format_ARGB32)
+                cache.fill(Qt.GlobalColor.transparent)
+                painter = QPainter(cache)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        wash = QLinearGradient(0, 0, 0, r.height())
-        wash.setColorAt(0.0, QColor(255, 255, 255, 185))
-        wash.setColorAt(0.18, QColor(252, 254, 255, 129))
-        wash.setColorAt(0.54, QColor(244, 247, 252, 60))
-        wash.setColorAt(0.82, QColor(235, 239, 246, 75))
-        wash.setColorAt(1.0, QColor(218, 224, 235, 104))
-        painter.fillRect(r, wash)
+                # 1. Paint blurred background screenshot
+                painter.drawImage(0, 0, blurred)
 
-        # Draw static glass glow overlays
-        for x, y, radius, color, alpha in (
-            (r.width() * 0.22, r.height() * 0.22, r.width() * 0.44, QColor(255, 255, 255), 66),
-            (r.width() * 0.77, r.height() * 0.26, r.width() * 0.34, QColor(205, 235, 255), 38),
-            (r.width() * 0.72, r.height() * 0.76, r.width() * 0.38, QColor(255, 226, 238), 31),
-            (r.width() * 0.18, r.height() * 0.82, r.width() * 0.30, QColor(222, 233, 255), 25),
-        ):
-            glow = QRadialGradient(float(x), float(y), float(radius))
-            color.setAlpha(alpha)
-            glow.setColorAt(0.0, color)
-            glow.setColorAt(0.62, QColor(color.red(), color.green(), color.blue(), max(0, alpha // 5)))
-            glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(r, glow)
+                # 2. Paint glass atmosphere
+                r = QRect(0, 0, rect.width(), rect.height())
+                painter.fillRect(r, QColor(246, 248, 252, 119))
 
-        sheen = QLinearGradient(0, 0, r.width(), 0)
-        sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
-        sheen.setColorAt(0.20, QColor(255, 255, 255, 48))
-        sheen.setColorAt(0.50, QColor(255, 255, 255, 25))
-        sheen.setColorAt(0.80, QColor(255, 255, 255, 44))
-        sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(r, sheen)
+                wash = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+                wash.setColorAt(0.0, QColor(255, 255, 255, 185))
+                wash.setColorAt(0.18, QColor(252, 254, 255, 129))
+                wash.setColorAt(0.54, QColor(244, 247, 252, 60))
+                wash.setColorAt(0.82, QColor(235, 239, 246, 75))
+                wash.setColorAt(1.0, QColor(218, 224, 235, 104))
+                painter.fillRect(r, wash)
 
-        band = QLinearGradient(0, r.height() * 0.44, 0, r.height() * 0.60)
-        band.setColorAt(0.0, QColor(255, 255, 255, 0))
-        band.setColorAt(0.48, QColor(255, 255, 255, 35))
-        band.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(r, band)
+                # Draw static glass glow overlays
+                for x, y, radius, color, alpha in (
+                    (r.width() * 0.22, r.height() * 0.22, r.width() * 0.44, QColor(255, 255, 255), 66),
+                    (r.width() * 0.77, r.height() * 0.26, r.width() * 0.34, QColor(205, 235, 255), 38),
+                    (r.width() * 0.72, r.height() * 0.76, r.width() * 0.38, QColor(255, 226, 238), 31),
+                    (r.width() * 0.18, r.height() * 0.82, r.width() * 0.30, QColor(222, 233, 255), 25),
+                ):
+                    glow = QRadialGradient(float(x), float(y), float(radius))
+                    color.setAlpha(alpha)
+                    glow.setColorAt(0.0, color)
+                    glow.setColorAt(0.62, QColor(color.red(), color.green(), color.blue(), max(0, alpha // 5)))
+                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+                    painter.fillRect(r, glow)
 
-        edge = QLinearGradient(0, 0, 0, r.height())
-        edge.setColorAt(0.0, QColor(255, 255, 255, 106))
-        edge.setColorAt(0.09, QColor(255, 255, 255, 0))
-        edge.setColorAt(0.88, QColor(255, 255, 255, 0))
-        edge.setColorAt(1.0, QColor(255, 255, 255, 69))
-        painter.fillRect(r, edge)
+                sheen = QLinearGradient(0.0, 0.0, float(r.width()), 0.0)
+                sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
+                sheen.setColorAt(0.20, QColor(255, 255, 255, 48))
+                sheen.setColorAt(0.50, QColor(255, 255, 255, 25))
+                sheen.setColorAt(0.80, QColor(255, 255, 255, 44))
+                sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+                painter.fillRect(r, sheen)
 
-        painter.fillRect(QRectF(0, 0, r.width(), 1.5), QColor(255, 255, 255, 150))
-        painter.fillRect(QRectF(0, 0, 1.5, r.height()), QColor(255, 255, 255, 73))
-        painter.fillRect(QRectF(r.width() - 1.5, 0, 1.5, r.height()), QColor(255, 255, 255, 44))
-        painter.fillRect(QRectF(0, r.height() - 1.5, r.width(), 1.5), QColor(84, 88, 96, 31))
+                band = QLinearGradient(0.0, r.height() * 0.44, 0.0, r.height() * 0.60)
+                band.setColorAt(0.0, QColor(255, 255, 255, 0))
+                band.setColorAt(0.48, QColor(255, 255, 255, 35))
+                band.setColorAt(1.0, QColor(255, 255, 255, 0))
+                painter.fillRect(r, band)
 
-        shade = QLinearGradient(0, 0, 0, r.height())
-        shade.setColorAt(0.0, QColor(0, 0, 0, 0))
-        shade.setColorAt(0.72, QColor(0, 0, 0, 0))
-        shade.setColorAt(1.0, QColor(44, 52, 64, 35))
-        painter.fillRect(r, shade)
+                edge = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+                edge.setColorAt(0.0, QColor(255, 255, 255, 106))
+                edge.setColorAt(0.09, QColor(255, 255, 255, 0))
+                edge.setColorAt(0.88, QColor(255, 255, 255, 0))
+                edge.setColorAt(1.0, QColor(255, 255, 255, 69))
+                painter.fillRect(r, edge)
 
-        # 3. Paint noise texture
-        if not self._noise.isNull():
-            painter.save()
-            painter.setOpacity(0.11)
-            painter.drawTiledPixmap(r, self._noise)
-            painter.restore()
+                painter.fillRect(QRectF(0.0, 0.0, float(r.width()), 1.5), QColor(255, 255, 255, 150))
+                painter.fillRect(QRectF(0.0, 0.0, 1.5, float(r.height())), QColor(255, 255, 255, 73))
+                painter.fillRect(QRectF(r.width() - 1.5, 0.0, 1.5, float(r.height())), QColor(255, 255, 255, 44))
+                painter.fillRect(QRectF(0.0, r.height() - 1.5, float(r.width()), 1.5), QColor(84, 88, 96, 31))
 
-        painter.end()
-        self._background = cache
+                shade = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+                shade.setColorAt(0.0, QColor(0, 0, 0, 0))
+                shade.setColorAt(0.72, QColor(0, 0, 0, 0))
+                shade.setColorAt(1.0, QColor(44, 52, 64, 35))
+                painter.fillRect(r, shade)
+
+                # 3. Paint noise texture
+                if noise_image is not None and not noise_image.isNull():
+                    painter.save()
+                    painter.setOpacity(0.11)
+                    painter.fillRect(r, QBrush(noise_image))
+                    painter.restore()
+
+                painter.end()
+                self.background_ready.emit(cache)
+            except Exception as e:
+                import logging
+                logging.getLogger("MajestyGuard.UI").error("Asynchronous background blur failed: %s", e)
+
+        import threading
+        threading.Thread(target=_worker, name="mg-bg-blur", daemon=True).start()
+
+    def _on_background_ready(self, image: QImage) -> None:
+        self._background = QPixmap.fromImage(image)
+        self.update()
 
     @staticmethod
-    def _build_noise_texture() -> QPixmap:
-        image = QImage(192, 192, QImage.Format.Format_ARGB32)
-        image.fill(QColor(0, 0, 0, 0))
-        for y in range(image.height()):
-            for x in range(image.width()):
-                seed = (x * 73856093) ^ (y * 19349663) ^ 0xA7C15
-                value = (seed ^ (seed >> 11) ^ (seed >> 23)) & 0xFF
-                alpha = 1 + (value % 6)
-                shade = 255 if value > 127 else 232
-                image.setPixelColor(x, y, QColor(shade, shade, shade, alpha))
-        return QPixmap.fromImage(image)
+    def _build_noise_texture() -> QImage:
+        import numpy as np
+        h = w = 192
+        ys, xs = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+        seed = (xs * 73856093) ^ (ys * 19349663) ^ 0xA7C15
+        value = (seed ^ (seed >> 11) ^ (seed >> 23)) & 0xFF
+        alpha = (1 + (value % 6)).astype(np.uint8)
+        shade = np.where(value > 127, 255, 232).astype(np.uint8)
+        # Build ARGB32 buffer
+        argb = (alpha.astype(np.uint32) << 24) | (shade.astype(np.uint32) << 16) \
+             | (shade.astype(np.uint32) << 8) | shade.astype(np.uint32)
+        # Ensure QImage owns its memory using .copy()
+        return QImage(argb.tobytes(), w, h, QImage.Format.Format_ARGB32).copy()
 
     def dissolve(self) -> None:
-        """Fade the entire window out using overlayOpacity instead of windowOpacity (prevents DWM composite thrashing)."""
+        _uninstall_hooks()
         self._dissolve_anim.stop()
         self._dissolve_anim.setStartValue(self._opacity_value)
         self._dissolve_anim.setEndValue(0.0)
@@ -409,8 +538,10 @@ class SoftLockOverlay(QWidget):
             pass
         self._timer.stop()
         self.hide()
+        self._fallback_btn.hide()
+        self._lock_shown_at = None
         self.setWindowOpacity(1.0)  # reset for next show
-        _uninstall_keyboard_hook()
+        _uninstall_hooks()
         _set_taskbar_visible(True)
 
     def _animate_opacity(self, start: float, end: float) -> None:
@@ -432,14 +563,17 @@ class SoftLockOverlay(QWidget):
         if self._opacity_value <= 0.02:
             self._timer.stop()
             self.hide()
-            _uninstall_keyboard_hook()
+            self._fallback_btn.hide()
+            self._lock_shown_at = None
+            _uninstall_hooks()
             _set_taskbar_visible(True)
 
     def _tick(self) -> None:
         self._phase = (self._phase + 0.008) % 1.0
-        # self.update() is omitted to stop the redundant 60fps fullscreen repaint loop
-        
-        # Hardening: actively close Task Manager if it gets opened
+
+        if _mouse_locked:
+            _engage_cursor_lock()
+
         try:
             user32 = ctypes.windll.user32
             hwnd_taskmgr = user32.FindWindowW("TaskManagerWindow", None)
@@ -447,6 +581,41 @@ class SoftLockOverlay(QWidget):
                 user32.PostMessageW(hwnd_taskmgr, WM_CLOSE, 0, 0)
         except Exception:
             pass
+
+        if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 20.0:
+            if not getattr(self, "_fallback_prominent", False):
+                self._fallback_prominent = True
+                self._fallback_btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255,255,255,0.08);
+                        color: rgba(255,255,255,0.90);
+                        border: 1px solid rgba(255,255,255,0.12);
+                        border-radius: 8px;
+                        padding: 6px 14px;
+                        font-size: 12px;
+                        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255,255,255,0.16);
+                        color: rgba(255,255,255,0.95);
+                    }
+                """)
+
+    def _use_windows_lock(self) -> None:
+        import ctypes
+        _uninstall_hooks()
+        hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+        if hwnd:
+            ctypes.windll.user32.ShowWindow(hwnd, 5)
+        hwnd2 = ctypes.windll.user32.FindWindowW("Shell_SecondaryTrayWnd", None)
+        if hwnd2:
+            ctypes.windll.user32.ShowWindow(hwnd2, 5)
+        if self._on_windows_lock_used:
+            self._on_windows_lock_used()
+        self.hide()
+        self._fallback_btn.hide()
+        self._lock_shown_at = None
+        ctypes.windll.user32.LockWorkStation()
 
     def getOverlayOpacity(self) -> float:
         return self._opacity_value
@@ -604,6 +773,8 @@ class SoftLockOverlay(QWidget):
     def _status_label(self) -> str:
         if self._state.name == "verifying_lock":
             return "VERIFYING"
+        if self._state.name == "verify_failed":
+            return "FAILED"
         if self._state.name == "social_lock":
             return "PRIVACY LOCK"
         if self._state.name == "hostile_lock":
@@ -628,17 +799,26 @@ class SoftLockOverlay(QWidget):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
-        if event.key() == Qt.Key.Key_Space:
+        key = event.key()
+        if key == Qt.Key.Key_Tab:
+            self._use_windows_lock()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Space:
             self._request_verification("overlay_key")
-        # Consume ALL keys — nothing passes through to desktop while locked
+            event.accept()
+            return
         event.accept()
+
+    def focusNextPrevChild(self, next: bool) -> bool:
+        return False
 
     def keyReleaseEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         event.accept()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         if self._allow_close:
-            _uninstall_keyboard_hook()
+            _uninstall_hooks()
             _set_taskbar_visible(True)
             event.accept()
         else:

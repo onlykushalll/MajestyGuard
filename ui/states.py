@@ -162,6 +162,18 @@ STATES: dict[str, IslandState] = {
         pulse=True,
         flash=True,
     ),
+    "verify_failed": IslandState(
+        name="verify_failed",
+        width=286,
+        height=66,
+        bg_color="#050202",
+        border_color="#4A1515",
+        accent_color="#FF453A",
+        label="",
+        label_color="#FFD0CC",
+        mode="verify_fail",
+        pulse=False,
+    ),
     "enrolling": IslandState(
         name="enrolling",
         width=312,
@@ -185,6 +197,16 @@ STATES: dict[str, IslandState] = {
         label_color="#E8F7FF",
         mode="diagnostic",
         pulse=True,
+    ),
+    "exit": IslandState(
+        name="exit",
+        width=120,
+        height=28,
+        bg_color="#111111",
+        border_color="#1C1C1E",
+        accent_color="#343438",
+        label="Shutting down",
+        label_color="#77777C",
     ),
 }
 
@@ -222,6 +244,8 @@ def get_state(
         state.label = "Privacy lock"
     elif name == "hostile_lock":
         state.label = "Security lock"
+    elif name == "verify_failed":
+        state.label = ""
     elif name == "enrolling":
         pct = state.progress * 100 if state.progress is not None else 0.0
         state.label = f"Enrollment {pct:.0f}%"

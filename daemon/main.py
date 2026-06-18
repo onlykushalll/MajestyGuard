@@ -55,6 +55,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("majestyguard.daemon")
 
+_ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
+
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
 from input_idle import get_idle_seconds
@@ -236,6 +238,7 @@ class MajestyGuardDaemon:
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
+        self._verify_cooldown_until = 0.0
         self._overlay_proc: Optional[subprocess.Popen] = None
         self._overlay_watchdog_thread: Optional[threading.Thread] = None
 
@@ -257,7 +260,6 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("idle")
         self.session_monitor.start()
         self._start_overlay_watchdog()
-        self._start_monitor_watchdog()
 
         if WHCDF_IPC_ENABLED:
             start_companion_ipc_thread(self._whcdf_stop)
@@ -374,6 +376,15 @@ class MajestyGuardDaemon:
             if attempt < max_attempts and retry_delay_s > 0:
                 time.sleep(retry_delay_s)
         self._last_camera_retry_at = time.monotonic()
+        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
+            log.error("[Camera] Cannot open camera after all retries — writing UNLOCKED and exiting")
+            try:
+                (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
+                (_MG_STATE_DIR / "daemon.pid").unlink(missing_ok=True)
+            except OSError:
+                pass
+            sys.exit(1)
+
         log.error("Camera unavailable after %d open attempts", max_attempts)
         if self.state != State.SYSTEM_LOCKED:
             self._transition(State.CAMERA_UNAVAILABLE)
@@ -412,8 +423,13 @@ class MajestyGuardDaemon:
             self._transition(State.SYSTEM_LOCKED)
             return
         if event in (SessionEvent.SESSION_UNLOCK, SessionEvent.SESSION_LOGON):
-            log.info("Session event %s -> IDLE", event.value)
+            log.info("Session event %s -> Unlocked, stopping main processes", event.value)
+            try:
+                (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
+            except OSError as e:
+                log.warning("Failed to write lock_state.txt: %s", e)
             self._transition(State.IDLE)
+            self.schedule_exit()
             return
         log.info(
             "Ignoring unknown session event: %s",
@@ -421,9 +437,16 @@ class MajestyGuardDaemon:
         )
 
     def _handle_ui_command(self, command: str, detail: str) -> None:
+        if command == "simulate_crash":
+            log.warning("Simulating unhandled exception/crash")
+            raise RuntimeError("Simulated unhandled exception")
         if command == "emergency_lock":
             log.warning("UI requested emergency lock from %s", detail or "unknown")
             self._transition(State.HOSTILE_LOCK)
+            return
+        if command == "windows_lock_used":
+            log.info("[CMD] Windows lock used by user — scheduling clean teardown")
+            self.schedule_exit()
             return
         if command != "verify_requested":
             log.warning("Ignoring unknown UI command: %s", command)
@@ -431,7 +454,22 @@ class MajestyGuardDaemon:
         if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK):
             log.debug("Ignoring verify_requested while state=%s", self.state.name)
             return
+        cooldown_until = getattr(self, "_verify_cooldown_until", 0.0)
+        if cooldown_until and time.monotonic() < cooldown_until:
+            remaining = cooldown_until - time.monotonic()
+            log.info("[CMD] verify_requested ignored — cooldown active, %.1fs remaining", remaining)
+            return
         self._start_soft_lock_verification(detail or "ui")
+
+    def schedule_exit(self) -> None:
+        """Schedule clean exit of daemon process."""
+        log.info("[Daemon] schedule_exit called — scheduling clean teardown in 0.5s")
+        try:
+            lock_state_file = _MG_STATE_DIR / "lock_state.txt"
+            lock_state_file.write_text("UNLOCKED\n", encoding="utf-8")
+        except OSError as e:
+            log.warning("Failed to write lock_state.txt on scheduled exit: %s", e)
+        self._exit_at = time.monotonic() + 0.5
 
     def _write_daemon_pid(self) -> None:
         """Write this daemon's PID to daemon.pid for monitor watchdog."""
@@ -451,15 +489,35 @@ class MajestyGuardDaemon:
             return
         self._is_tearing_down = True
 
-        # 1. Keyboard hooks live in the overlay process — broadcasting "active"
-        #    state already triggers _uninstall_keyboard_hook() in soft_lock.py.
-        log.info("[Teardown] Unhooking keyboard hooks (via IPC state broadcast)")
+        log.info("[Teardown] Starting clean teardown sequence")
 
-        # 2. Clear FaceState
+        # 1. Signal UI to exit cleanly and wait briefly
+        try:
+            self.ipc.broadcast_state("exit")
+            time.sleep(0.5)
+        except Exception as e:
+            log.warning("[Teardown] Failed to broadcast exit: %s", e)
+
+        # 2. Restore taskbar visibility (SW_SHOW) just in case
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+            if hwnd:
+                ctypes.windll.user32.ShowWindow(hwnd, 5)
+            hwnd2 = ctypes.windll.user32.FindWindowW("Shell_SecondaryTrayWnd", None)
+            if hwnd2:
+                ctypes.windll.user32.ShowWindow(hwnd2, 5)
+            log.info("[Teardown] Taskbar restored")
+        except Exception as e:
+            log.error("[Teardown] Taskbar restore failed: %s", e)
+
+        # 3. Clear FaceState
         log.info("[Teardown] Clearing FaceState")
-        FaceState.clear()
+        try:
+            FaceState.clear()
+        except Exception as e:
+            log.error("[Teardown] FaceState clear failed: %s", e)
 
-        # 3. Write UNLOCKED to lock_state.txt
+        # 4. Write UNLOCKED to lock_state.txt
         log.info("[Teardown] Writing UNLOCKED to lock_state.txt")
         try:
             lock_state_file = _MG_STATE_DIR / "lock_state.txt"
@@ -467,7 +525,7 @@ class MajestyGuardDaemon:
         except OSError as e:
             log.warning("[Teardown] Failed to write lock_state.txt: %s", e)
 
-        # 4. Remove daemon.pid
+        # 5. Remove daemon.pid
         log.info("[Teardown] Removing daemon.pid")
         try:
             pid_file = _MG_STATE_DIR / "daemon.pid"
@@ -476,15 +534,21 @@ class MajestyGuardDaemon:
         except OSError as e:
             log.warning("[Teardown] Failed to remove daemon.pid: %s", e)
 
-        # 5. Stop overlay
-        log.info("[Teardown] Overlay dismissed")
-        self._stop_owned_overlay()
+        # 6. Stop overlay (terminates the process if it's still alive)
+        log.info("[Teardown] Stopping overlay process")
+        try:
+            self._stop_owned_overlay()
+        except Exception as e:
+            log.error("[Teardown] Overlay stop failed: %s", e)
 
-        # 6. Shut down all subsystems
+        # 7. Shut down all subsystems
         log.info("[Teardown] Shutting down subsystems")
-        self._shutdown()
+        try:
+            self._shutdown()
+        except Exception as e:
+            log.error("[Teardown] Subsystem shutdown failed: %s", e)
 
-        # 7. Exit cleanly
+        # 8. Exit cleanly
         log.info("[Teardown] Exiting full daemon")
         sys.exit(0)
 
@@ -523,6 +587,10 @@ class MajestyGuardDaemon:
         while not self._stop.is_set():
             self._drain_session_events()
             self._drain_ui_commands()
+            if hasattr(self, "_exit_at") and time.monotonic() >= self._exit_at:
+                log.info("[MainLoop] Scheduled exit time reached — tearing down")
+                self.teardown()
+                break
             if self._stop_after_time_limit(run_started_at):
                 break
             loop_start = time.monotonic()
@@ -542,9 +610,12 @@ class MajestyGuardDaemon:
             if self._is_soft_lock_passive():
                 self._handle_passive_soft_lock(loop_start)
                 continue
-            if self._cap is None and not self._open_camera(max_attempts=1, retry_delay_s=0):
-                time.sleep(0.5)
-                continue
+            if self._cap is None:
+                max_att = 5 if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK) else 1
+                delay = 0.5 if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK) else 0.0
+                if not self._open_camera(max_attempts=max_att, retry_delay_s=delay):
+                    time.sleep(0.5)
+                    continue
             ret, frame = self._cap.read()
             if not ret or frame is None:
                 self._handle_camera_read_failure()
@@ -1101,7 +1172,18 @@ class MajestyGuardDaemon:
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._stranger_frames = 0
-        self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
+        self._on_verify_inconclusive()
+
+    def _on_verify_inconclusive(self) -> None:
+        now = time.monotonic()
+        self._verify_cooldown_until = now + 5.0
+        self.ipc.broadcast_state("verify_failed")
+        log.info("[Verify] Inconclusive — cooldown until +5.0s")
+        threading.Timer(2.0, self._end_verify_failed_visual).start()
+
+    def _end_verify_failed_visual(self) -> None:
+        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK):
+            self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
 
     def _start_soft_lock_verification(self, detail: str) -> None:
         now = time.monotonic()
@@ -1160,7 +1242,7 @@ class MajestyGuardDaemon:
             (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
         except OSError as e:
             log.warning("Failed to write lock_state.txt: %s", e)
-        threading.Timer(3.0, self.teardown).start()
+        self._exit_at = time.monotonic() + 3.0
 
     def _defer_input_idle_soft_lock(self) -> None:
         self._input_idle_soft_lock_armed = False
@@ -1468,7 +1550,9 @@ class MajestyGuardDaemon:
 
 
 def main() -> None:
+    global _ACTIVE_DAEMON
     daemon = MajestyGuardDaemon()
+    _ACTIVE_DAEMON = daemon
 
     def _sig_handler(sig, frame):
         log.info("Signal %d received - stopping", sig)
@@ -1480,4 +1564,62 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import ctypes
+    _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        sys.exit(0)
+
+    import atexit as _atexit
+    def _emergency_unlock():
+        """Write UNLOCKED on any unhandled exit so monitor stops relaunching a broken daemon.
+        If we crash while locked, call LockWorkStation() to secure the system using Windows Lock.
+        """
+        try:
+            _state_dir = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
+            _state_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Read current lock state to see if it was locked
+            lock_file = _state_dir / "lock_state.txt"
+            was_locked_in_file = False
+            if lock_file.exists():
+                was_locked_in_file = lock_file.read_text(encoding="utf-8").strip() == "LOCKED"
+            
+            # Write UNLOCKED so monitor stops relaunching
+            lock_file.write_text("UNLOCKED\n", encoding="utf-8")
+            (_state_dir / "daemon.pid").unlink(missing_ok=True)
+            
+            # Check if this was a clean exit
+            is_clean_teardown = False
+            state_was_locked = False
+            if _ACTIVE_DAEMON is not None:
+                is_clean_teardown = getattr(_ACTIVE_DAEMON, "_is_tearing_down", False)
+                state_was_locked = _ACTIVE_DAEMON.state in (
+                    State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK, State.SYSTEM_LOCKED
+                )
+            
+            force_lock_startup = os.environ.get("MG_FORCE_LOCK_STARTUP") == "1"
+            
+            should_lock = False
+            if not is_clean_teardown:
+                if was_locked_in_file or force_lock_startup or state_was_locked:
+                    should_lock = True
+            
+            if should_lock:
+                if not LOCK_ENABLED:
+                    log.warning("LOCK SUPPRESSED on abnormal exit (set MG_ENABLE_LOCK=1 to enable real locking)")
+                else:
+                    # Restore taskbar so user can enter credentials on Windows lock screen
+                    hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
+                    if hwnd:
+                        ctypes.windll.user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                    hwnd2 = ctypes.windll.user32.FindWindowW("Shell_SecondaryTrayWnd", None)
+                    if hwnd2:
+                        ctypes.windll.user32.ShowWindow(hwnd2, 5)
+                    # Call Windows lock
+                    ctypes.windll.user32.LockWorkStation()
+        except Exception:
+            pass
+
+    _atexit.register(_emergency_unlock)
+
     main()

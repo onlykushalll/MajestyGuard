@@ -22,7 +22,7 @@ import win32security  # type: ignore
 log = logging.getLogger(__name__)
 
 CMD_PIPE_NAME = r"\\.\pipe\MajestyGuard_CMD"
-VALID_COMMANDS = frozenset({"verify_requested", "emergency_lock"})
+VALID_COMMANDS = frozenset({"verify_requested", "emergency_lock", "windows_lock_used", "simulate_crash"})
 
 
 def cmd_payload(cmd: str, source: str = "") -> dict:

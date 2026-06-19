@@ -9,7 +9,7 @@ def test_status_reports_policy_and_daemon_process():
             "MG_ENABLE_SERVICE_IPC": "0",
         },
         process_lines=[
-            "pythonw.exe 1234 C:\\tmp\\MajestyGuard\\active\\MajestyGuard-v2\\daemon\\main.py",
+            "pythonw.exe 1234 C:\\tmp\\MajestyGuard\\daemon\\main.py",
         ],
     )
 

@@ -15,7 +15,7 @@
 
 #### [C1] Local Privilege Escalation via Legacy DpapiHelper Path Hijacking
 **Agent**: Security & Trust | Logic
-**File/Line**: [main.py:L171-176](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/main.py#L171-L176) and [main.py:L305-325](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/main.py#L305-L325)
+**File/Line**: [main.py:L171-176](file:///c:/tmp/MajestyGuard/daemon/main.py#L171-L176) and [main.py:L305-325](file:///c:/tmp/MajestyGuard/daemon/main.py#L305-L325)
 **Confidence**: 100% (PoC verified)
 **Bug type**: Untrusted Search Path (CWE-426) / LPE
 **Finding**: The daemon (running as `LocalSystem`) falls back to loading legacy v1 embeddings using `DPAPI_HELPER_PATH`. If the environment variable `MG_DPAPI_HELPER` is unset, it defaults to executing `C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper\MajestyGuard.DpapiHelper.exe` using `subprocess.run()`. Since `C:\tmp` is writable by unprivileged users on Windows, any local user can create this path and plant a malicious binary, which is executed as `LocalSystem`.
@@ -39,7 +39,7 @@ if not SECURE_HELPER_PATH.exists():
 
 #### [C2] Local Denial of Service (DoS) and Biometric Leakage via Named Pipe NULL DACL
 **Agent**: Security & Trust | Logic | Concurrency
-**File/Line**: [cmd_server.py:L50-56](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/cmd_server.py#L50-L56) and [ipc_server.py:L64-70](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/ipc_server.py#L64-L70)
+**File/Line**: [cmd_server.py:L50-56](file:///c:/tmp/MajestyGuard/daemon/cmd_server.py#L50-L56) and [ipc_server.py:L64-70](file:///c:/tmp/MajestyGuard/daemon/ipc_server.py#L64-L70)
 **Confidence**: 100% (PoC verified)
 **Bug type**: Incorrect Default Permissions (CWE-276)
 **Finding**: The command pipe (`\\.\pipe\MajestyGuard_CMD`) and UI state pipe (`\\.\pipe\MajestyGuard_UI`) are initialized using a SECURITY_DESCRIPTOR with a NULL DACL. This grants every local user full write/read privileges over these pipes.
@@ -76,7 +76,7 @@ def _build_sa() -> win32security.SECURITY_ATTRIBUTES:
 
 #### [C3] Unbounded Kernel Handle Leak in Named Pipe Servers
 **Agent**: Resilience & Distributed Correctness
-**File/Line**: [cmd_server.py:L130-136](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/cmd_server.py#L130-L136) and [ipc_server.py:L196-202](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/ipc_server.py#L196-L202)
+**File/Line**: [cmd_server.py:L130-136](file:///c:/tmp/MajestyGuard/daemon/cmd_server.py#L130-L136) and [ipc_server.py:L196-202](file:///c:/tmp/MajestyGuard/daemon/ipc_server.py#L196-L202)
 **Confidence**: 100% (Path traced)
 **Bug type**: Resource Leak
 **Finding**: The server loops in both `CMDServer` and `IPCServer` create new pipe instances inside a loop via `win32pipe.CreateNamedPipe`. The `finally` blocks call `DisconnectNamedPipe(handle)` but fail to call `win32file.CloseHandle(handle)`.
@@ -99,7 +99,7 @@ finally:
 
 #### [C4] Authentication Bypass via Permissive Directory Permissions on Biometric Templates
 **Agent**: Security & Trust
-**File/Line**: [main.py:L290](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/main.py#L290) and [enroll_v2.py:L41](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/enroll_v2.py#L41)
+**File/Line**: [main.py:L290](file:///c:/tmp/MajestyGuard/daemon/main.py#L290) and [enroll_v2.py:L41](file:///c:/tmp/MajestyGuard/daemon/enroll_v2.py#L41)
 **Confidence**: 100% (PoC verified)
 **Bug type**: Incorrect default permissions
 **Finding**: If `LOCALAPPDATA` is not set (typical for services running as `LocalSystem`), face templates (`embeddings_v2.npy`) are loaded/saved in `C:\tmp\MajestyGuard\embeddings_v2.npy`. Because `C:\tmp` allows unprivileged write access, an attacker can modify or replace this template file with their own face embedding.
@@ -117,7 +117,7 @@ v2_path.parent.mkdir(parents=True, exist_ok=True)
 
 #### [C5] RAM Exposure of Raw Biometric Frame Data in Low-Light Conditions
 **Agent**: Logic & Correctness
-**File/Line**: [face_engine.py:L1023-L1039](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/face_engine.py#L1023-L1039)
+**File/Line**: [face_engine.py:L1023-L1039](file:///c:/tmp/MajestyGuard/daemon/face_engine.py#L1023-L1039)
 **Confidence**: 90% (Path traced)
 **Bug type**: Logic bug / Memory cleanup bypass
 **Finding**: `_zero_frame(frame)` calls `frame[:] = 0` to erase raw frames from memory. However, in low-light conditions, `_enhance_frame(frame)` allocates and returns a *new* NumPy array. This reassigns `frame` in `process_frame`. Calling `_zero_frame` only clears the new array, leaving the original raw camera image un-zeroed in RAM.
@@ -149,7 +149,7 @@ def _post_lock_idle(self) -> None:
 
 #### [N2] p999 Tail Latency Spikes via Synchronous wmic/PowerShell Commands
 **Agent**: Performance & Scalability
-**File/Line**: [virtual_camera_detector.py:L117-152](file:///c:/tmp/MajestyGuard/active/MajestyGuard-v2/daemon/virtual_camera_detector.py#L117-152)
+**File/Line**: [virtual_camera_detector.py:L117-152](file:///c:/tmp/MajestyGuard/daemon/virtual_camera_detector.py#L117-152)
 **Confidence**: 90% (Verified via execution trace)
 **Bug type**: Performance bottleneck
 **Finding**: Every 30 seconds when the cache expires, `is_virtual_camera` runs synchronous wmic and PowerShell commands to inspect active cameras. This blocks the main capture/recognition loop for 1-2 seconds.

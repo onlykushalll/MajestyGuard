@@ -77,8 +77,9 @@ def test_session_lock_enters_system_locked_and_releases_camera():
     assert FaceState.is_authorized()[0] is False
 
 
-def test_session_unlock_returns_to_idle_without_real_lock_attempt():
+def test_session_unlock_returns_to_idle_without_real_lock_attempt(monkeypatch, tmp_path):
     daemon = _bare_daemon(State.SYSTEM_LOCKED)
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
 
     daemon._handle_session_event(SessionEvent.SESSION_UNLOCK)
 

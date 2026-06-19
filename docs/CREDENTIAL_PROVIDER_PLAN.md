@@ -137,7 +137,7 @@ This prevents manual fallback from becoming an auth bypass.
 
 This environment variable belongs to the v2 Python daemon in:
 
-`C:\tmp\MajestyGuard-v2\daemon\main.py`
+`C:\tmp\MajestyGuard\daemon\main.py`
 
 When `MG_ENABLE_LOCK` is unset or `0`, `lock_workstation()` logs:
 

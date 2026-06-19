@@ -162,9 +162,19 @@ class MonitorDaemon:
         self._daemon_proc = None
         self._idle_fired = False
         self._last_watchdog_launch = 0.0
+        self._relaunch_times: list[float] = []
 
     def run(self) -> None:
         _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Clear any stale lock state from a previous crash
+        try:
+            LOCK_STATE_FILE.write_text("UNLOCKED\n", encoding="utf-8")
+            DAEMON_PID_FILE.unlink(missing_ok=True)
+        except OSError:
+            pass
+        log.info("Cleared stale lock state on startup")
+
         _write_pid(MONITOR_PID_FILE, os.getpid())
         log.info(
             "MajestyGuard monitor started (PID %d, idle_timeout=%.0fs)",
@@ -265,4 +275,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import ctypes
+    _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardMonitor")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        sys.exit(0)
     main()

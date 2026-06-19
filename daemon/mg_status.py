@@ -117,7 +117,7 @@ def collect_status(
     env = os.environ if env is None else env
     lines = list(_default_process_lines() if process_lines is None else process_lines)
     daemon_running = any(
-        "majestyguard-v2" in line.lower() and "daemon" in line.lower() and "main.py" in line.lower()
+        "daemon" in line.lower() and "main.py" in line.lower()
         for line in lines
     )
     local_app_data = Path(env.get("LOCALAPPDATA", env.get("ProgramData", r"C:\ProgramData"))) / "MajestyGuard"

@@ -22,11 +22,21 @@ function Install-StartupFolderFallback {
         New-Item -ItemType Directory -Path $StartupDir -Force | Out-Null
     }
     $Path = Join-Path $StartupDir $CommandName
-    $Content = @(
-        "@echo off",
-        "cd /d `"$Root`"",
-        $Command
-    ) -join "`r`n"
+
+    # Split the one-liner command by '&&' to generate clean multi-line batch commands
+    $lines = @("@echo off", "cd /d `"$Root`"")
+    $parts = $Command -split "&&"
+    foreach ($part in $parts) {
+        $trimmed = $part.Trim()
+        if ($trimmed.StartsWith("set ")) {
+            $lines += $trimmed
+        } elseif ($trimmed) {
+            # Prefix execution with 'start ""' to run pythonw asynchronously
+            $lines += "start `"`" $trimmed"
+        }
+    }
+
+    $Content = $lines -join "`r`n"
     Set-Content -LiteralPath $Path -Value $Content -Encoding ASCII
     return $Path
 }
@@ -79,7 +89,7 @@ try {
     $Settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
-        -RestartCount 999 `
+        -RestartCount 5 `
         -RestartInterval (New-TimeSpan -Minutes 1) `
         -ExecutionTimeLimit (New-TimeSpan -Days 0)
 

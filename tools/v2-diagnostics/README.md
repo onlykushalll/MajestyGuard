@@ -1,39 +1,15 @@
-# MajestyGuard v2 Diagnostics Import
+# MajestyGuard v2 Diagnostics
 
-These tools were copied from the v2 proving-ground repo as non-conflicting
-diagnostics for the main MajestyGuard repository. They do not enable locking,
-Credential Provider registration, service install, SafeBoot, test signing, or
-registry hardening.
+The duplicate diagnostic scripts have been consolidated. To prevent stale code version issues, the active scripts are now maintained and executed directly from the top-level `/daemon` directory:
 
-## Model paths
+- `/daemon/mg_owner_preflight.py` (Camera/face enrollment checklist)
+- `/daemon/mg_recog_diag.py` (Face recognition diagnostics)
+- `/daemon/mg_layers3.py` (Liveness verification diagnostic)
+- `/daemon/mg_onnx_probe.py` (ONNX execution provider verification)
+- `/daemon/check_enrollment.py` (Offline enrollment inspection)
+- `/daemon/check_enrollment_pose_coverage.py` (Biometric vector math checks)
+- `/daemon/mg_policy_audit.py` (Policy threshold safety audits)
+- `/daemon/mg_run_summary.py` (Diagnostics reporter)
 
-Camera/model diagnostics use the existing v2 model folders by default:
-
-- `C:\tmp\MajestyGuard\active\MajestyGuard-v2\models`
-- `C:\tmp\MajestyGuard\active\MajestyGuard-v2\models_insightface`
-
-Set `MG_V2_ROOT` if the v2 proving-ground folder moves.
-
-## Camera tools
-
-The following scripts open the webcam and must only be run after an explicit
-camera-test warning:
-
-- `mg_owner_preflight.py`
-- `mg_recog_diag.py`
-- `mg_layers3.py`
-- `mg_onnx_probe.py`
-- `run_daemon_v2_safe.bat`
-
-`run_daemon_v2_safe.bat` keeps `MG_ENABLE_LOCK=0`, keeps WHCDF IPC disabled by
-default, and runs `mg_policy_audit.py --require-bound` before starting.
-
-## Offline tools
-
-These are safe offline checks:
-
-- `check_enrollment.py`
-- `check_enrollment_pose_coverage.py` checks both enrollment metadata and the
-  selected embedding matrix shape/count/finite/normalization.
-- `mg_policy_audit.py`
-- `mg_run_summary.py`
+To run the daemon in evaluation mode with locking disabled:
+Execute `run_daemon.bat` from the repository root (ensure `MG_ENABLE_LOCK` is set to `0` in your environment or inside the batch file).

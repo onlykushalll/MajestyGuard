@@ -54,6 +54,7 @@ VALID_STATES = frozenset({
     "idle",
     "enrolling",
     "calibrating",
+    "exit",
 })
 
 

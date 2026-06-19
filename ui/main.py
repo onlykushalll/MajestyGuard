@@ -138,6 +138,10 @@ class CommandWriter:
         payload = json.dumps({"cmd": "emergency_lock", "source": source}, separators=(",", ":")) + "\n"
         self._write_command(payload)
 
+    def windows_lock_used(self, source: str = "ui") -> None:
+        payload = json.dumps({"cmd": "windows_lock_used", "source": source}, separators=(",", ":")) + "\n"
+        self._write_command(payload)
+
     def _write_command(self, payload: str) -> None:
         GENERIC_WRITE = 0x40000000
         OPEN_EXISTING = 3
@@ -179,11 +183,16 @@ def main() -> None:
 
     command_writer = CommandWriter()
     disable_soft_lock_overlay = os.environ.get("MG_DISABLE_SOFT_LOCK_OVERLAY", "0") == "1"
-    shield = None if disable_soft_lock_overlay else SoftLockOverlay(on_verify_requested=command_writer.verify_requested)
+    shield = None if disable_soft_lock_overlay else SoftLockOverlay(
+        on_verify_requested=command_writer.verify_requested,
+        on_windows_lock_used=command_writer.windows_lock_used
+    )
     widget = IslandWidget(
         on_verify_requested=command_writer.verify_requested,
         on_overlay_dissolve=shield.dissolve if shield is not None else None,
     )
+    if shield is not None:
+        widget.setParent(shield, widget.windowFlags())
     widget.show()
     widget.apply_state(get_state("idle"))
 
@@ -192,6 +201,10 @@ def main() -> None:
     reader     = PipeReader(sig, stop_event)
 
     def _apply_state(state):
+        if state.name == "exit":
+            log.info("Exit state received — shutting down UI cleanly")
+            _shutdown()
+            return
         if shield is not None:
             shield.apply_state(state)
         widget.apply_state(state)

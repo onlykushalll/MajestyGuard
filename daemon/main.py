@@ -239,6 +239,7 @@ class MajestyGuardDaemon:
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._verify_cooldown_until = 0.0
+        self._verify_failed_until = 0.0
         self._overlay_proc: Optional[subprocess.Popen] = None
         self._overlay_watchdog_thread: Optional[threading.Thread] = None
 
@@ -659,7 +660,11 @@ class MajestyGuardDaemon:
             time.sleep(sleep_for)
 
     def _handle_passive_soft_lock(self, loop_start: float) -> None:
-        self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
+        now = time.monotonic()
+        if now < getattr(self, "_verify_failed_until", 0.0):
+            self.ipc.broadcast_state("verify_failed")
+        else:
+            self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
         if OVERLAY_WATCHDOG_ENABLED:
             self._ensure_overlay_alive_if_needed()
         if PASSIVE_FPS <= 0:
@@ -674,7 +679,11 @@ class MajestyGuardDaemon:
             self._handle_camera_read_failure()
             time.sleep(PASSIVE_LOOP_SLEEP_S)
             return
-        if self.presence.has_face(frame) and self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK):
+        if (
+            self.presence.has_face(frame)
+            and self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK)
+            and now >= getattr(self, "_verify_cooldown_until", 0.0)
+        ):
             self._start_soft_lock_verification("passive_face")
         elapsed = time.monotonic() - loop_start
         sleep_for = max(0.0, PASSIVE_LOOP_SLEEP_S - elapsed)
@@ -1176,14 +1185,10 @@ class MajestyGuardDaemon:
 
     def _on_verify_inconclusive(self) -> None:
         now = time.monotonic()
+        self._verify_failed_until = now + 2.0
         self._verify_cooldown_until = now + 5.0
         self.ipc.broadcast_state("verify_failed")
         log.info("[Verify] Inconclusive — cooldown until +5.0s")
-        threading.Timer(2.0, self._end_verify_failed_visual).start()
-
-    def _end_verify_failed_visual(self) -> None:
-        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK):
-            self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
 
     def _start_soft_lock_verification(self, detail: str) -> None:
         now = time.monotonic()
@@ -1193,6 +1198,7 @@ class MajestyGuardDaemon:
         self._soft_lock_fast_pass_frames = 0
         self._absent_frames = 0
         self._stranger_frames = 0
+        self._verify_failed_until = 0.0
         if self.face_eng is not None:
             self.face_eng.reset_liveness()
         self.ipc.broadcast_state("verifying_lock", detail="Face verification")

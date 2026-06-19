@@ -169,9 +169,9 @@ STATES: dict[str, IslandState] = {
         bg_color="#050202",
         border_color="#4A1515",
         accent_color="#FF453A",
-        label="",
+        label="Unknown face",
         label_color="#FFD0CC",
-        mode="verify_fail",
+        mode="failure",
         pulse=False,
     ),
     "enrolling": IslandState(
@@ -244,8 +244,6 @@ def get_state(
         state.label = "Privacy lock"
     elif name == "hostile_lock":
         state.label = "Security lock"
-    elif name == "verify_failed":
-        state.label = ""
     elif name == "enrolling":
         pct = state.progress * 100 if state.progress is not None else 0.0
         state.label = f"Enrollment {pct:.0f}%"

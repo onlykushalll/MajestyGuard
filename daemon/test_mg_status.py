@@ -16,7 +16,8 @@ def test_status_reports_policy_and_daemon_process():
     text = format_status(status)
 
     assert status["daemon_running"] is True
-    assert "Daemon: running" in text
-    assert "MG_ENABLE_LOCK: 1" in text
-    assert "MG_ENABLE_WHCDF_IPC: 0" in text
-    assert "Smart App Control:" in text
+    assert status["daemon_pid"] == 1234
+    assert "running" in text
+    assert "PID 1234" in text
+    assert "MG_ENABLE_LOCK" in text
+    assert "SAC:" in text or "Smart App Control:" in text

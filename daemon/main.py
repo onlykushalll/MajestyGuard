@@ -104,7 +104,7 @@ LOG_EVERY_N_FRAMES = _env_int("MG_LOG_EVERY_N_FRAMES", 30, 0)
 FRAME_INTERVAL_S = 1.0 / TARGET_FPS
 CAMERA_RETRY_ATTEMPTS = _env_int("MG_CAMERA_RETRY_ATTEMPTS", 10, 1)
 CAMERA_RETRY_DELAY_S = _env_float("MG_CAMERA_RETRY_DELAY_S", 2.0, 0.0, 60.0)
-CAMERA_UNAVAILABLE_RETRY_S = _env_float("MG_CAMERA_UNAVAILABLE_RETRY_S", 5.0, 0.1, 3600.0)
+CAMERA_UNAVAILABLE_RETRY_S = _env_float("MG_CAMERA_UNAVAILABLE_RETRY_S", 30.0, 0.1, 3600.0)
 CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE = _env_int("MG_CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE", 3, 1)
 SOFT_LOCK_IDLE_SECONDS = read_idle_timeout()
 SOFT_LOCK_IDLE_REARM_SECONDS = _env_float("MG_SOFT_LOCK_IDLE_REARM_SECONDS", 1.0, 0.0, 10.0)
@@ -240,6 +240,7 @@ class MajestyGuardDaemon:
         self._soft_lock_fast_pass_frames = 0
         self._verify_cooldown_until = 0.0
         self._verify_failed_until = 0.0
+        self._cold_start_ms: dict[str, int] = {}
         self._overlay_proc: Optional[subprocess.Popen] = None
         self._overlay_watchdog_thread: Optional[threading.Thread] = None
 
@@ -275,8 +276,26 @@ class MajestyGuardDaemon:
         else:
             log.info("Service DetectionResult IPC disabled (set MG_ENABLE_SERVICE_IPC=1 to enable)")
 
+        t0 = time.perf_counter()
         self._load_cv_engine()
+        t_model = time.perf_counter()
+        self._warmup_inference()
+        t_warm = time.perf_counter()
         self._open_camera()
+        t_cam = time.perf_counter()
+        self._cold_start_ms = {
+            "model_load": round((t_model - t0) * 1000),
+            "warmup": round((t_warm - t_model) * 1000),
+            "camera_open": round((t_cam - t_warm) * 1000),
+            "total": round((t_cam - t0) * 1000),
+        }
+        log.info(
+            "Cold start complete: model=%dms warmup=%dms camera=%dms total=%dms",
+            self._cold_start_ms["model_load"],
+            self._cold_start_ms["warmup"],
+            self._cold_start_ms["camera_open"],
+            self._cold_start_ms["total"],
+        )
 
         try:
             self._run_loop()
@@ -302,6 +321,16 @@ class MajestyGuardDaemon:
             raise RuntimeError("FaceEngine failed to initialize")
         self._load_enrolled_embeddings()
         log.info("FaceEngine loaded")
+
+    def _warmup_inference(self) -> None:
+        if self.face_eng is None:
+            return
+        blank = np.zeros((480, 640, 3), dtype=np.uint8)
+        try:
+            self.face_eng.process_frame(blank, liveness_mode="fast")
+            log.info("Warmup inference complete (blank frame)")
+        except Exception as exc:
+            log.warning("Warmup inference failed (non-fatal): %s", exc)
 
     def _load_enrolled_embeddings(self) -> None:
         engine = self._require_face_engine()
@@ -1574,6 +1603,11 @@ if __name__ == "__main__":
     _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         sys.exit(0)
+
+    # Hide console window (no-op when launched via pythonw.exe)
+    _hwnd_console = ctypes.windll.kernel32.GetConsoleWindow()
+    if _hwnd_console:
+        ctypes.windll.user32.ShowWindow(_hwnd_console, 0)  # SW_HIDE
 
     import atexit as _atexit
     def _emergency_unlock():

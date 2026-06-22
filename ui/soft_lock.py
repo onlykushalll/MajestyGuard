@@ -35,6 +35,38 @@ from states import IslandState, get_state
 
 _LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed"}
 
+_FALLBACK_BTN_STYLE_DIM = """
+    QPushButton {
+        background: rgba(255,255,255,0.08);
+        color: rgba(255,255,255,0.55);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 12px;
+        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+    }
+    QPushButton:hover {
+        background: rgba(255,255,255,0.16);
+        color: rgba(255,255,255,0.90);
+    }
+"""
+
+_FALLBACK_BTN_STYLE_PROMINENT = """
+    QPushButton {
+        background: rgba(255,255,255,0.08);
+        color: rgba(255,255,255,0.90);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 8px;
+        padding: 6px 14px;
+        font-size: 12px;
+        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+    }
+    QPushButton:hover {
+        background: rgba(255,255,255,0.16);
+        color: rgba(255,255,255,0.95);
+    }
+"""
+
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
 WM_CLOSE = 0x0010
@@ -267,21 +299,7 @@ class SoftLockOverlay(QWidget):
         self._lock_shown_at = None
 
         self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
-        self._fallback_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(255,255,255,0.08);
-                color: rgba(255,255,255,0.55);
-                border: 1px solid rgba(255,255,255,0.12);
-                border-radius: 8px;
-                padding: 6px 14px;
-                font-size: 12px;
-                font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
-            }
-            QPushButton:hover {
-                background: rgba(255,255,255,0.16);
-                color: rgba(255,255,255,0.90);
-            }
-        """)
+        self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
         self._fallback_btn.setFixedHeight(32)
         self._fallback_btn.clicked.connect(self._use_windows_lock)
         self._fallback_btn.hide()
@@ -373,21 +391,7 @@ class SoftLockOverlay(QWidget):
                 
                 self._lock_shown_at = time.monotonic()
                 self._fallback_prominent = False
-                self._fallback_btn.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(255,255,255,0.08);
-                        color: rgba(255,255,255,0.55);
-                        border: 1px solid rgba(255,255,255,0.12);
-                        border-radius: 8px;
-                        padding: 6px 14px;
-                        font-size: 12px;
-                        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
-                    }
-                    QPushButton:hover {
-                        background: rgba(255,255,255,0.16);
-                        color: rgba(255,255,255,0.90);
-                    }
-                """)
+                self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
                 self._fallback_btn.show()
                 self._fallback_btn.raise_()
             else:
@@ -611,21 +615,7 @@ class SoftLockOverlay(QWidget):
         if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 20.0:
             if not getattr(self, "_fallback_prominent", False):
                 self._fallback_prominent = True
-                self._fallback_btn.setStyleSheet("""
-                    QPushButton {
-                        background: rgba(255,255,255,0.08);
-                        color: rgba(255,255,255,0.90);
-                        border: 1px solid rgba(255,255,255,0.12);
-                        border-radius: 8px;
-                        padding: 6px 14px;
-                        font-size: 12px;
-                        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
-                    }
-                    QPushButton:hover {
-                        background: rgba(255,255,255,0.16);
-                        color: rgba(255,255,255,0.95);
-                    }
-                """)
+                self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_PROMINENT)
 
     def _use_windows_lock(self) -> None:
         import ctypes

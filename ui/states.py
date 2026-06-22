@@ -211,6 +211,27 @@ STATES: dict[str, IslandState] = {
 }
 
 
+_STATIC_LABEL_OVERRIDES: dict[str, str] = {
+    "soft_locked": "Locked",
+    "locked_passive": "Locked",
+    "verifying_lock": "Verifying",
+    "social_lock": "Privacy lock",
+    "hostile_lock": "Security lock",
+    "calibrating": "Face quality",
+}
+
+
+
+_STATIC_LABEL_OVERRIDES = {
+    "soft_locked": "Locked",
+    "locked_passive": "Locked",
+    "verifying_lock": "Verifying",
+    "social_lock": "Privacy lock",
+    "hostile_lock": "Security lock",
+    "calibrating": "Face quality",
+}
+
+
 def _clamp_optional(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
@@ -236,17 +257,9 @@ def get_state(
     state.face_position = _clamp_optional(face_position)
     state.detail = detail or ""
 
-    if name in {"soft_locked", "locked_passive"}:
-        state.label = "Locked"
-    elif name == "verifying_lock":
-        state.label = "Verifying"
-    elif name == "social_lock":
-        state.label = "Privacy lock"
-    elif name == "hostile_lock":
-        state.label = "Security lock"
+    if name in _STATIC_LABEL_OVERRIDES:
+        state.label = _STATIC_LABEL_OVERRIDES[name]
     elif name == "enrolling":
         pct = state.progress * 100 if state.progress is not None else 0.0
         state.label = f"Enrollment {pct:.0f}%"
-    elif name == "calibrating":
-        state.label = "Face quality"
     return state

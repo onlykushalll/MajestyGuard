@@ -79,7 +79,7 @@ class LivenessDetector:
         # low while preventing one bad frame from poisoning the 10th percentile.
         self._onnx_score_history: deque[float] = deque(maxlen=5)
 
-        # Add-on liveness layers from the Claude bundle.
+        # Add-on liveness layers.
         self._depth_liveness = DepthLivenessDetector(model_dir) if model_dir else None
         self._rppg = CHROMrPPGDetector()
         self._attention = AttentionDetector()

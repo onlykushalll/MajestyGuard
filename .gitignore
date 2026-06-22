@@ -1,10 +1,6 @@
-
 # Models (too large for GitHub)
-
 models/
-
 **/models/
-
 *.onnx
 *.npy
 *.npz
@@ -12,48 +8,34 @@ models/
 *.pickle
 
 # Build output
-
 build/
-
 obj/
-
 bin/
 
 # Local research/workspace buckets
-
-# active/
-
 archive/
-
 external/
 
 # Python cache
-
 .pytest_cache/
-
 __pycache__/
-
 *.pyc
-
 .venv/
-
 .playwright-cli/
 
 # VS files
-
 .vs/
-
 *.user
 
-# Sensitive
-
+# Sensitive files
 *.mgd
-
 config.json
+.env
 
-# Local agent/operator state
-
+# Local agent/operator state & AI traces
+.agents/
 .claude/
+.gemini/
 .mcp.json
 CLAUDE_CONTEXT.md
 AGENT_CONTEXT.md
@@ -62,10 +44,16 @@ CODEX_CURRENT_HANDOFF.md
 PHASE2_CHAT_SUMMARY_*.md
 admin-logs/
 diagnose_localsystem_cv.ps1
-MajestyGuard.CVEngine/
 docs/legacy-imports/logs/
 docs/legacy-imports/
 docs/ORIGINAL_ARCHITECTURE.md
 docs/OSS_SIGNING_READINESS_DRAFTS.md
 docs/SIGNING_APPLICATION_PACK.md
-
+docs/context/
+docs/audit_report.md
+walkthrough.md
+task.md
+implementation_plan.md
+.codex/
+MajestyGuard.CVEngine/
+logs/

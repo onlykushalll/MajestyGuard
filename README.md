@@ -1,116 +1,114 @@
 # MajestyGuard
 
-MajestyGuard is an experimental Windows security project that brings a local-first, Face ID-inspired presence layer to the desktop.
+[![Build Status](https://img.shields.io/github/actions/workflow/status/onlykushalll/MajestyGuard/ci.yml?branch=main&style=flat-square)](https://github.com/onlykushalll/MajestyGuard/actions)
+[![Python Version](https://img.shields.io/badge/python-3.11-blue.svg?style=flat-square)](https://www.python.org/downloads/)
+[![.NET Version](https://img.shields.io/badge/.NET-8.0-violet.svg?style=flat-square)](https://dotnet.microsoft.com/download)
+[![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 
-It combines webcam-based face recognition, passive liveness checks, a desktop soft-lock shield, a Dynamic Island-style overlay, a Windows service path, and Credential Provider research. The goal is simple: protect the user's Windows session when the owner is away, while keeping biometric processing on the device.
+MajestyGuard is an experimental Windows security framework that implements a local-first, Face ID-inspired presence verification layer. It combines webcam-based face recognition, passive liveness detection, a desktop soft-lock shield, a Dynamic Island status overlay, and Credential Provider integrations.
 
-> Status: active research prototype. MajestyGuard is not yet a production login replacement. Service and lock-screen integration require trusted code signing and careful deployment review.
+---
 
-## Why This Exists
+> [!NOTE]
+> **Personal Project Notice**: MajestyGuard is a personal project developed for exploration, learning, and productivity. It is an active research prototype and is not intended as a production security utility or enterprise login replacement.
 
-Windows has strong authentication, but it does not provide an Apple/Samsung-style local presence experience for ordinary desktop workflows. MajestyGuard explores that gap:
+---
 
-- recognize the enrolled owner locally
-- detect presence changes while the desktop is active
-- apply protective lock or restricted states when the owner leaves
-- keep background apps running during ordinary desktop soft-lock
-- keep camera frames and biometric templates off the cloud
-- provide a clear, polished overlay instead of a noisy background utility
+## 🏗️ System Architecture
 
-## Core Principles
+MajestyGuard utilizes a modular architecture split between a high-performance C#/.NET state coordinator and a Python-based computer vision pipeline.
 
-- **Local-first biometrics:** Camera frames are processed on-device.
-- **No cloud face processing:** MajestyGuard does not upload camera frames or biometric templates.
-- **User-controlled deployment:** Service install, Credential Provider registration, and lock-screen work are opt-in.
-- **No security weakening:** Smart App Control, Windows security settings, and OS policy protections should stay intact.
-- **Recoverable operations:** Installer behavior must be paired with uninstall/recovery paths.
-- **Honest status:** Experimental features are labeled as such until signed, verified, and documented.
+```mermaid
+graph TD
+    A[Webcam / Frame Capture] -->|RGB Frames| B(Python CV Engine)
+    B -->|Face Recog & Liveness Analysis| C{Decision Logic}
+    C -->|Biometric Match / Presence Result| D[Named Pipe IPC Bridge]
+    D -->|State Updates| E[C# State Coordinator]
+    E -->|State Transition Events| F[PyQt Dynamic Island UI]
+    E -->|Session Locking & Unlock Actions| G[Windows Service / Credential Provider]
+```
 
-## Architecture
+---
+
+## 📂 Repository Directory Structure
+
+The repository utilizes a flattened layout putting active executables and launchers in the root directory:
 
 ```text
 MajestyGuard/
-  src/
-    MajestyGuard.Core/                Shared state machine, IPC contracts, security models
-    MajestyGuard.Service/             Windows service orchestration layer
-    MajestyGuard.Overlay/             WinUI desktop overlay
-    MajestyGuard.CVEngine/            Python face recognition and liveness engine
-    MajestyGuard.CredentialProvider/  Windows Credential Provider research path
-    MajestyGuard.Tests/               .NET test suite
-  tests/                              Installer and integration safety tests
-  tools/                              Diagnostics, stubs, and release helpers
-  docs/                               Architecture, signing, and operational notes
+├── .github/                   # GitHub Actions workflows & issue/PR templates
+├── companion/                 # Windows Hello Companion App (UWP C#)
+├── daemon/                    # MajestyGuard Core Python Daemon (IPC, policy audit, monitors)
+├── ui/                        # Dynamic Island UI & Soft-Lock overlay (PyQt)
+├── setup/                     # PowerShell install/uninstall scripts
+├── src/                       # Source files for C# modules
+│   ├── MajestyGuard.Core/     # Core state machine, security vaults, IPC models
+│   ├── MajestyGuard.Service/  # Windows service background host
+│   ├── MajestyGuard.Overlay/  # Custom WinUI desktop overlay
+│   ├── MajestyGuard.CVEngine/ # CV pipeline and face recognition module
+│   └── MajestyGuard.CredentialProvider/ # Credential Provider DLL (C++)
+├── tests/                     # Integration and path safety tests
+├── tools/                     # Legacy diagnostics & stubs
+├── docs/                      # Technical plans, reports & operational manuals
+├── LICENSE                    # MIT License
+└── requirements.txt           # Python dependency file
 ```
 
-The service is intended to be the coordinator. It receives CV results, moves the state machine, tells the overlay what to show, and eventually bridges to lock-screen components when trusted signing is available.
+---
 
-## Current Capabilities
+## 🛠️ Build & Installation
 
-- C#/.NET core state machine and IPC contracts
-- Windows service prototype with service-only validation flow
-- WinUI overlay and Dynamic Island-style status surface
-- User-space desktop soft-lock path that can cover the active desktop without storing passwords
-- Python CV engine with face recognition, liveness, attention, depth, and virtual camera checks
-- DPAPI-backed embedding storage work
-- Installer/uninstaller scripts with safety checks
-- Test coverage for service behavior, installer safety, IPC schema, and state transitions
+### Requirements
+* Windows 11
+* .NET SDK 8
+* Python 3.11 (configured in path)
+* Visual Studio Build Tools with C++ workloads
 
-## Current Limitations
-
-- Trusted production signing is not complete yet.
-- Credential Provider registration is not enabled by default.
-- Smart App Control can block self-signed binaries; production builds need a trusted signing path.
-- Lock-screen auto-unlock remains blocked until the service and Credential Provider are trusted-signed and validated.
-- Live camera validation requires supervised local testing.
-- This repository is being prepared for public open-source review and signing eligibility.
-
-## Privacy
-
-MajestyGuard is designed to avoid remote biometric processing. See [PRIVACY.md](PRIVACY.md) for the current privacy position.
-
-## Code Signing Policy
-
-MajestyGuard intends to use a public, auditable signing process for release artifacts. See [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md).
-
-## Build
-
-Requirements:
-
-- Windows 11
-- .NET SDK 8
-- Visual Studio Build Tools with C++ workload for Credential Provider work
-- Python 3.11 for CV engine work
-
-Basic .NET validation:
-
+### Verification Build
+To build C# dependencies and run unit tests:
 ```powershell
+dotnet restore .\MajestyGuard.sln
 dotnet test .\src\MajestyGuard.Tests\MajestyGuard.Tests.csproj
 ```
 
-Package staging:
-
+To configure the Python computer vision engine:
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\Build.ps1
+cd src\MajestyGuard.CVEngine
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-Administrative install tests should only be run on a machine where you have a recovery plan. Do not register the Credential Provider on a daily-use system unless you understand the rollback process.
+To run Python daemon unit tests:
+```powershell
+# Run from repository root
+pytest daemon/
+```
 
-## Safety Notes
+---
 
-- Do not commit biometric enrollment data, model files, local logs, or user config.
-- Do not lower recognition/liveness thresholds to force tests to pass.
-- Do not bypass Windows security policy for production validation.
-- Do not enable real locking behavior during development without explicit safety flags and a recovery path.
+## 🔍 Troubleshooting Guide
 
-## Roadmap
+### 1. Platform Setup & Operating System Issues
+* **Smart App Control (SAC) / Defender Blocks**: Windows Smart App Control may block unsigned binaries or the virtual environment's executables. 
+  * *Solution*: Configure developer mode on Windows or build inside a user-writable directory (e.g. `C:\tmp\MajestyGuard`). Verify tests by invoking pythonw through the active virtual environment explicitly.
+* **C++ Compilation Errors**: Errors building `MajestyCredentialProvider.vcxproj` during packaging.
+  * *Solution*: Ensure the "Desktop development with C++" workload is installed in the Visual Studio Installer.
 
-- Publish a clean open-source release candidate.
-- Complete SignPath Foundation / trusted signing readiness.
-- Add reproducible GitHub Actions release workflow.
-- Finish signed service and Credential Provider validation.
-- Harden installer rollback and recovery documentation.
-- Prepare a polished Windows-first onboarding and enrollment flow.
+### 2. Runtime Errors
+* **Camera Access Conflicts**: The Python daemon fails to startup, logging `Camera initialization failed`.
+  * *Solution*: Close any zoom, teams, or browser applications utilizing the webcam. Verify that camera access is enabled under *Windows Privacy & Security Settings -> Camera*.
+* **Named Pipe IPC Connections Timeouts**: The PyQt UI overlay or daemon fails to sync state, throwing pipe connection failures.
+  * *Solution*: Ensure coordinate services are launched in sequence. The daemon (`run_daemon.bat`) must be started, which initializes the named pipe server, prior to starting the UI (`run_ui.bat`).
 
-## License
+### 3. Driver & Device Fallbacks
+* **Media Foundation Failures**: OpenCV throws DirectShow or MSMF grab warnings on laptops with multi-sensor arrays.
+  * *Solution*: Force DirectShow backend by setting `OPENCV_VIDEOIO_PRIORITY_MSMF=0` as an environment variable, or modify the camera index config in the settings.
+* **DPAPI Decryption Failures**: UWP companion app fails to persist keys or registers registration status failures.
+  * *Solution*: Run `setup/setup_whcdf.ps1` with elevated Administrator privileges to provision credential vaults and register permissions.
 
-MajestyGuard is released under the MIT License. See [LICENSE](LICENSE).
+---
+
+## 🛡️ License
+
+MajestyGuard is released under the [MIT License](LICENSE).

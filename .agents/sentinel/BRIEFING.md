@@ -1,25 +1,24 @@
-# BRIEFING — 2026-06-10T20:57:10+05:30
+# BRIEFING — 2026-06-22T17:25:00Z
 
 ## Mission
-Orchestrate and monitor the god-level multi-agent code review (Ultrareview) of the MajestyGuard-v2 repository.
+Sanitize MajestyGuard repo, fix test failures, configure OS community templates, and force-push to GitHub.
 
 ## 🔒 My Identity
 - Archetype: sentinel
-- Working directory: c:/tmp/MajestyGuard/.agents/sentinel
-- Orchestrator: bb74baca-fc7d-408d-8457-8a088fb9eedb
+- Working directory: c:\tmp\MajestyGuard\.agents\sentinel
+- Orchestrator: 3455162f-fe5e-40b1-aa31-3ae266b5f9fc
 - Victory Auditor: to be spawned on victory claim
 
 ## 🔒 Key Constraints
 - No technical decisions — relay only
 - Victory Audit is MANDATORY before reporting completion
-- Confine operations/logs/screenshots to system scratch directories
-- Strictly isolated specialist agent audits (Phase 1)
-- Verify critical findings with independent trace/PoC before reporting completion
+- Confine temporary ops/diagnostics to default scratch/screenshots directories, strict cleanup duty, zero residue left on disk.
+- DO NOT delete `.agents/`, `.claude/`, `.gemini/`, `.codex/`, `docs/context/`, `docs/audit_report.md`, `.github/skills/` or any other AI/agent files from local filesystem on PC (keep in workspace, but exclude via `.gitignore`).
 
 ## User Context
-- **Last user request**: Execute an Ultrareview of MajestyGuard-v2 using specialized agents.
-- **Pending clarifications**: [none]
-- **Delivered results**: [none]
+- **Last user request**: Sanitize repository, fix Python tests, setup community standards, update README, and force-push to GitHub main remote. Keep agent files on the local filesystem but exclude them via `.gitignore`.
+- **Pending clarifications**: none
+- **Delivered results**: none
 
 ## Project Status
 - **Phase**: in progress
@@ -34,5 +33,6 @@ Orchestrate and monitor the god-level multi-agent code review (Ultrareview) of t
 - **Cron 2 (Liveness Check)**: task-19 (`*/10 * * * *`)
 
 ## Artifact Index
-- c:/tmp/MajestyGuard/ORIGINAL_REQUEST.md — verbatim record of initial request
-- c:/tmp/MajestyGuard/.agents/original_prompt.md — timestamped record of user prompt
+- c:\tmp\MajestyGuard\ORIGINAL_REQUEST.md — Authoritative record of user requests
+- c:\tmp\MajestyGuard\.agents\ORIGINAL_REQUEST.md — Agent-facing record of user requests
+- c:\tmp\MajestyGuard\.agents\sentinel\BRIEFING.md — Persistent working memory for Sentinel

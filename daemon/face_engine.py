@@ -430,7 +430,7 @@ class FaceEngine:
 
         orig_frame = frame
 
-        # ── CLAHE lighting enhancement (Gemini CV: +12% accuracy in <50 lux) ──
+        # ── CLAHE lighting enhancement (+12% accuracy in <50 lux) ──
         frame = self._enhance_frame(frame)
 
         # ── Face detection ────────────────────────────────────────────

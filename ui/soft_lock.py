@@ -113,7 +113,10 @@ def _keyboard_ll_callback(nCode, wParam, lParam):
             if kb.vkCode in (VK_TAB, VK_SPACE) and not _any_modifier_held():
                 return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
             return 1
-        return 1
+        # WM_KEYUP / WM_SYSKEYUP: always pass through. Releasing a key cannot
+        # trigger any bypass action, and swallowing it leaves the OS thinking
+        # the key is still held — only KEYDOWN needs to be gated.
+        return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
     return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
 
 
@@ -149,6 +152,7 @@ def _hook_thread_func():
     )
 
     msg = ctypes.wintypes.MSG()
+    _last_taskmgr_check = 0.0
     while not _hook_thread_stop:
         if ctypes.windll.user32.PeekMessageW(
             ctypes.byref(msg), None, 0, 0, 1
@@ -157,6 +161,19 @@ def _hook_thread_func():
             ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
         else:
             _time.sleep(0.01)
+        # Throttled, off-main-thread Task Manager close. Was previously a
+        # synchronous FindWindowW/PostMessageW call inside the 60fps UI tick —
+        # moved here so a slow window enumeration can never stall the overlay
+        # animation.
+        now = _time.monotonic()
+        if _overlay_locked and (now - _last_taskmgr_check) >= 0.4:
+            _last_taskmgr_check = now
+            try:
+                hwnd_taskmgr = ctypes.windll.user32.FindWindowW("TaskManagerWindow", None)
+                if hwnd_taskmgr:
+                    ctypes.windll.user32.PostMessageW(hwnd_taskmgr, WM_CLOSE, 0, 0)
+            except Exception:
+                pass
 
 
 def _install_hooks() -> None:
@@ -208,7 +225,19 @@ _uninstall_keyboard_hook = _uninstall_hooks
 
 
 def _set_taskbar_visible(visible: bool) -> None:
-    return
+    """Show/hide the taskbar. Defense-in-depth alongside the fullscreen overlay —
+    the overlay already covers it, but actually hiding it prevents any edge-case
+    flash (e.g. during opacity animation) and matches what the function name
+    promises, rather than being a silent no-op."""
+    try:
+        user32 = ctypes.windll.user32
+        cmd = 5 if visible else 0  # SW_SHOW / SW_HIDE
+        for cls in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
+            hwnd = user32.FindWindowW(cls, None)
+            if hwnd:
+                user32.ShowWindow(hwnd, cmd)
+    except Exception:
+        pass
 
 
 def _atexit_release_all():
@@ -387,10 +416,12 @@ class SoftLockOverlay(QWidget):
             return
 
         shot_image = shot.toImage()
+        del shot
         noise_image = self._noise_image
         self._background = QPixmap()
 
         def _worker():
+            nonlocal shot_image
             try:
                 half = shot_image.scaled(
                     max(1, rect.width() // 2),
@@ -398,6 +429,9 @@ class SoftLockOverlay(QWidget):
                     Qt.AspectRatioMode.IgnoreAspectRatio,
                     Qt.TransformationMode.SmoothTransformation,
                 )
+                # Release the unblurred screenshot from memory immediately —
+                # everything past this point only needs the downscaled copy.
+                del shot_image
                 first = half.scaled(
                     max(1, rect.width() // 8),
                     max(1, rect.height() // 8),
@@ -573,14 +607,6 @@ class SoftLockOverlay(QWidget):
 
         if _mouse_locked:
             _engage_cursor_lock()
-
-        try:
-            user32 = ctypes.windll.user32
-            hwnd_taskmgr = user32.FindWindowW("TaskManagerWindow", None)
-            if hwnd_taskmgr:
-                user32.PostMessageW(hwnd_taskmgr, WM_CLOSE, 0, 0)
-        except Exception:
-            pass
 
         if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 20.0:
             if not getattr(self, "_fallback_prominent", False):

@@ -93,8 +93,8 @@ STATES: dict[str, IslandState] = {
     ),
     "locked": IslandState(
         name="locked",
-        width=118,
-        height=12,
+        width=120,
+        height=28,
         bg_color="#030303",
         border_color="#211010",
         accent_color="#663333",

@@ -34,10 +34,13 @@ from insightface.app import FaceAnalysis
 sys.path.insert(0, os.path.dirname(__file__))
 from diagnostic_common import enhance_frame as _enhance_frame, select_primary_face as _select_primary_face
 from face_quality import FaceQuality, measure_face_quality
+from liveness_detector import LivenessDetector
 
 logging.basicConfig(level=logging.WARNING)
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models_insightface"
+LIVENESS_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+ENROLL_LIVENESS_THRESHOLD = float(os.environ.get("MG_ENROLL_LIVENESS_THRESHOLD", "0.82"))
 OUT_DIR = Path(os.environ.get("LOCALAPPDATA", os.environ.get("ProgramData", r"C:\ProgramData"))) / "MajestyGuard"
 OUT_FILE = OUT_DIR / "embeddings_v2.npy"
 OUT_META_FILE = OUT_DIR / "embeddings_v2_meta.json"
@@ -189,6 +192,7 @@ def _capture_burst(
     angle_index: int,
     samples_per_angle: int,
     min_quality: float,
+    liveness: LivenessDetector,
     enrollment_deadline: float | None = None,
 ) -> list[EnrollmentSample]:
     accepted: list[EnrollmentSample] = []
@@ -210,6 +214,15 @@ def _capture_burst(
 
         ready, _, quality = _face_readiness(frame, face, min_quality=min_quality)
         if not ready:
+            time.sleep(0.05)
+            continue
+
+        live_score = liveness.score_fast(frame, face)
+        if live_score < ENROLL_LIVENESS_THRESHOLD:
+            logging.getLogger(__name__).warning(
+                "Enrollment sample rejected: liveness %.2f below %.2f (angle=%s)",
+                live_score, ENROLL_LIVENESS_THRESHOLD, angle,
+            )
             time.sleep(0.05)
             continue
 
@@ -475,6 +488,11 @@ def main() -> int:
     print("Model loaded.")
     print()
 
+    print("Loading liveness detector...")
+    liveness = LivenessDetector(model_dir=str(LIVENESS_MODELS_DIR))
+    print("Liveness detector loaded.")
+    print()
+
     cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
     if not cap.isOpened():
         cap = cv2.VideoCapture(args.camera)
@@ -486,6 +504,10 @@ def main() -> int:
         print(message)
         cap.release()
         cv2.destroyAllWindows()
+        try:
+            liveness.close()
+        except Exception:
+            pass
         return 1
 
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -571,6 +593,7 @@ def main() -> int:
                     i,
                     samples_per_angle,
                     min_quality,
+                    liveness,
                     enrollment_deadline,
                 )
                 if _enrollment_deadline_expired(enrollment_deadline):
@@ -594,6 +617,10 @@ def main() -> int:
 
     cap.release()
     cv2.destroyAllWindows()
+    try:
+        liveness.close()
+    except Exception:
+        pass
 
     expected = len(angles) * samples_per_angle
     if len(samples) != expected:

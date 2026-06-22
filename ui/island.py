@@ -365,7 +365,7 @@ class IslandWidget(QWidget):
             if self._flash_frame_counter >= 7:  # toggle every ~110ms
                 self._flash_frame_counter = 0
                 self._flash_count -= 1
-                self._alpha = 1.0 if self._flash_count % 2 == 0 else 0.22
+                self._alpha = 1.0 if self._flash_count % 2 == 0 else 0.40
                 if self._flash_count <= 0:
                     self._anim_flash_active = False
                     self._alpha = 1.0
@@ -465,9 +465,18 @@ class IslandWidget(QWidget):
         self.move(x, y)
 
     def _update_mask(self) -> None:
-        """Update window input mask to only capture events on the active pill (plus padding for glow)."""
+        """Update window input mask to only capture events on the active pill (plus padding for glow).
+        Skipped when the pill size hasn't moved enough to matter — setMask is a real OS-level
+        region recompute and calling it on every 60fps morph tick for sub-pixel deltas is wasteful."""
         pill_w = int(round(self._anim_w))
         pill_h = int(round(self._anim_h))
+        if (
+            abs(pill_w - getattr(self, "_last_mask_w", -999)) < 2
+            and abs(pill_h - getattr(self, "_last_mask_h", -999)) < 2
+        ):
+            return
+        self._last_mask_w = pill_w
+        self._last_mask_h = pill_h
         pill_x = (500 - pill_w) // 2
         pill_y = _PAD
 

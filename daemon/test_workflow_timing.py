@@ -19,7 +19,7 @@ def test_workflow_test_script_documents_supervised_timing_targets():
 
 
 def test_soft_lock_document_preserves_door_lock_principle():
-    text = (ROOT / "docs" / "SOFT_LOCK_VS_WINDOWS_LOCK.md").read_text(encoding="utf-8")
+    text = (ROOT / "docs" / "guides" / "LOCK_SCREEN_INTEGRATION.md").read_text(encoding="utf-8")
 
     assert "Music/audio: continues" in text
     assert "Downloads: continues" in text

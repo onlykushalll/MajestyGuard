@@ -56,6 +56,16 @@ MajestyGuard/
 
 ---
 
+## 📚 Technical Documentation & Specifications
+
+Detailed architectural documents, lock screen plans, and code-signing roadmaps are organized under the `docs/` folder:
+
+* **[System Architecture & Visual Design](file:///c:/tmp/MajestyGuard/docs/design/ARCHITECTURE_AND_DESIGN.md)**: Deep dive into the multi-process named pipe topology, 12-layer biometric liveness engine, state machine, and Apple Dynamic Island-styled visual design specifications (HSL palettes, typography, spring-physics animations).
+* **[Lock Screen & OS Integration Guide](file:///c:/tmp/MajestyGuard/docs/guides/LOCK_SCREEN_INTEGRATION.md)**: Guide on soft lock overlays vs. hardware lock screens, C++ COM Credential Provider DLL integration details, named pipe broker protocol schema, and the Windows Hello Companion Device Framework (WHCDF) onboarding plan.
+* **[Code Signing Roadmap & Release Checklist](file:///c:/tmp/MajestyGuard/docs/signing/CODE_SIGNING_AND_RELEASES.md)**: Roadmap for trusted Authenticode signatures (SignPath Foundation, Azure Trusted Signing), SignPath eligibility reviews, draft privacy/signing policies, and the required pre-release validation checklist.
+
+---
+
 ## 🛠️ Build & Installation
 
 ### Requirements

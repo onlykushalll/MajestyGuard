@@ -222,16 +222,6 @@ _STATIC_LABEL_OVERRIDES: dict[str, str] = {
 
 
 
-_STATIC_LABEL_OVERRIDES = {
-    "soft_locked": "Locked",
-    "locked_passive": "Locked",
-    "verifying_lock": "Verifying",
-    "social_lock": "Privacy lock",
-    "hostile_lock": "Security lock",
-    "calibrating": "Face quality",
-}
-
-
 def _clamp_optional(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None

@@ -49,6 +49,12 @@ namespace MajestyGuard.Service
         private static extern bool GetMessageW(out MSG msg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
         [DllImport("user32.dll")]
+        private static extern bool TranslateMessage(ref MSG msg);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr DispatchMessageW(ref MSG msg);
+
+        [DllImport("user32.dll")]
         private static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
         [DllImport("user32.dll")]
@@ -152,8 +158,10 @@ namespace MajestyGuard.Service
                 _logger.LogInformation("SessionWatcher registered for WTS notifications");
             }
 
-            while (GetMessageW(out _, IntPtr.Zero, 0, 0))
+            while (GetMessageW(out MSG msg, IntPtr.Zero, 0, 0))
             {
+                TranslateMessage(ref msg);
+                DispatchMessageW(ref msg);
             }
 
             WTSUnRegisterSessionNotification(hwnd);

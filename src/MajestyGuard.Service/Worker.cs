@@ -804,23 +804,75 @@ namespace MajestyGuard.Service
         private Process? LaunchOverlay()
         {
             var overlayExe = FindOverlayExe();
-            var psi = new ProcessStartInfo
-            {
-                FileName        = overlayExe,
-                UseShellExecute = false,
-                CreateNoWindow  = false,
-            };
 
-            psi.EnvironmentVariables["MG_OVERLAY_PIPE"] = _config.OverlayPipeName;
-
-            var proc = Process.Start(psi);
-            if (proc == null)
+            // C3 fix: the service runs as LocalSystem in Session 0. Plain
+            // Process.Start() launches into Session 0, which is non-interactive
+            // and invisible to the logged-in user. CreateProcessAsUserW with the
+            // active console session's token is required, mirroring the same
+            // pattern already used for DpapiHelper below.
+            var sessionId = WTSGetActiveConsoleSessionId();
+            if (!WTSQueryUserToken(sessionId, out var userToken))
             {
-                _logger.LogError("Overlay process failed to start");
+                _logger.LogError("WTSQueryUserToken failed (err {Err}). Cannot launch overlay.",
+                    Marshal.GetLastWin32Error());
                 return null;
             }
-            _logger.LogInformation("Overlay launched (PID {Pid})", proc.Id);
-            return proc;
+
+            try
+            {
+                // lpEnvironment=NULL means the child inherits a copy of the
+                // calling (service) process's environment — set the var here
+                // first so it carries through.
+                Environment.SetEnvironmentVariable("MG_OVERLAY_PIPE", _config.OverlayPipeName);
+
+                var si = new STARTUPINFOW
+                {
+                    cb = Marshal.SizeOf<STARTUPINFOW>(),
+                    lpDesktop = "winsta0\\default",
+                };
+
+                var cmdLine = $"\"{overlayExe}\"";
+
+                if (!CreateProcessAsUserW(
+                        userToken,
+                        null,
+                        cmdLine,
+                        IntPtr.Zero,
+                        IntPtr.Zero,
+                        false,
+                        0,
+                        IntPtr.Zero,
+                        null,
+                        ref si,
+                        out var pi))
+                {
+                    _logger.LogError("CreateProcessAsUser for overlay failed (err {Err})",
+                        Marshal.GetLastWin32Error());
+                    return null;
+                }
+
+                CloseHandle(pi.hThread);
+
+                Process proc;
+                try
+                {
+                    proc = Process.GetProcessById(pi.dwProcessId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Overlay process started (PID {Pid}) but could not be attached", pi.dwProcessId);
+                    CloseHandle(pi.hProcess);
+                    return null;
+                }
+
+                CloseHandle(pi.hProcess);
+                _logger.LogInformation("Overlay launched in interactive session (PID {Pid})", pi.dwProcessId);
+                return proc;
+            }
+            finally
+            {
+                CloseHandle(userToken);
+            }
         }
 
         // ─────────────────────────────────────────────────────────────

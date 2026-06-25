@@ -2,16 +2,26 @@
 // Handles encrypted storage and retrieval of face embeddings.
 //
 // SECURITY DESIGN:
-//   - Embeddings are encrypted using Windows DPAPI (ProtectedData)
-//   - DPAPI keys are tied to the current user's Windows credentials
+//   - Embeddings are encrypted using Windows DPAPI (ProtectedData) with
+//     LOCAL=machine scope (see DESCRIPTOR below) — bound to this machine's
+//     key, NOT the current user's credentials. This is deliberate: DPAPI
+//     keys derived from a user's password hash can be extracted via
+//     Mimikatz-style LSASS memory attacks if a valid credential is stolen.
+//     Machine-scoped keys require code execution ON this specific machine
+//     to decrypt, which is a stronger bar against that attack class.
+//   - Trade-off: any process running locally on this machine (not just the
+//     enrolled user) can call NCryptUnprotectSecret with this descriptor.
+//     This is accepted in exchange for defeating remote credential-theft
+//     decryption.
 //   - File path includes user SID to prevent cross-profile access
 //   - Raw embedding bytes are zeroed from memory after use
 //   - NEVER write raw embeddings to disk — only the encrypted blob
 //
 // IMPORTANT: This must run in USER context (not SYSTEM).
 //   Call from a user-mode process during enrollment and verification.
-//   The Windows Service (SYSTEM) cannot decrypt DPAPI-user-scoped data.
-//   CODEX: The Service should use a user-mode helper process for this.
+//   The Windows Service (SYSTEM) cannot decrypt this DPAPI-protected data
+//   directly — it uses a user-mode helper process (DpapiHelper) launched
+//   via CreateProcessAsUserW for this.
 
 using System;
 using System.IO;

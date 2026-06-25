@@ -129,7 +129,11 @@ class VirtualCameraDetector:
                     self._updating.discard(camera_index)
                 return self._cache[camera_index][1]
             else:
-                return False
+                logger.warning(
+                    "Camera identity refresh still in progress for index %d; blocking until verified",
+                    camera_index,
+                )
+                return True
 
     def _async_update(self, camera_index: int) -> None:
         try:

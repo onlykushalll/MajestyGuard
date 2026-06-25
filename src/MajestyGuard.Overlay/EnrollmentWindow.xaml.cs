@@ -1,4 +1,4 @@
-﻿// MajestyGuard.Overlay/EnrollmentWindow.xaml.cs
+// MajestyGuard.Overlay/EnrollmentWindow.xaml.cs
 // Full enrollment wizard logic.
 //ha
 // FIXES IN THIS VERSION:
@@ -163,7 +163,6 @@ namespace MajestyGuard.Overlay
                 case 6:
                     CompleteSubtitle.Text = "Generating your face profile — please wait...";
                     await FinalizeEnrollmentAsync();
-                    CompleteSubtitle.Text = "Face recognition is now active. Your PC will lock automatically when you step away.";
                     break;
             }
         }
@@ -214,6 +213,40 @@ namespace MajestyGuard.Overlay
             BtnCapture.IsEnabled = true;
             ResetOvalToIdle();
             SetCaptureStatus("Position your face in the oval", "#666666");
+        }
+
+        private void BtnFinalizeRetry_Click(object s, RoutedEventArgs e)
+        {
+            // Clear temporary enrollment JPEGs (U5)
+            foreach (var jpegPath in _capturedFramePaths.Values)
+            {
+                try
+                {
+                    if (File.Exists(jpegPath))
+                    {
+                        File.Delete(jpegPath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to delete temporary enrollment JPEG on retry: {Path}", jpegPath);
+                }
+            }
+            _capturedFramePaths.Clear();
+
+            // Go back to the Face Front step (index 2)
+            _currentStep = 2;
+            ShowStep(_currentStep);
+            _ = OnStepEnteredAsync(_currentStep);
+
+            // Update progress rail state
+            Steps[0].State = StepState.Complete;
+            Steps[1].State = StepState.Complete;
+            Steps[2].State = StepState.Active;
+            for (int i = 3; i < Steps.Count; i++)
+            {
+                Steps[i].State = StepState.Pending;
+            }
         }
 
         private async void BtnTest_Click(object s, RoutedEventArgs e)
@@ -325,8 +358,19 @@ namespace MajestyGuard.Overlay
 
             SetCaptureStatus("Generating face embeddings...", "#0A84FF");
 
+            bool success = false;
             try
             {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    SuccessIconBorder.Visibility = Visibility.Collapsed;
+                    BtnFinish.Visibility         = Visibility.Collapsed;
+                    BtnTest.Visibility           = Visibility.Collapsed;
+                    BtnFinalizeRetry.Visibility   = Visibility.Collapsed;
+                    CompleteTitleText.Text       = "Finalizing Enrollment";
+                    CompleteSubtitle.Text        = "Generating your face profile — please wait...";
+                });
+
                 var cvEngineDir = ResolveCvEngineDirectory();
                 var pythonExe = ResolvePythonExe(cvEngineDir);
                 var scriptPath = Path.Combine(cvEngineDir, "enroll_from_jpegs.py");
@@ -439,11 +483,57 @@ namespace MajestyGuard.Overlay
                 _logger.LogInformation(
                     "Enrollment complete â€” {Count} embeddings saved for SID: {Sid}",
                     embeddings.Length, sid);
+
+                // Delete temporary enrollment JPEGs (U5)
+                foreach (var jpegPath in _capturedFramePaths.Values)
+                {
+                    try
+                    {
+                        if (File.Exists(jpegPath))
+                        {
+                            File.Delete(jpegPath);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Failed to delete temporary enrollment JPEG: {Path}", jpegPath);
+                    }
+                }
+                _capturedFramePaths.Clear();
+
+                success = true;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "FinalizeEnrollmentAsync threw");
                 ShowError($"Enrollment failed: {ex.Message}");
+            }
+            finally
+            {
+                if (success)
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        SuccessIconBorder.Visibility = Visibility.Visible;
+                        BtnFinish.Visibility         = Visibility.Visible;
+                        BtnTest.Visibility           = Visibility.Visible;
+                        BtnFinalizeRetry.Visibility   = Visibility.Collapsed;
+                        CompleteTitleText.Text       = "You're all set, your majesty";
+                        CompleteSubtitle.Text        = "Face recognition is now active. Your PC will lock automatically when you step away.";
+                    });
+                }
+                else
+                {
+                    DispatcherQueue.TryEnqueue(() =>
+                    {
+                        SuccessIconBorder.Visibility = Visibility.Collapsed;
+                        BtnFinish.Visibility         = Visibility.Collapsed;
+                        BtnTest.Visibility           = Visibility.Collapsed;
+                        BtnFinalizeRetry.Visibility   = Visibility.Visible;
+                        CompleteTitleText.Text       = "Enrollment Failed";
+                        CompleteSubtitle.Text        = "An error occurred during finalization. Please check the error details below and try again.";
+                    });
+                }
             }
         }
 

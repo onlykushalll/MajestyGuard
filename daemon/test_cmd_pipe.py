@@ -16,6 +16,10 @@ def test_parse_cmd_normalizes_non_string_source():
     assert parse_cmd('{"cmd":"verify_requested","source":42}') == ("verify_requested", "")
 
 
+def test_parse_cmd_rejects_test_only_crash_command():
+    assert parse_cmd('{"cmd":"simulate_crash","source":"attacker"}') is None
+
+
 def test_cmd_payload_shape_is_minimal():
     payload = cmd_payload("emergency_lock", "overlay")
 
@@ -30,3 +34,16 @@ def test_cmd_server_start_is_idempotent_with_existing_live_thread():
     server.start()
 
     assert server._thread.is_alive()
+
+
+def test_cmd_server_accepts_only_expected_ui_pid():
+    server = CMDServer(lambda *_: None, expected_client_pid=lambda: 4242)
+
+    assert server._is_expected_client(4242) is True
+    assert server._is_expected_client(4243) is False
+
+
+def test_cmd_server_fails_closed_without_owned_ui_pid():
+    server = CMDServer(lambda *_: None)
+
+    assert server._is_expected_client(4242) is False

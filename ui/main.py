@@ -80,20 +80,22 @@ class PipeReader(threading.Thread):
                 continue
 
             try:
-                buf        = ctypes.create_string_buffer(4096)
-                bytes_read = ctypes.wintypes.DWORD(0)
-                ok = k32.ReadFile(handle, buf, ctypes.sizeof(buf),
-                                  ctypes.byref(bytes_read), None)
-                if ok and bytes_read.value > 0:
-                    raw = buf.raw[:bytes_read.value].decode("utf-8").strip()
-                    self._parse_and_emit(raw)
+                while not self._stop.is_set():
+                    buf        = ctypes.create_string_buffer(4096)
+                    bytes_read = ctypes.wintypes.DWORD(0)
+                    ok = k32.ReadFile(handle, buf, ctypes.sizeof(buf) - 1,
+                                      ctypes.byref(bytes_read), None)
+                    if not ok or bytes_read.value == 0:
+                        break  # Server disconnected or pipe closed
+                    raw = buf.raw[:bytes_read.value].decode("utf-8", errors="replace").strip()
+                    for line in raw.split("\n"):
+                        line = line.strip()
+                        if line:
+                            self._parse_and_emit(line)
             except Exception as e:
-                log.debug("Pipe read error: %s", e)
+                log.debug("Pipe connection error: %s", e)
             finally:
                 k32.CloseHandle(handle)
-            
-            # Limit polling frequency to ~60 Hz to prevent tight loop CPU thrashing
-            time.sleep(0.016)
 
     def _parse_and_emit(self, raw: str) -> None:
         try:

@@ -25,6 +25,8 @@ logger = logging.getLogger("MajestyGuard.rPPG")
 class CHROMrPPGDetector:
     MIN_FRAMES = 45
     WINDOW_FRAMES = 90
+    # NOTE: hardcoded to 15.0 FPS. If camera captures at a different rate (e.g. 30 FPS),
+    # the bandpass filter and frequency analysis will experience frequency scaling.
     FPS = 15.0
     FREQ_LO = 0.67
     FREQ_HI = 4.00

@@ -17,6 +17,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 
 namespace MajestyGuard.Core.IPC
@@ -31,6 +32,7 @@ namespace MajestyGuard.Core.IPC
         private readonly string? _enrolledUserSid;
         private NamedPipeServerStream? _pipe;
         private CancellationTokenSource _cts = new();
+        private readonly ConcurrentQueue<string> _pendingMessages = new();
 
         public event Func<IpcMessage, Task>? MessageReceived;
 
@@ -55,6 +57,7 @@ namespace MajestyGuard.Core.IPC
                     await _pipe.WaitForConnectionAsync(ct);
                     _logger.LogDebug("Client connected on pipe: {Name}", _pipeName);
 
+                    await FlushPendingMessagesAsync();
                     await ReadLoopAsync(_pipe, ct);
                 }
                 catch (OperationCanceledException)
@@ -83,19 +86,43 @@ namespace MajestyGuard.Core.IPC
         {
             if (_pipe?.IsConnected != true)
             {
-                _logger.LogWarning("SendAsync called but no client connected on {Name}", _pipeName);
+                _logger.LogWarning("SendAsync called but no client connected on {Name}. Queueing message.", _pipeName);
+                if (_pendingMessages.Count < 500)
+                {
+                    _pendingMessages.Enqueue(json);
+                }
                 return;
             }
 
+            await FlushPendingMessagesAsync();
+            await WriteMessageDirectAsync(json);
+        }
+
+        private async Task FlushPendingMessagesAsync()
+        {
+            while (_pipe?.IsConnected == true && _pendingMessages.TryDequeue(out var pendingJson))
+            {
+                await WriteMessageDirectAsync(pendingJson);
+            }
+        }
+
+        private async Task WriteMessageDirectAsync(string json)
+        {
+            var pipe = _pipe;
+            if (pipe?.IsConnected != true) return;
             try
             {
                 var bytes = Encoding.UTF8.GetBytes(json + "\n");
-                await _pipe.WriteAsync(bytes);
-                await _pipe.FlushAsync();
+                await pipe.WriteAsync(bytes);
+                await pipe.FlushAsync();
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Failed to send message on pipe {Name}", _pipeName);
+                if (_pendingMessages.Count < 500)
+                {
+                    _pendingMessages.Enqueue(json);
+                }
             }
         }
 
@@ -105,13 +132,46 @@ namespace MajestyGuard.Core.IPC
 
             while (!ct.IsCancellationRequested && pipe.IsConnected)
             {
-                var line = await reader.ReadLineAsync(ct);
-                if (line == null) break;  // Client disconnected
+                try
+                {
+                    var line = await ReadLineWithLimitAsync(reader, 1024 * 1024, ct);
+                    if (line == null) break;  // Client disconnected
 
-                var msg = IpcMessage.Deserialize(line);
-                if (msg != null && MessageReceived != null)
-                    await MessageReceived(msg);
+                    var msg = IpcMessage.Deserialize(line);
+                    if (msg != null && MessageReceived != null)
+                        await MessageReceived(msg);
+                }
+                catch (InvalidDataException ex)
+                {
+                    _logger.LogError(ex, "Terminating pipe connection on {Name} due to protocol error", _pipeName);
+                    break;
+                }
             }
+        }
+
+        internal static async Task<string?> ReadLineWithLimitAsync(StreamReader reader, int maxChars, CancellationToken ct)
+        {
+            var sb = new StringBuilder();
+            char[] buffer = new char[1];
+            while (sb.Length < maxChars)
+            {
+                int read = await reader.ReadAsync(new Memory<char>(buffer), ct);
+                if (read == 0)
+                {
+                    return sb.Length > 0 ? sb.ToString() : null;
+                }
+                char c = buffer[0];
+                if (c == '\n')
+                {
+                    if (sb.Length > 0 && sb[sb.Length - 1] == '\r')
+                    {
+                        sb.Length--;
+                    }
+                    return sb.ToString();
+                }
+                sb.Append(c);
+            }
+            throw new InvalidDataException($"IPC message size limit exceeded ({maxChars} characters)");
         }
 
         /// <summary>
@@ -168,6 +228,7 @@ namespace MajestyGuard.Core.IPC
         private readonly ILogger _logger;
         private NamedPipeClientStream? _pipe;
         private StreamWriter? _writer;
+        private readonly ConcurrentQueue<IpcMessage> _pendingMessages = new();
 
         public event Func<IpcMessage, Task>? MessageReceived;
 
@@ -177,10 +238,6 @@ namespace MajestyGuard.Core.IPC
             _logger   = logger;
         }
 
-        /// <summary>
-        /// Connects to the server pipe with exponential backoff retry.
-        /// CODEX: Implement retry logic here. Max retries = 10, base delay 200ms.
-        /// </summary>
         public async Task ConnectAsync(CancellationToken ct)
         {
             int attempt = 0;
@@ -197,6 +254,8 @@ namespace MajestyGuard.Core.IPC
                     await _pipe.ConnectAsync(3000, ct);
                     _writer = new StreamWriter(_pipe, Encoding.UTF8) { AutoFlush = true };
                     _logger.LogInformation("Connected to pipe: {Name}", _pipeName);
+
+                    await FlushPendingMessagesAsync();
 
                     // Start reading in background
                     _ = ReadLoopAsync(_pipe, ct);
@@ -220,8 +279,54 @@ namespace MajestyGuard.Core.IPC
 
         public async Task SendAsync(IpcMessage message)
         {
-            if (_writer == null) throw new InvalidOperationException("Not connected");
-            await _writer.WriteLineAsync(message.Serialize());
+            var writer = _writer;
+            if (writer == null)
+            {
+                _logger.LogWarning("SendAsync called but client not connected on {Name}. Queueing message.", _pipeName);
+                if (_pendingMessages.Count < 500)
+                {
+                    _pendingMessages.Enqueue(message);
+                }
+                return;
+            }
+
+            await FlushPendingMessagesAsync();
+
+            try
+            {
+                await writer.WriteLineAsync(message.Serialize());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to send message on client pipe {Name}", _pipeName);
+                if (_pendingMessages.Count < 500)
+                {
+                    _pendingMessages.Enqueue(message);
+                }
+            }
+        }
+
+        private async Task FlushPendingMessagesAsync()
+        {
+            var writer = _writer;
+            if (writer == null) return;
+
+            while (_pendingMessages.TryDequeue(out var pendingMsg))
+            {
+                try
+                {
+                    await writer.WriteLineAsync(pendingMsg.Serialize());
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to send queued message on client pipe {Name}", _pipeName);
+                    if (_pendingMessages.Count < 500)
+                    {
+                        _pendingMessages.Enqueue(pendingMsg);
+                    }
+                    break;
+                }
+            }
         }
 
         private async Task ReadLoopAsync(NamedPipeClientStream pipe, CancellationToken ct)
@@ -232,12 +337,17 @@ namespace MajestyGuard.Core.IPC
             {
                 try
                 {
-                    var line = await reader.ReadLineAsync(ct);
+                    var line = await MajestyPipeServer.ReadLineWithLimitAsync(reader, 1024 * 1024, ct);
                     if (line == null) break;
 
                     var msg = IpcMessage.Deserialize(line);
                     if (msg != null && MessageReceived != null)
                         await MessageReceived(msg);
+                }
+                catch (InvalidDataException ex)
+                {
+                    _logger.LogError(ex, "Terminating pipe client connection on {Name} due to protocol error", _pipeName);
+                    break;
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)

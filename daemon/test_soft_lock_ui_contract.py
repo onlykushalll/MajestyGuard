@@ -84,6 +84,14 @@ def test_dynamic_island_can_request_verification_when_locked():
     assert "WaitNamedPipeW" in main
 
 
+def test_ui_state_pipe_is_read_only_from_the_client_side():
+    main = (UI / "main.py").read_text(encoding="utf-8")
+
+    pipe_reader = main.split("class PipeReader", 1)[1].split("class CommandWriter", 1)[0]
+    assert "GENERIC_READ" in pipe_reader
+    assert "GENERIC_WRITE" not in pipe_reader
+
+
 def test_face_scan_visual_has_face_id_glyph():
     text = (UI / "island.py").read_text(encoding="utf-8")
 

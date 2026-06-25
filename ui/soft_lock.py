@@ -435,6 +435,7 @@ class SoftLockOverlay(QWidget):
                 )
                 # Release the unblurred screenshot from memory immediately —
                 # everything past this point only needs the downscaled copy.
+                shot_image.fill(QColor(0, 0, 0))
                 del shot_image
                 first = half.scaled(
                     max(1, rect.width() // 8),
@@ -612,10 +613,13 @@ class SoftLockOverlay(QWidget):
         if _mouse_locked:
             _engage_cursor_lock()
 
-        if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 20.0:
+        if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 5.0:
             if not getattr(self, "_fallback_prominent", False):
                 self._fallback_prominent = True
                 self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_PROMINENT)
+
+        if self.isVisible():
+            self.update()
 
     def _use_windows_lock(self) -> None:
         import ctypes
@@ -653,9 +657,55 @@ class SoftLockOverlay(QWidget):
         else:
             painter.fillRect(self.rect(), QColor("#E9EDF3"))
 
+        self._paint_clock(painter)
         self._paint_corner_status(painter)
         self._paint_brand_signature(painter)
         painter.end()
+
+    def _paint_clock(self, painter: QPainter) -> None:
+        from datetime import datetime
+        now = datetime.now()
+        time_str = now.strftime("%H:%M")
+        date_str = now.strftime("%A, %B %d")
+
+        rect = self.rect()
+        painter.save()
+
+        # Center in the upper-middle region
+        center_x = rect.width() / 2.0
+        center_y = rect.height() * 0.35
+
+        # Draw Time
+        time_font = QFont("Segoe UI Variable Display", 72, QFont.Weight.Light)
+        painter.setFont(time_font)
+        painter.setPen(QColor(30, 30, 34, 210))
+
+        time_metrics = painter.fontMetrics()
+        time_rect = time_metrics.boundingRect(time_str)
+        time_w = time_rect.width()
+        
+        painter.drawText(
+            int(center_x - time_w / 2.0),
+            int(center_y),
+            time_str
+        )
+
+        # Draw Date
+        date_font = QFont("Segoe UI Variable Text", 16, QFont.Weight.Normal)
+        painter.setFont(date_font)
+        painter.setPen(QColor(82, 86, 94, 160))
+
+        date_metrics = painter.fontMetrics()
+        date_rect = date_metrics.boundingRect(date_str)
+        date_w = date_rect.width()
+
+        painter.drawText(
+            int(center_x - date_w / 2.0),
+            int(center_y + time_metrics.descent() + 28),
+            date_str
+        )
+
+        painter.restore()
 
     def _paint_blurred_desktop(self, painter: QPainter) -> None:
         if not self._background.isNull():

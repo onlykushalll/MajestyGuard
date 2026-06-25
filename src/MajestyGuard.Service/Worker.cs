@@ -303,24 +303,35 @@ namespace MajestyGuard.Service
             // If CVEngine crashes during Verifying, state machine would hang forever.
             _ = Task.Run(async () =>
             {
-                while (!ct.IsCancellationRequested)
+                try
                 {
-                    await Task.Delay(1000, ct);
-                    if (_stateMachine.Current == GuardState.Verifying)
+                    while (!ct.IsCancellationRequested)
                     {
-                        long existing = Interlocked.CompareExchange(ref _verifyingStartTicks, DateTime.UtcNow.Ticks, 0);
-                        long startTicks = existing == 0 ? Interlocked.Read(ref _verifyingStartTicks) : existing;
-                        if (startTicks != 0 && (DateTime.UtcNow - new DateTime(startTicks, DateTimeKind.Utc)).TotalSeconds > 5)
+                        await Task.Delay(1000, ct);
+                        if (_stateMachine.Current == GuardState.Verifying)
                         {
-                            _logger.LogWarning("Verifying timeout (5s) — forcing HostileLock");
-                            _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
+                            long existing = Interlocked.CompareExchange(ref _verifyingStartTicks, Stopwatch.GetTimestamp(), 0);
+                            long startTicks = existing == 0 ? Interlocked.Read(ref _verifyingStartTicks) : existing;
+                            if (startTicks != 0 && (Stopwatch.GetTimestamp() - startTicks) > Stopwatch.Frequency * 5)
+                            {
+                                _logger.LogWarning("Verifying timeout (5s) — forcing HostileLock");
+                                _stateMachine.RequestTransition(TransitionTrigger.CameraObstructed);
+                                Interlocked.Exchange(ref _verifyingStartTicks, 0);
+                            }
+                        }
+                        else
+                        {
                             Interlocked.Exchange(ref _verifyingStartTicks, 0);
                         }
                     }
-                    else
-                    {
-                        Interlocked.Exchange(ref _verifyingStartTicks, 0);
-                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    // expected shutdown
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled exception in verifying timeout watchdog task");
                 }
             }, ct);
 

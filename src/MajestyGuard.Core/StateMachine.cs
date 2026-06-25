@@ -4,6 +4,7 @@
 // No component should change state directly — always call RequestTransition().
 
 using System;
+using System.Diagnostics;
 using System.Threading;
 using Microsoft.Extensions.Logging;
 using MajestyGuard.Core.Models;
@@ -51,6 +52,7 @@ namespace MajestyGuard.Core
         CameraObstructed,        // Camera feed is black / virtual camera detected
         ManualFallback,          // User requested PIN/password manually
         EnrollmentRequired,      // No enrollment found for this profile
+        BoundaryCheckFailed,     // Face is too close/far or skewed
     }
 
     public class StateChangedEventArgs : EventArgs
@@ -67,12 +69,13 @@ namespace MajestyGuard.Core
         private readonly object _lock = new();
         private readonly ILogger<StateMachine> _logger;
 
-        // Stranger presence tracking for hysteresis
-        private DateTime? _strangerFirstSeen;
+        // Stranger presence tracking for hysteresis (0 = not seen)
+        private long _strangerFirstSeenTicks = 0;
         private int _authFailureCount;
 
         // Config values — injected from AppConfig
         private readonly TimeSpan _strangerHysteresis;   // default: 3 seconds
+        private readonly double _strangerPresenceThresholdMs; // default: 500ms
         private readonly int _maxAuthFailures;           // default: 3
 
         /// <summary>
@@ -92,6 +95,7 @@ namespace MajestyGuard.Core
         {
             _logger = logger;
             _strangerHysteresis = TimeSpan.FromSeconds(config.StrangerHysteresisSeconds);
+            _strangerPresenceThresholdMs = config.StrangerPresenceThresholdMs;
             _maxAuthFailures    = config.MaxAuthFailures;
         }
 
@@ -233,31 +237,34 @@ namespace MajestyGuard.Core
         // ─────────────────────────────────────────────────────────────
 
         // ── B-009: HostileLock cooldown ─────────────────────────────────────
-        private DateTime? _hostileLockEntryTime;
+        private long _hostileLockEntryTicks = 0;
 
         private GuardState HandleHostileFallback()
         {
-            if (_hostileLockEntryTime.HasValue &&
-                (DateTime.UtcNow - _hostileLockEntryTime.Value).TotalSeconds < 30)
+            if (_hostileLockEntryTicks != 0)
             {
-                _logger.LogWarning("ManualFallback blocked — cooldown active ({Sec:F0}s remaining)",
-                    30 - (DateTime.UtcNow - _hostileLockEntryTime.Value).TotalSeconds);
-                return GuardState.HostileLock;
+                double elapsedSeconds = (Stopwatch.GetTimestamp() - _hostileLockEntryTicks) / (double)Stopwatch.Frequency;
+                if (elapsedSeconds < 30)
+                {
+                    _logger.LogWarning("ManualFallback blocked — cooldown active ({Sec:F0}s remaining)",
+                        30 - elapsedSeconds);
+                    return GuardState.HostileLock;
+                }
             }
-            _hostileLockEntryTime = null;
+            _hostileLockEntryTicks = 0;
             return GuardState.Unlocked;
         }
 
         private GuardState EnterHostileLock()
         {
-            _hostileLockEntryTime = DateTime.UtcNow;
+            _hostileLockEntryTicks = Stopwatch.GetTimestamp();
             return GuardState.HostileLock;
         }
 
         private GuardState HandleAuthSuccess()
         {
             _authFailureCount = 0;
-            _hostileLockEntryTime = null;  // Clear cooldown on successful auth
+            _hostileLockEntryTicks = 0;  // Clear cooldown on successful auth
             return GuardState.Unlocked;
         }
 
@@ -280,24 +287,27 @@ namespace MajestyGuard.Core
         {
             lock (_lock)
             {
-                _strangerFirstSeen = null;
+                _strangerFirstSeenTicks = 0;
             }
         }
 
         private GuardState ClearStrangerAndGoBootScan()
         {
-            _strangerFirstSeen = null;
+            _strangerFirstSeenTicks = 0;
             return GuardState.BootScan;
         }
 
         private GuardState HandleStrangerDetected()
         {
-            _strangerFirstSeen ??= DateTime.UtcNow;
-            var presenceDuration = DateTime.UtcNow - _strangerFirstSeen.Value;
-            if (presenceDuration.TotalMilliseconds >= 500)
+            long now = Stopwatch.GetTimestamp();
+            if (_strangerFirstSeenTicks == 0)
             {
-                _logger.LogWarning("Stranger detected for {ms}ms — entering SocialLock",
-                    presenceDuration.TotalMilliseconds);
+                _strangerFirstSeenTicks = now;
+            }
+            double presenceMs = (now - _strangerFirstSeenTicks) * 1000.0 / Stopwatch.Frequency;
+            if (presenceMs >= _strangerPresenceThresholdMs)
+            {
+                _logger.LogWarning("Stranger detected for {ms:F0}ms — entering SocialLock", presenceMs);
                 return GuardState.SocialLock;
             }
 

@@ -12,7 +12,7 @@ import json
 import logging
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import pywintypes  # type: ignore
 import win32file  # type: ignore
@@ -22,7 +22,7 @@ import win32security  # type: ignore
 log = logging.getLogger(__name__)
 
 CMD_PIPE_NAME = r"\\.\pipe\MajestyGuard_CMD"
-VALID_COMMANDS = frozenset({"verify_requested", "emergency_lock", "windows_lock_used", "simulate_crash"})
+VALID_COMMANDS = frozenset({"verify_requested", "emergency_lock", "windows_lock_used"})
 
 
 def cmd_payload(cmd: str, source: str = "") -> dict:
@@ -62,11 +62,28 @@ def _build_sa() -> win32security.SECURITY_ATTRIBUTES:
 class CMDServer:
     """Daemon-side named pipe server for local UI commands."""
 
-    def __init__(self, on_command, pipe_name: str = CMD_PIPE_NAME):
+    def __init__(
+        self,
+        on_command,
+        pipe_name: str = CMD_PIPE_NAME,
+        *,
+        expected_client_pid: Optional[Callable[[], Optional[int]]] = None,
+    ):
         self.pipe_name = pipe_name
         self._on_command = on_command
+        self._expected_client_pid = expected_client_pid
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+
+    def _is_expected_client(self, client_pid: int) -> bool:
+        if self._expected_client_pid is None:
+            return False
+        try:
+            expected_pid = self._expected_client_pid()
+        except Exception:
+            log.exception("CMDServer failed to resolve owned UI PID")
+            return False
+        return bool(expected_pid and client_pid == expected_pid)
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -117,6 +134,14 @@ class CMDServer:
                         raise
                 if self._stop.is_set():
                     break
+                try:
+                    client_pid = int(win32pipe.GetNamedPipeClientProcessId(handle))
+                except (TypeError, ValueError, pywintypes.error):
+                    log.warning("CMDServer rejected client with unknown PID")
+                    continue
+                if not self._is_expected_client(client_pid):
+                    log.warning("CMDServer rejected unowned client PID %d", client_pid)
+                    continue
                 _hr, raw = win32file.ReadFile(handle, 4096)
                 parsed = parse_cmd(raw.decode("utf-8", errors="replace"))
                 if parsed is None:

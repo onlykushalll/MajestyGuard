@@ -92,6 +92,8 @@ class IPCServer:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._client_handle = None
+        self._has_new_state = threading.Event()
 
     # ------------------------------------------------------------------
     # Public API (called from daemon main loop)
@@ -126,6 +128,7 @@ class IPCServer:
             payload["detail"] = detail
         with self._lock:
             self._state = payload
+        self._has_new_state.set()
         log.debug("IPCServer: state → %s", payload)
 
     def get_state(self) -> dict:
@@ -182,13 +185,38 @@ class IPCServer:
                 if self._stop.is_set():
                     break
 
-                # Send current state
-                payload = json.dumps(self.get_state()) + "\n"
-                win32file.WriteFile(handle, payload.encode("utf-8"))
-                try:
-                    win32file.FlushFileBuffers(handle)
-                except pywintypes.error:
-                    pass
+                with self._lock:
+                    self._client_handle = handle
+                    # Send current state immediately
+                    payload = json.dumps(self._state) + "\n"
+                    win32file.WriteFile(handle, payload.encode("utf-8"))
+                    try:
+                        win32file.FlushFileBuffers(handle)
+                    except pywintypes.error:
+                        pass
+
+                # Keep connection open and push new states
+                self._has_new_state.clear()
+                while not self._stop.is_set():
+                    signaled = self._has_new_state.wait(timeout=0.2)
+                    if self._stop.is_set():
+                        break
+                    if signaled:
+                        self._has_new_state.clear()
+                        with self._lock:
+                            payload = json.dumps(self._state) + "\n"
+                            try:
+                                win32file.WriteFile(handle, payload.encode("utf-8"))
+                                win32file.FlushFileBuffers(handle)
+                            except pywintypes.error:
+                                # Client disconnected
+                                break
+                    else:
+                        # Periodically check if client disconnected
+                        try:
+                            win32pipe.GetNamedPipeHandleState(handle)
+                        except pywintypes.error:
+                            break
 
             except pywintypes.error as e:
                 if not self._stop.is_set():
@@ -198,6 +226,8 @@ class IPCServer:
                 log.exception("IPCServer unexpected error")
                 time.sleep(0.5)
             finally:
+                with self._lock:
+                    self._client_handle = None
                 if handle is not None:
                     try:
                         win32pipe.DisconnectNamedPipe(handle)

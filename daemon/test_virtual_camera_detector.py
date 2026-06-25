@@ -77,6 +77,13 @@ def test_virtual_camera_detector_caching(monkeypatch):
     assert not detector.is_virtual(0)
     assert call_count == 2
 
+
+def test_virtual_camera_detector_fails_closed_while_refresh_is_in_progress():
+    detector = VirtualCameraDetector()
+    detector._updating.add(0)
+
+    assert detector.is_virtual(0) is True
+
 def test_virtual_camera_detector_by_name(monkeypatch):
     detector = VirtualCameraDetector()
 

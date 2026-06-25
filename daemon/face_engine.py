@@ -680,11 +680,34 @@ class FaceEngine:
                 timeout=5,
                 shell=False,
             )
-            lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
-            if len(lines) <= 1:
+            stdout = proc.stdout
+            if proc.returncode != 0 or not stdout.strip():
+                proc = subprocess.run(
+                    [
+                        "powershell",
+                        "-NoProfile",
+                        "-Command",
+                        "Get-CimInstance -ClassName Win32_PnPEntity -Filter 'PNPClass=''Camera''' | ForEach-Object { $_.Name + ' ' + $_.DeviceID }",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    shell=False,
+                )
+                stdout = proc.stdout
+
+            lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+            if not lines:
                 return self._backend_name or None
 
-            devices = lines[1:]
+            if "deviceid" in lines[0].lower() or "name" in lines[0].lower():
+                devices = lines[1:]
+            else:
+                devices = lines
+
+            if not devices:
+                return self._backend_name or None
+
             if 0 <= index < len(devices):
                 selected = devices[index]
             else:

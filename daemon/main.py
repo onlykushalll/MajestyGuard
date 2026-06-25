@@ -250,7 +250,10 @@ class MajestyGuardDaemon:
         self._write_daemon_pid()
 
         self.ipc.start()
-        self.command_ipc = CMDServer(self._queue_ui_command)
+        self.command_ipc = CMDServer(
+            self._queue_ui_command,
+            expected_client_pid=self._owned_overlay_pid,
+        )
         self.command_ipc.start()
         if self.state == State.SOFT_LOCK:
             try:
@@ -756,6 +759,12 @@ class MajestyGuardDaemon:
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+
+    def _owned_overlay_pid(self) -> Optional[int]:
+        proc = self._overlay_proc
+        if proc is None or proc.poll() is not None:
+            return None
+        return int(proc.pid)
 
     def _stop_owned_overlay(self) -> None:
         proc = getattr(self, "_overlay_proc", None)

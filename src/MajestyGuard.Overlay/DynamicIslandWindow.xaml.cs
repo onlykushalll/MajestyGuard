@@ -41,10 +41,10 @@ namespace MajestyGuard.Overlay
 
         private nint _hwnd;
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
         private static extern nint SetWindowLongPtr(nint hWnd, int nIndex, nint dwNewLong);
 
-        [DllImport("user32.dll")]
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW", SetLastError = true)]
         private static extern nint GetWindowLongPtr(nint hWnd, int nIndex);
 
         [DllImport("user32.dll")]

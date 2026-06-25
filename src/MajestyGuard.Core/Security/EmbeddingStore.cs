@@ -157,7 +157,13 @@ namespace MajestyGuard.Core.Security
                     FileAccess.Read, FileShare.Read);
                 using var br = new BinaryReader(fs);
                 var length  = br.ReadInt32();
+                
+                if (length <= 0 || length > 1024 * 1024)
+                    throw new InvalidDataException($"Invalid enrollment record ciphertext length: {length}");
+
                 cipherBytes = br.ReadBytes(length);
+                if (cipherBytes.Length != length)
+                    throw new EndOfStreamException("Could not read the full ciphertext length from enrollment store");
 
                 plainBytes = DpapiNg.Unprotect(cipherBytes);
 
@@ -168,6 +174,18 @@ namespace MajestyGuard.Core.Security
                 if (record?.UserSid != _currentUserSid)
                     throw new UnauthorizedAccessException(
                         "Enrollment record SID mismatch — possible tampering");
+
+                // Validate embeddings dimensions (H10)
+                if (record.Embeddings != null)
+                {
+                    foreach (var emb in record.Embeddings)
+                    {
+                        if (emb.Vector == null || emb.Vector.Length != 512)
+                        {
+                            throw new InvalidDataException("Invalid face embedding vector dimension (must be exactly 512).");
+                        }
+                    }
+                }
 
                 return record;
             }

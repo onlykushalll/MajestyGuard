@@ -379,6 +379,7 @@
 
                 <!-- Success circle -->
                 <Border
+                    x:Name="SuccessIconBorder"
                     Width="72" Height="72"
                     CornerRadius="36"
                     Background="#0D2A1A"
@@ -395,6 +396,7 @@
                 </Border>
 
                 <TextBlock
+                    x:Name="CompleteTitleText"
                     Text="You're all set, your majesty"
                     Foreground="White"
                     FontFamily="Segoe UI Variable Display"
@@ -414,6 +416,7 @@
 
                 <StackPanel Spacing="10" Margin="0,8,0,0">
                     <Button
+                        x:Name="BtnFinish"
                         Content="Start using Majesty Guard"
                         Click="BtnFinish_Click"
                         HorizontalAlignment="Stretch"
@@ -424,6 +427,7 @@
                         Foreground="White"
                         CornerRadius="8"/>
                     <Button
+                        x:Name="BtnTest"
                         Content="Test face recognition"
                         Click="BtnTest_Click"
                         HorizontalAlignment="Stretch"
@@ -432,6 +436,18 @@
                         Background="#1A1A1E"
                         Foreground="#AAFFFFFF"
                         CornerRadius="8"/>
+                    <Button
+                        x:Name="BtnFinalizeRetry"
+                        Content="Retry Enrollment"
+                        Click="BtnFinalizeRetry_Click"
+                        HorizontalAlignment="Stretch"
+                        Padding="0,12"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Background="#0A84FF"
+                        Foreground="White"
+                        CornerRadius="8"
+                        Visibility="Collapsed"/>
                 </StackPanel>
             </StackPanel>
 

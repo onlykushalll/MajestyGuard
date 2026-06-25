@@ -48,6 +48,7 @@ def test_uninstall_whatif_runs_without_admin_and_does_not_remove_local_appdata(t
         text=True,
         capture_output=True,
         timeout=30,
+        stdin=subprocess.DEVNULL,
     )
 
     assert result.returncode == 0, result.stderr + result.stdout

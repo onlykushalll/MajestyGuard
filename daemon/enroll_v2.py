@@ -195,6 +195,7 @@ def _capture_burst(
     liveness: LivenessDetector,
     enrollment_deadline: float | None = None,
 ) -> list[EnrollmentSample]:
+    liveness.reset_session()
     accepted: list[EnrollmentSample] = []
     deadline = time.monotonic() + 3.0
 

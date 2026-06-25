@@ -573,6 +573,9 @@ if ($SkipPythonSetup) {
 } else {
     Write-Host "    Using Python: $pythonExe" -ForegroundColor Gray
     & $pythonExe -m pip install -r "$CV_DIR\requirements.txt" --quiet
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to install Python dependencies via pip. Exit code: $LASTEXITCODE"
+    }
     Write-Host "    Python dependencies installed" -ForegroundColor Gray
 }
 
@@ -584,10 +587,9 @@ if ($SkipModelDownload -or -not $pythonExe) {
     if (Test-Path $downloadScript) {
         & $pythonExe $downloadScript "$INSTALL_DIR\models"
         if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Model download failed; re-run with internet access."
-        } else {
-            Write-Host "    Models ready" -ForegroundColor Gray
+            throw "Failed to download face models. Exit code: $LASTEXITCODE"
         }
+        Write-Host "    Models ready" -ForegroundColor Gray
     } else {
         Write-Warning "download_models.py not found; model download skipped."
     }
@@ -702,6 +704,7 @@ if ($EnableSafeBoot) {
 }
 
 New-Item -Path "HKLM:\SOFTWARE\MajestyGuard" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\MajestyGuard" -Name "InstallPath" -Value $INSTALL_DIR -Force
 
 Write-Host "[13/13] Starting service..." -ForegroundColor Yellow
 if (-not $StartServiceAfterInstall) {

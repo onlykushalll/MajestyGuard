@@ -58,7 +58,6 @@ class PipeReader(threading.Thread):
 
     def run(self) -> None:
         GENERIC_READ  = 0x80000000
-        GENERIC_WRITE = 0x40000000
         OPEN_EXISTING = 3
         INVALID       = ctypes.c_void_p(-1).value
         k32           = ctypes.windll.kernel32
@@ -73,7 +72,7 @@ class PipeReader(threading.Thread):
                 continue
 
             handle = k32.CreateFileW(
-                PIPE_NAME, GENERIC_READ | GENERIC_WRITE,
+                PIPE_NAME, GENERIC_READ,
                 0, None, OPEN_EXISTING, 0, None
             )
             if handle == INVALID:

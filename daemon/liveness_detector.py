@@ -970,16 +970,30 @@ class LivenessDetector:
         variation_score = float(np.clip((1.0 - mean_sim) / 0.08, 0.0, 1.0))
         return float(np.clip(0.62 + jitter_score * 0.20 + variation_score * 0.13, 0.55, 0.95))
 
+    def _dhash(self, roi: np.ndarray) -> bytes:
+        small = cv2.resize(roi, (9, 8))
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        diff = gray[:, 1:] > gray[:, :-1]
+        hash_bytes = bytearray(8)
+        for i in range(8):
+            val = 0
+            for j in range(8):
+                if diff[i, j]:
+                    val |= (1 << j)
+            hash_bytes[i] = val
+        return bytes(hash_bytes)
+
+    def _hamming_distance(self, h1: bytes, h2: bytes) -> int:
+        return sum(bin(b1 ^ b2).count("1") for b1, b2 in zip(h1, h2))
+
     # ── Anti-Replay: Frame Fingerprint Deduplication ──────────────────
     # Detects video loop attacks by comparing frame hashes.
 
     def _replay_detection(self, roi: np.ndarray) -> float:
-        small = cv2.resize(roi, (16, 16))
-        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-        frame_hash = hashlib.md5(gray.tobytes(), usedforsecurity=False).digest()
+        frame_hash = self._dhash(roi)
 
-        # Count how many recent frames have identical hash
-        matches = sum(1 for h in self._frame_hashes if h == frame_hash)
+        # Count how many recent frames have very low hamming distance (perceptually identical)
+        matches = sum(1 for h in self._frame_hashes if self._hamming_distance(h, frame_hash) < 3)
         self._frame_hashes.append(frame_hash)
 
         if matches == 0:

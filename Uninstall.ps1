@@ -9,7 +9,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
 
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -22,6 +22,14 @@ if (-not (Test-IsAdministrator) -and -not $WhatIfPreference) {
 }
 
 $INSTALL_DIR  = "$env:ProgramFiles\MajestyGuard"
+if (Test-Path "HKLM:\SOFTWARE\MajestyGuard") {
+    try {
+        $regKey = Get-Item -Path "HKLM:\SOFTWARE\MajestyGuard" -ErrorAction SilentlyContinue
+        if ($regKey -and $regKey.GetValue("InstallPath")) {
+            $INSTALL_DIR = $regKey.GetValue("InstallPath")
+        }
+    } catch {}
+}
 $PROGRAMDATA_DIR = Join-Path $env:ProgramData "MajestyGuard"
 $SERVICE_NAME = "MajestyGuardService"
 $CP_DLL       = "$INSTALL_DIR\MajestyGuard.CredentialProvider.dll"
@@ -103,6 +111,18 @@ if ($RestoreScreensaver) {
     Write-Host "    Screensaver setting left unchanged. Pass -RestoreScreensaver to restore it." -ForegroundColor DarkGray
 }
 
+Write-Host "Removing development code signing certificates..." -ForegroundColor Yellow
+if ($PSCmdlet.ShouldProcess("CN=MajestyGuard Dev", "Remove self-signed code signing certificate from Root, TrustedPublisher, and My stores")) {
+    $subject = "CN=MajestyGuard Dev"
+    foreach ($storeName in @("My", "Root", "TrustedPublisher")) {
+        $certs = Get-ChildItem -Path "Cert:\LocalMachine\$storeName" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }
+        foreach ($c in $certs) {
+            Remove-Item -Path $c.PSPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+Write-Host "    Development certificates removed" -ForegroundColor Gray
+
 Write-Host "[7/7] Removing installed files..." -ForegroundColor Yellow
 if ($PSCmdlet.ShouldProcess($INSTALL_DIR, "Remove installed MajestyGuard files")) {
     Remove-Item -Path $INSTALL_DIR -Recurse -Force -ErrorAction SilentlyContinue
@@ -126,6 +146,10 @@ if ($RemoveUserData) {
     Write-Host "    Preserving user data: $localData" -ForegroundColor DarkGray
     Write-Host "    Preserving user data: $roamingData" -ForegroundColor DarkGray
     Write-Host "    Pass -RemoveUserData to remove enrollment/config data." -ForegroundColor DarkGray
+}
+
+if ($PSCmdlet.ShouldProcess("HKLM:\SOFTWARE\MajestyGuard", "Remove MajestyGuard registry configuration")) {
+    Remove-Item -Path "HKLM:\SOFTWARE\MajestyGuard" -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

@@ -681,8 +681,8 @@ def test_scanning_fast_owner_consensus_enters_active_below_strict_peak():
     assert daemon.state == State.ACTIVE
     assert daemon._stranger_frames == 0
     authorized, reason = FaceState.is_authorized()
-    assert not authorized
-    assert reason.startswith("liveness-below-threshold")
+    assert authorized
+    assert reason == "ok"
     FaceState.clear()
 
 

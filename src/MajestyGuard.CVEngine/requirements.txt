@@ -18,6 +18,3 @@ PyQt6>=6.9.0
 
 # Utilities
 Pillow>=10.2.0
-
-scipy>=1.11.0
-mediapipe>=0.10.0

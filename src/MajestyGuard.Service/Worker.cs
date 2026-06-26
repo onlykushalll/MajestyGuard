@@ -201,7 +201,14 @@ namespace MajestyGuard.Service
                 if (!process.HasExited)
                 {
                     process.Kill(entireProcessTree: true);
-                    _logger.LogInformation("{Name} process terminated during service stop", name);
+                    if (!process.WaitForExit(3000))
+                    {
+                        _logger.LogWarning("{Name} process did not terminate within 3s", name);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("{Name} process terminated during service stop", name);
+                    }
                 }
             }
             catch (Exception ex)
@@ -544,7 +551,10 @@ namespace MajestyGuard.Service
                 await Task.Delay(500, ct);
 
             if (!_embeddingsLoaded)
-                _logger.LogWarning("HB-1: PresenceMonitor starting without confirmed embedding load (timeout)");
+            {
+                _logger.LogError("HB-1: PresenceMonitor failed to start because embeddings were not loaded within 30s. Keeping service secure.");
+                return;
+            }
 
             await _presenceMonitor.RunAsync(ct);
         }
@@ -651,7 +661,7 @@ namespace MajestyGuard.Service
             if (File.Exists(programDataScript))
                 return programDataScript;
 
-            var root = FindSourceRoot() ?? @"C:\tmp\MajestyGuard";
+            var root = FindSourceRoot() ?? GetInstallBaseDirectory();
             var devScript = Path.Combine(root, "src", "MajestyGuard.CVEngine", "cv_server.py");
             if (File.Exists(devScript))
                 return devScript;
@@ -661,10 +671,11 @@ namespace MajestyGuard.Service
 
         private string ResolveCvPythonPath(string cvEngineDir)
         {
+            var root = FindSourceRoot() ?? GetInstallBaseDirectory();
             var candidates = new[]
             {
                 _config.CvPythonPath,
-                @"C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe",
+                Path.Combine(root, "src", "MajestyGuard.CVEngine", ".venv", "Scripts", "python.exe"),
                 Path.Combine(cvEngineDir, ".venv", "Scripts", "python.exe")
             };
 
@@ -677,7 +688,7 @@ namespace MajestyGuard.Service
             }
 
             _logger.LogError(
-                "[CVEngine] FATAL: Python 3.11 venv not found. Set CvPythonPath to C:\\tmp\\MajestyGuard\\src\\MajestyGuard.CVEngine\\.venv\\Scripts\\python.exe");
+                "[CVEngine] FATAL: Python 3.11 venv not found. Set CvPythonPath in configuration.");
             throw new FileNotFoundException("No valid CV Python 3.11 venv found.");
         }
 
@@ -938,15 +949,9 @@ namespace MajestyGuard.Service
                 var currentState = _stateMachine.Current;
                 var sinceLastGc = (DateTime.UtcNow - _lastGcTrim).TotalSeconds;
 
-                if (currentState == GuardState.Dormant && sinceLastGc >= 60)
+                if (currentState == GuardState.Dormant && sinceLastGc >= 300)
                 {
                     GC.Collect(2, GCCollectionMode.Aggressive, blocking: false);
-                    SetProcessWorkingSetSize(GetCurrentProcess(), (nint)(-1), (nint)(-1));
-                    _lastGcTrim = DateTime.UtcNow;
-                }
-                else if (currentState == GuardState.Unlocked && sinceLastGc >= 120)
-                {
-                    GC.Collect(1, GCCollectionMode.Optimized, blocking: false);
                     SetProcessWorkingSetSize(GetCurrentProcess(), (nint)(-1), (nint)(-1));
                     _lastGcTrim = DateTime.UtcNow;
                 }

@@ -290,6 +290,9 @@ namespace MajestyGuard.Core.Security
             out nint pbData,
             out uint cbData);
 
+        [DllImport("kernel32.dll", EntryPoint = "RtlZeroMemory")]
+        private static extern void ZeroMemory(nint destination, nint length);
+
         [DllImport("kernel32.dll")]
         private static extern nint LocalFree(nint hMem);
 
@@ -343,8 +346,7 @@ namespace MajestyGuard.Core.Security
             {
                 // Zero the native buffer before freeing — avoids Unsafe pointer interop issues
                 if (pData != IntPtr.Zero && cbData > 0)
-                    for (int i = 0; i < (int)cbData; i++)
-                        Marshal.WriteByte(pData, i, 0);
+                    ZeroMemory(pData, (nint)cbData);
                 LocalFree(pData);
             }
         }

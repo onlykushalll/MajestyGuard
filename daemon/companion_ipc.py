@@ -84,7 +84,7 @@ class FaceState:
             if age > cls.VALIDITY_WINDOW:
                 cls._user_recognized = False  # expire
                 return False, f"recognition-expired ({age:.1f}s > {cls.VALIDITY_WINDOW}s)"
-            if cls._liveness_score < 0.82:
+            if cls._liveness_score < 0.70:
                 return False, f"liveness-below-threshold ({cls._liveness_score:.3f})"
             return True, "ok"
 

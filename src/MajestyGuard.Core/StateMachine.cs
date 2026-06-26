@@ -69,6 +69,9 @@ namespace MajestyGuard.Core
         private readonly object _lock = new();
         private readonly ILogger<StateMachine> _logger;
 
+        // For testing, allows mocking the timestamp provider
+        public Func<long> TimestampProvider { get; set; } = Stopwatch.GetTimestamp;
+
         // Stranger presence tracking for hysteresis (0 = not seen)
         private long _strangerFirstSeenTicks = 0;
         private int _authFailureCount;
@@ -243,7 +246,7 @@ namespace MajestyGuard.Core
         {
             if (_hostileLockEntryTicks != 0)
             {
-                double elapsedSeconds = (Stopwatch.GetTimestamp() - _hostileLockEntryTicks) / (double)Stopwatch.Frequency;
+                double elapsedSeconds = (TimestampProvider() - _hostileLockEntryTicks) / (double)Stopwatch.Frequency;
                 if (elapsedSeconds < 30)
                 {
                     _logger.LogWarning("ManualFallback blocked — cooldown active ({Sec:F0}s remaining)",
@@ -257,7 +260,7 @@ namespace MajestyGuard.Core
 
         private GuardState EnterHostileLock()
         {
-            _hostileLockEntryTicks = Stopwatch.GetTimestamp();
+            _hostileLockEntryTicks = TimestampProvider();
             return GuardState.HostileLock;
         }
 
@@ -299,7 +302,7 @@ namespace MajestyGuard.Core
 
         private GuardState HandleStrangerDetected()
         {
-            long now = Stopwatch.GetTimestamp();
+            long now = TimestampProvider();
             if (_strangerFirstSeenTicks == 0)
             {
                 _strangerFirstSeenTicks = now;

@@ -1178,9 +1178,10 @@ class FaceEngine:
         return fused
 
     def _run_adaface_chip(self, face_chip_bgr: np.ndarray) -> np.ndarray:
-        bgr = face_chip_bgr.astype(np.float32)
-        bgr = ((bgr / 255.0) - 0.5) / 0.5                    # AdaFace BGR normalization
-        blob = np.transpose(bgr, (2, 0, 1))[np.newaxis]      # HWC -> NCHW
+        rgb_chip = cv2.cvtColor(face_chip_bgr, cv2.COLOR_BGR2RGB)
+        rgb = rgb_chip.astype(np.float32)
+        rgb = ((rgb / 255.0) - 0.5) / 0.5                    # AdaFace normalization
+        blob = np.transpose(rgb, (2, 0, 1))[np.newaxis]      # HWC -> NCHW
         input_name = getattr(self, "_adaface_input_name", "input")
         output = self._adaface_session.run(None, {input_name: blob})[0]
         return np.asarray(output[0], dtype=np.float32)

@@ -681,6 +681,11 @@ if ($EnableRegistryHardening) {
         Set-Acl -Path $cpRootKey -AclObject $acl
         Set-ItemProperty "HKCU:\Control Panel\Desktop" -Name "ScreenSaveActive" -Value "0" -ErrorAction SilentlyContinue
         Set-ItemProperty "HKCU:\Control Panel\Desktop" -Name "SCRNSAVE.EXE" -Value "" -ErrorAction SilentlyContinue
+        $enrolledSid = (Get-ItemProperty -Path "HKLM:\SOFTWARE\MajestyGuard" -Name "EnrolledUserSid" -ErrorAction SilentlyContinue).EnrolledUserSid
+        if ($enrolledSid -and (Test-Path "Registry::HKEY_USERS\$enrolledSid")) {
+            Set-ItemProperty "Registry::HKEY_USERS\$enrolledSid\Control Panel\Desktop" -Name "ScreenSaveActive" -Value "0" -ErrorAction SilentlyContinue
+            Set-ItemProperty "Registry::HKEY_USERS\$enrolledSid\Control Panel\Desktop" -Name "SCRNSAVE.EXE" -Value "" -ErrorAction SilentlyContinue
+        }
         Write-Host "    Registry hardening applied" -ForegroundColor Gray
     } catch {
         Write-Warning "Registry ACL hardening failed: $_"

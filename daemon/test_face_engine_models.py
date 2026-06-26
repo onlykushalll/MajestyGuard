@@ -109,8 +109,8 @@ def test_adaface_embedding_preserves_bgr_channel_order():
     engine._get_embedding_adaface(face_roi)
     blob = session.feed["data"]
 
-    assert blob[0, 0, 0, 0] > 0.99
-    assert blob[0, 2, 0, 0] < -0.99
+    assert blob[0, 2, 0, 0] > 0.99
+    assert blob[0, 0, 0, 0] < -0.99
 
 
 def test_adaface_embedding_fuses_original_and_flipped_features_by_default():
@@ -127,8 +127,8 @@ def test_adaface_embedding_fuses_original_and_flipped_features_by_default():
     assert len(session.feeds) == 2
     first_blob = session.feeds[0]["data"]
     flipped_blob = session.feeds[1]["data"]
-    assert first_blob[0, 0, 0, 0] > 0.99
-    assert flipped_blob[0, 0, 0, -1] > 0.99
+    assert first_blob[0, 2, 0, 0] > 0.99
+    assert flipped_blob[0, 2, 0, -1] > 0.99
     assert embedding.shape == (512,)
     assert np.linalg.norm(embedding) == pytest.approx(1.0)
 

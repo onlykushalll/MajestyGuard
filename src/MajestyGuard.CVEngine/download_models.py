@@ -44,7 +44,7 @@ MODELS = {
             "/releases/download/v2_1/model-small.onnx"
         ),
         "filename": "midas_v21_small_256.onnx",
-        "sha256": None,
+        "sha256": "2d8c6cb8f415229daf1eb041024208e2608c9f98e17c81cc7c6ecb449c56fd58",
         "size_mb": 21,
     },
 }

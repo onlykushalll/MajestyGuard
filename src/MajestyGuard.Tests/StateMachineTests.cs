@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -77,11 +78,15 @@ public class StateMachineTests
     public void SocialLock_StrangerLeaves_TransitionsToBootScan_NotUnlocked()
     {
         var sm = InUnlocked();
+        long mockTime = 1000;
+        sm.TimestampProvider = () => mockTime;
 
-        // Call StrangerDetected — this sets _strangerFirstSeen = now
+        // Call StrangerDetected — this sets _strangerFirstSeen = mockTime
         sm.RequestTransition(TransitionTrigger.StrangerDetected);
-        // Wait > 500ms so presence duration exceeds threshold on next call
-        Thread.Sleep(600);
+        
+        // Advance clock by 600ms (exceeds 500ms threshold)
+        mockTime += (long)(Stopwatch.Frequency * 0.6);
+        
         // Call again — now presenceDuration >= 500ms → SocialLock
         sm.RequestTransition(TransitionTrigger.StrangerDetected);
         Assert.Equal(GuardState.SocialLock, sm.Current);
@@ -98,17 +103,19 @@ public class StateMachineTests
     public void StrangerTracking_ResetsOnAbsence_PreventsAccumulation()
     {
         var sm = InUnlocked();
+        long mockTime = 1000;
+        sm.TimestampProvider = () => mockTime;
 
         // Brief stranger presence (400ms) — should NOT trigger SocialLock
         sm.RequestTransition(TransitionTrigger.StrangerDetected);
-        Thread.Sleep(400);
+        mockTime += (long)(Stopwatch.Frequency * 0.4);
 
         // Reset tracking — as if only primary user in frame
         sm.ResetStrangerTracking();
 
         // Second brief presence — accumulated time must not count
         sm.RequestTransition(TransitionTrigger.StrangerDetected);
-        Thread.Sleep(400);
+        mockTime += (long)(Stopwatch.Frequency * 0.4);
 
         Assert.NotEqual(GuardState.SocialLock, sm.Current);
     }

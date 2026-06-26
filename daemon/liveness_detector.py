@@ -65,7 +65,7 @@ class LivenessDetector:
         self._face_center_history: deque[tuple[float, float]] = deque(maxlen=30)
 
         # Anti-replay: frame fingerprint history
-        self._frame_hashes: deque[bytes] = deque(maxlen=60)
+        self._frame_hashes: deque[bytes] = deque(maxlen=300)
         self._duplicate_frame_count = 0
 
         # Depth estimation: landmark geometry history

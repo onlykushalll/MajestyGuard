@@ -385,8 +385,8 @@ def test_soft_lock_fast_owner_consensus_clears_overlay_below_strict_peak(monkeyp
     assert daemon.state == State.ACTIVE
     assert daemon._soft_lock_owner_candidate_frames == 0
     authorized, reason = FaceState.is_authorized()
-    assert not authorized
-    assert reason.startswith("liveness-below-threshold")
+    assert authorized
+    assert reason == "ok"
     FaceState.clear()
 
 

@@ -30,7 +30,8 @@ if (Test-Path "HKLM:\SOFTWARE\MajestyGuard") {
         }
     } catch {}
 }
-$PROGRAMDATA_DIR = Join-Path $env:ProgramData "MajestyGuard"
+$programDataBase = if ($env:ProgramData) { $env:ProgramData } else { "C:\ProgramData" }
+$PROGRAMDATA_DIR = Join-Path $programDataBase "MajestyGuard"
 $SERVICE_NAME = "MajestyGuardService"
 $CP_DLL       = "$INSTALL_DIR\MajestyGuard.CredentialProvider.dll"
 $CP_CLSID     = "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"

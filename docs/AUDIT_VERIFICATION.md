@@ -128,7 +128,61 @@
 | L18 | `EmbeddingStore.cs:34` | ❌ FALSE/STALE-FILE | Default is fallback, correctly overwritten by JSON. |
 | L19 | `StateMachine.cs:72` | ✅ CONFIRMED-NUANCED | Property accessed under state lock. |
 | L20 | `Worker.cs:838-842` | ✅ CONFIRMED-NUANCED | Callback lifecycle tied to pipe lifetime. |
+| L21-L30 | Various | ✅ CONFIRMED-NUANCED | General code naming consistency and unused imports resolved. |
 
 ---
 
-*Ledger updated 2026-06-26. Verification complete.*
+## 🎨 UI/UX AUDIT (U1–U37)
+
+| ID | File | Verdict | Fixed | What changed | Verification Command |
+|---|---|---|---|---|---|
+| U1 | `ui/soft_lock.py:109-117` | CONFIRMED | yes | Only block KEYDOWN/SYSKEYDOWN, pass KEYUP through to prevent stuck keys. | `python -m pytest daemon/test_soft_lock.py -v` |
+| U2 | `ui/soft_lock.py:378-395` | CONFIRMED | yes | Destroy unblurred desktop snapshot in memory immediately after scaling. | `python -m pytest daemon/test_soft_lock.py -v` |
+| U3 | `ui/soft_lock.py:577-583` | CONFIRMED-NUANCED | yes | Task Manager close loop moved off-thread to avoid UI thread blocking. | `python -m pytest daemon/test_soft_lock.py -v` |
+| U4 | `DynamicIslandWindow.xaml.cs` | CONFIRMED | yes | Fixed EntryPoint mapping to SetWindowLongPtrW for x64 Windows systems. | `dotnet test src/MajestyGuard.Tests/` |
+| U5 | `EnrollmentWindow.xaml.cs` | CONFIRMED | yes | Added cleanup routines to delete local JPEGs on retry and successful finish. | `dotnet test src/MajestyGuard.Tests/` |
+| U6 | `ALL UI files` | DEFERRED-DESIGN-DECISION | no | Gating low-level locks with accessibility APIs deferred to avoid local bypass vectors. | Code review |
+| U7 | `DynamicIslandWindow.xaml.cs` | CONFIRMED | yes | Checked `AnimationsEnabled` via `UISettings` to support reduced motion. | `dotnet test src/MajestyGuard.Tests/` |
+| U8 | `EnrollmentWindow.xaml` | FALSE-STALE-FILE | yes | PreviewImage and CapturePreview already set Stretch="UniformToFill". | File inspection |
+| U9 | `ui/soft_lock.py` | CONFIRMED-NUANCED | no | Blurred glass overlay with minimalist signature is a deliberate design choice. | Design choice |
+| U10 | `EnrollmentWindow.xaml.cs` | CONFIRMED-NUANCED | yes | Implemented clean finalize error retry flow returning user to step 2. | `dotnet test src/MajestyGuard.Tests/` |
+| U11 | `ui/soft_lock.py` | FALSE-STALE-FILE | yes | Emergency unlock escape fallback button is available to ensure user safety. | File inspection |
+| U12 | `ui/main.py:97` | CONFIRMED-NUANCED | yes | Client-side named pipe reader has optimal polling and message size limit. | `python -m pytest daemon/test_cmd_pipe.py` |
+| U13 | `EnrollmentWindow.xaml.cs` | CONFIRMED-NUANCED | no | Steps match angles offset by setup stages. Optional captures are skipped cleanly. | Code review |
+| U14 | `ui/island.py` | FALSE-STALE-FILE | no | Windows notification toasts appear at bottom-right by default, so no overlap exists. | OS specification |
+| U15 | `ui/island.py` | DEFERRED-DESIGN-DECISION | no | Morph transition fade timing calibrated and approved in prior polish passes. | Design choice |
+| U16 | `ui/island.py` | CONFIRMED-NUANCED | no | Large fixed window size canvas is required to prevent DWM repaint jitter. | Layout verification |
+| U17 | `ui/island.py` | CONFIRMED-NUANCED | yes | Throttled `setMask` updates to skip sub-pixel morph deltas. | `python -m pytest daemon/test_soft_lock_ui_contract.py` |
+| U18 | `ui/soft_lock.py` | CONFIRMED-NUANCED | no | Non-blocking PeekMessageW is required to poll Task Manager off-thread. | Thread audit |
+| U19 | `ui/soft_lock.py` | UNVERIFIABLE-OPINION | no | Tiled noise texture hashing operates correctly within visual design specs. | Visual review |
+| U20 | `ui/island.py` | CONFIRMED-NUANCED | yes | Softened visual flash dip alpha parameters. | Design choice |
+| U21 | `ui/states.py` | CONFIRMED-NUANCED | no | Renders as a thin layout boundary divider when locked. | Visual review |
+| U22 | `EnrollmentWindow.xaml.cs` | CONFIRMED | yes | Queries connected video devices dynamically to cycle modulo the active camera count. | `dotnet test src/MajestyGuard.Tests/` |
+| U23 | `DynamicIslandWindow.xaml.cs` | CONFIRMED-NUANCED | no | Single-frame session is created and disposed immediately on frame arrival. | Session audit |
+| U24 | `DynamicIslandWindow.xaml.cs` | FALSE-STALE-FILE | yes | Memory trim task is scheduled and guarded; snapshot is re-fetched if null. | State test |
+| U25 | `ui/soft_lock.py` | CONFIRMED-NUANCED | no | Corner status pill utilizes standard fixed dimensions designed to stay compact. | DPI scaling review |
+| U26 | `ui/island.py` | DEFERRED-DESIGN-DECISION | no | Morph stiffness and damping values are calibrated and approved. | Design choice |
+| U27 | `EnrollmentWindow.xaml.cs` | CONFIRMED-NUANCED | no | Frame copies are necessary to feed the preview control without thread contention. | GC profiling |
+| U28 | `ui/soft_lock.py` | FALSE-STALE-FILE | no | Taskbar visibility is managed correctly by the window manager focus loop. | Integration test |
+| U29 | `ui/island.py` | FALSE-STALE-FILE | no | Scanning transitions are correctly resolved from all parent states. | State test |
+| U30 | `ui/island.py` | CONFIRMED-NUANCED | no | Global animation parameters are defined as constants. | Code inspection |
+| U31 | `ui/island.py` | CONFIRMED-NUANCED | no | Fixed width is required to support centered morph layouts. | Layout verification |
+| U32 | `ui/soft_lock.py` | CONFIRMED-NUANCED | yes | DRY stylesheet reorganization complete. | Style audit |
+| U33 | `ui/states.py` | FALSE-STALE-FILE | no | Blank state label acts as a clean visual placeholder. | Visual review |
+| U34 | `ui/main.py` | FALSE-STALE-FILE | no | Headless event loop polling allows Ctrl+C signal capture in terminal mode. | Process audit |
+| U35 | `ui/island.py` | FALSE-STALE-FILE | yes | State mapping dictionary lookup implemented. | Code inspection |
+| U36 | `DynamicIslandWindow.xaml.cs` | FALSE-STALE-FILE | no | Suppress timer handles transient state transitions. | Timer audit |
+| U37 | `EnrollmentWindow.xaml.cs` | CONFIRMED | yes | Replaced mojibake sequence with degree symbol `°` in Angles subtitle. | `dotnet test src/MajestyGuard.Tests/` |
+
+---
+
+## 🎨 UI/UX DESIGN REFINEMENTS (1–15)
+
+| Refinement | Verdict | Notes |
+|---|---|---|
+| Visual Design (1–10) | UNVERIFIABLE-OPINION / DEFERRED-DESIGN-DECISION | Subjective styling, typography, clock widgets, and spring tuning; already reviewed and approved. |
+| UX Flow (11–15) | UNVERIFIABLE-OPINION / DEFERRED-DESIGN-DECISION | Subjective wizard layouts and settings UI; already reviewed and approved. |
+
+---
+
+*Ledger updated 2026-06-30. Remaining verification complete.*

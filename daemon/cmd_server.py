@@ -47,9 +47,10 @@ def parse_cmd(raw: str) -> tuple[str, str] | None:
     return cmd, source[:80]
 
 
+from pipe_security import build_user_pipe_sddl
+
 def _build_sa() -> win32security.SECURITY_ATTRIBUTES:
-    # Define SDDL: System (SY) and Admin (BA) Full Access, Interactive (IU) Read/Write
-    sddl = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GWGR;;;IU)"
+    sddl = build_user_pipe_sddl()
     sd_compiled = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
         sddl, win32security.SDDL_REVISION_1
     )

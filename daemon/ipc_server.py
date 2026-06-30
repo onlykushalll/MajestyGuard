@@ -59,12 +59,12 @@ VALID_STATES = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Security descriptor — allow any local user to read (UI runs as same user)
+# Security descriptor — allow only active user to read/write
 # ---------------------------------------------------------------------------
+from pipe_security import build_user_pipe_sddl
 
 def _build_sa() -> win32security.SECURITY_ATTRIBUTES:
-    # Define SDDL: System (SY) and Admin (BA) Full Access, Interactive (IU) Read/Write
-    sddl = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GWGR;;;IU)"
+    sddl = build_user_pipe_sddl()
     sd_compiled = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
         sddl, win32security.SDDL_REVISION_1
     )

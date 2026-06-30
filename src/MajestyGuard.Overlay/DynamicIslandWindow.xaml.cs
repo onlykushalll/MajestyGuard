@@ -389,7 +389,7 @@ namespace MajestyGuard.Overlay
             var size = Math.Min(baseSize * _dpiScale, 160); // cap for 4K
             radius  = radius * Math.Min(_dpiScale, 1.3);
 
-            var duration = TimeSpan.FromMilliseconds(320);
+            var duration = IsAnimationEnabled() ? TimeSpan.FromMilliseconds(320) : TimeSpan.FromMilliseconds(0);
             var easing   = new BackEase { EasingMode = EasingMode.EaseOut, Amplitude = 0.15 };
 
             var wAnim = new DoubleAnimation
@@ -498,6 +498,18 @@ namespace MajestyGuard.Overlay
         // PILL DIMENSION ANIMATION (runtime values, not XAML-defined)
         // ─────────────────────────────────────────────────────────────
 
+        private bool IsAnimationEnabled()
+        {
+            try
+            {
+                return new Windows.UI.ViewManagement.UISettings().AnimationsEnabled;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
         // Scale factor based on display DPI — pill stays proportionally sized on 4K
         private double _dpiScale = 1.0;
 
@@ -510,7 +522,7 @@ namespace MajestyGuard.Overlay
             height = Math.Min(height * _dpiScale, 120);
             radius = radius * Math.Min(_dpiScale, 1.3);
 
-            var duration = TimeSpan.FromMilliseconds(280);
+            var duration = IsAnimationEnabled() ? TimeSpan.FromMilliseconds(280) : TimeSpan.FromMilliseconds(0);
             var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
 
             var widthAnim = new DoubleAnimation

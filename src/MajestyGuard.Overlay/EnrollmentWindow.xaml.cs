@@ -100,8 +100,8 @@ namespace MajestyGuard.Overlay
         private static readonly (string Angle, string Title, string Subtitle, bool Optional)[] Angles =
         [
             ("Front",       "Look straight ahead",    "Keep your face centred in the oval and hold still.",              false),
-            ("SlightLeft",  "Turn slightly left",      "Rotate your head about 15Â° to your left.",                       false),
-            ("SlightRight", "Turn slightly right",     "Rotate your head about 15Â° to your right.",                      false),
+            ("SlightLeft",  "Turn slightly left",      "Rotate your head about 15° to your left.",                       false),
+            ("SlightRight", "Turn slightly right",     "Rotate your head about 15° to your right.",                      false),
             ("WithGlasses", "Put on your glasses",     "If you wear glasses, put them on now. Otherwise skip this step.", true),
         ];
 
@@ -174,9 +174,28 @@ namespace MajestyGuard.Overlay
         private void BtnSkipAngle_Click(object s, RoutedEventArgs e)  => AdvanceStep();
         private void BtnFinish_Click(object s, RoutedEventArgs e)     => Close();
 
-        private void BtnSwitchCamera_Click(object s, RoutedEventArgs e)
+        private async void BtnSwitchCamera_Click(object s, RoutedEventArgs e)
         {
-            _config.CameraDeviceIndex = (_config.CameraDeviceIndex + 1) % 4;
+            try
+            {
+                var devices = await Windows.Devices.Enumeration.DeviceInformation.FindAllAsync(
+                    Windows.Devices.Enumeration.DeviceClass.VideoCapture);
+                var localDevices = devices
+                    .Where(d => d.IsEnabled
+                        && !d.Name.Contains("Phone", StringComparison.OrdinalIgnoreCase)
+                        && !d.Name.Contains("Virtual", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (localDevices.Count == 0)
+                    localDevices = devices.ToList();
+
+                int count = localDevices.Count > 0 ? localDevices.Count : 1;
+                _config.CameraDeviceIndex = (_config.CameraDeviceIndex + 1) % count;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to dynamically enumerate cameras during switch; cycling default 4");
+                _config.CameraDeviceIndex = (_config.CameraDeviceIndex + 1) % 4;
+            }
             _ = StartCameraPreviewAsync();
         }
 

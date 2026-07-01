@@ -208,6 +208,12 @@ class MajestyGuardDaemon:
             self.state = State.SOFT_LOCK
         else:
             self.state = State.IDLE
+        # H15 fix: incremented on every _transition() call. Timers scheduled
+        # from within a transition (e.g. the post-lock idle timer) capture
+        # this value and re-check it before firing, so a stale timer from an
+        # earlier LOCKED period cannot clobber a fresh, legitimate one that
+        # re-entered LOCKED before the old timer fired.
+        self._transition_generation = 0
         self._stop = threading.Event()
         self._whcdf_stop = threading.Event()
         self._is_tearing_down = False
@@ -1495,6 +1501,9 @@ class MajestyGuardDaemon:
     def _transition(self, new_state: State) -> None:
         old = self.state
         self.state = new_state
+        # getattr default handles bare/partially-constructed instances (e.g.
+        # test helpers that skip __init__) so this never raises AttributeError.
+        self._transition_generation = getattr(self, "_transition_generation", 0) + 1
 
         if new_state == State.IDLE:
             self._absent_frames = 0
@@ -1525,7 +1534,9 @@ class MajestyGuardDaemon:
             self._active_reacquire_grace_frames = 0
             self._owner_continuity_grace_frames = 0
             self.ipc.broadcast_state("locked")
-            threading.Timer(2.0, self._post_lock_idle).start()
+            threading.Timer(
+                2.0, self._post_lock_idle, args=(self._transition_generation,)
+            ).start()
         elif new_state == State.SOCIAL_LOCK:
             self._absent_frames = 0
             self._stranger_frames = 0
@@ -1580,8 +1591,16 @@ class MajestyGuardDaemon:
 
         log.info("STATE: %s -> %s", old.name, new_state.name)
 
-    def _post_lock_idle(self) -> None:
-        if self.state == State.LOCKED:
+    def _post_lock_idle(self, expected_generation: int) -> None:
+        # H15 fix: guard against a stale timer firing after the daemon has
+        # already left and re-entered LOCKED within the 2s window. Checking
+        # only `self.state == State.LOCKED` is not enough on its own, since a
+        # fresh, legitimate LOCKED period looks identical to the state this
+        # stale timer was originally scheduled for.
+        if (
+            self.state == State.LOCKED
+            and self._transition_generation == expected_generation
+        ):
             self.state = State.IDLE
             self.motion.reset()
             self.ipc.broadcast_state("idle")

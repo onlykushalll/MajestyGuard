@@ -298,7 +298,13 @@ class FaceEngine:
 
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self._cap.set(cv2.CAP_PROP_FPS, 30)
+        # H11 fix: this camera path (open_camera=True) is only used by standalone
+        # diagnostic/enrollment scripts, never the production daemon (which opens
+        # its own camera at main.py's TARGET_FPS=15 and passes frames into
+        # FaceEngine.process_frame()). Requesting 15 here — the real achievable
+        # rate given per-frame inference cost — instead of an unreachable 30,
+        # so this property reflects reality rather than a misleading request.
+        self._cap.set(cv2.CAP_PROP_FPS, 15)
         try:
             self._backend_name = self._cap.getBackendName()
         except Exception:

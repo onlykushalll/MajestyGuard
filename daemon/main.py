@@ -59,7 +59,6 @@ _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
 
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
-from input_idle import get_idle_seconds
 from cmd_server import CMDServer
 from idle_monitor import get_idle_seconds, read_idle_timeout
 from ipc_server import IPCServer, ServiceIPCServer

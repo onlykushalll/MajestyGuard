@@ -778,7 +778,13 @@ class FaceEngine:
 
     def _find_owner_track_face(self, faces: list) -> tuple[Optional[object], dict]:
         meta = {"reason": "none", "sticky_iou": 0.0, "predicted_iou": 0.0}
-        if self._last_owner_bbox is None and not getattr(self, "_owner_kalman", None):
+        # M24 fix: _owner_kalman is always created in __init__ (never None),
+        # so `not getattr(self, "_owner_kalman", None)` was always False and
+        # this guard's second half never actually fired. The TTL check right
+        # below already independently covers "never tracked an owner yet"
+        # (via _last_owner_seen_at starting at 0.0), so behavior is unchanged
+        # — this only removes the dead, misleading half of the condition.
+        if self._last_owner_bbox is None:
             return None, meta
         if time.monotonic() - self._last_owner_seen_at > self._owner_track_ttl_s:
             return None, meta

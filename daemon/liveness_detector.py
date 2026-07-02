@@ -24,6 +24,7 @@ import numpy as np
 import hashlib
 import logging
 import os
+import time
 from collections import deque
 from typing import Any, Optional
 
@@ -48,11 +49,19 @@ class LivenessDetector:
     _WINDOW = 30           # 2 seconds at 15 FPS — 10th percentile tolerates ~3 bad frames
     _MIN_FRAMES_FOR_PASS = 5
     _MIN_USABLE_FACE_QUALITY = 0.40
+    # H16 fix: score_full() falls back to the last smoothed score when the
+    # current frame's quality is too poor to score. Without a time cap, a
+    # sustained quality drop (bad lighting, camera obstruction settling in
+    # slowly, or a deliberate attempt to hold a stale PASS score) could make
+    # that fallback return the same value indefinitely. Past this age, the
+    # fallback fails closed instead.
+    _STALE_SCORE_MAX_AGE_S = 4.0
 
     def __init__(self, model_dir: str = ""):
         self._score_history: deque[float] = deque(maxlen=self._WINDOW)
         self._frame_index = 0
         self._last_smoothed_score = 0.0
+        self._last_smoothed_score_time = 0.0
 
         # Temporal blink state
         self._eye_brightness_history: deque[float] = deque(maxlen=30)
@@ -100,6 +109,7 @@ class LivenessDetector:
         self._score_history.clear()
         self._frame_index = 0
         self._last_smoothed_score = 0.0
+        self._last_smoothed_score_time = 0.0
         self._eye_brightness_history.clear()
         self._blink_count = 0
         self._blink_cooldown = 0
@@ -256,7 +266,20 @@ class LivenessDetector:
                 quality.height_frac,
                 quality.center_offset,
             )
-            return self._last_smoothed_score if self._score_history else 0.0
+            # H16 fix: only trust the cached score while it's recent. A
+            # sustained quality drop must not let a stale PASS score persist
+            # forever — fail closed once it's too old to be meaningful.
+            if not self._score_history:
+                return 0.0
+            age = time.monotonic() - getattr(self, "_last_smoothed_score_time", 0.0)
+            if age > self._STALE_SCORE_MAX_AGE_S:
+                logger.warning(
+                    "Liveness score stale for %.1fs (cap %.1fs) — failing closed, "
+                    "not returning cached score",
+                    age, self._STALE_SCORE_MAX_AGE_S,
+                )
+                return 0.0
+            return self._last_smoothed_score
 
         roi = self._extract_roi(frame, face)
         if roi is None:
@@ -378,6 +401,7 @@ class LivenessDetector:
             smoothed = float(np.percentile(window, 10))
 
         self._last_smoothed_score = smoothed
+        self._last_smoothed_score_time = time.monotonic()
 
         logger.debug(
             "Liveness: LBP=%.2f Spec=%.2f Color=%.2f Moire=%.2f Temp=%.2f "

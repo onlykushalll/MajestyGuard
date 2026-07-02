@@ -1,6 +1,7 @@
 import inspect
 from collections import deque
 from types import SimpleNamespace
+import time
 
 import numpy as np
 
@@ -50,6 +51,7 @@ def test_liveness_skips_low_quality_faces_without_poisoning_window():
     detector._score_history = deque([0.82, 0.84], maxlen=LivenessDetector._WINDOW)
     detector._frame_index = 2
     detector._last_smoothed_score = 0.83
+    detector._last_smoothed_score_time = time.monotonic()
     detector._depth_liveness = None
     detector._rppg = SimpleNamespace(has_signal=False, update=lambda frame, face: 0.5)
     detector._attention = SimpleNamespace(score=lambda frame: 0.5)
@@ -74,3 +76,32 @@ def test_liveness_skips_low_quality_faces_without_poisoning_window():
     assert score == 0.83
     assert list(detector._score_history) == [0.82, 0.84]
     assert detector._frame_index == 2
+
+
+def test_liveness_stale_cached_score_fails_closed_instead_of_persisting():
+    """H16 regression guard.
+
+    score_full() falls back to the last smoothed score on a low-quality
+    frame. Without a staleness cap, that fallback could return the same
+    value indefinitely under sustained poor conditions. Once the cached
+    score is older than _STALE_SCORE_MAX_AGE_S it must return 0.0 (fail
+    closed), not the stale cached value.
+    """
+    detector = LivenessDetector.__new__(LivenessDetector)
+    detector._score_history = deque([0.82, 0.84], maxlen=LivenessDetector._WINDOW)
+    detector._frame_index = 2
+    detector._last_smoothed_score = 0.83
+    # Older than _STALE_SCORE_MAX_AGE_S (4.0s) — must not be trusted.
+    detector._last_smoothed_score_time = (
+        time.monotonic() - LivenessDetector._STALE_SCORE_MAX_AGE_S - 1.0
+    )
+    detector._depth_liveness = None
+    detector._rppg = SimpleNamespace(has_signal=False, update=lambda frame, face: 0.5)
+    detector._attention = SimpleNamespace(score=lambda frame: 0.5)
+    detector._last_onnx_idx0 = float("nan")
+    detector._last_onnx_idx1 = float("nan")
+
+    low_quality_frame = np.zeros((120, 160, 3), dtype=np.uint8)
+    score = detector.score(low_quality_frame, FakeFace([20, 20, 24, 24]))
+
+    assert score == 0.0, "stale cached liveness score must fail closed, not persist"

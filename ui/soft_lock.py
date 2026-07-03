@@ -378,7 +378,14 @@ class SoftLockOverlay(QWidget):
             if not self.isVisible():
                 self._opacity_value = 0.0  # Reset opacity before showing to avoid one-frame flash
                 self._fit_virtual_screen()
-                self._capture_background()
+                # Stutter-on-load fix: show first, capture second. grabWindow()
+                # is a slow, blocking OS call — running it before showFullScreen()
+                # froze the desktop for its duration, then the overlay "popped in"
+                # all at once. Now the window (and whatever backdrop is already
+                # cached from a previous lock cycle, or the paintEvent fallback
+                # fill on the very first lock) appears immediately, and the fresh
+                # screenshot capture is deferred one event-loop tick so it runs
+                # after the window has already painted and become visible.
                 self.showFullScreen()
                 self._force_topmost()
                 self.raise_()
@@ -388,7 +395,8 @@ class SoftLockOverlay(QWidget):
                 self._animate_opacity(0.0, 1.0)
                 _install_hooks()
                 _set_taskbar_visible(False)
-                
+                QTimer.singleShot(0, self._capture_background)
+
                 self._lock_shown_at = time.monotonic()
                 self._fallback_prominent = False
                 self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)

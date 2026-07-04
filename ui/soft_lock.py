@@ -37,32 +37,48 @@ _LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock",
 
 _FALLBACK_BTN_STYLE_DIM = """
     QPushButton {
-        background: rgba(255,255,255,0.08);
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(255,255,255,0.16),
+            stop:0.45 rgba(255,255,255,0.07),
+            stop:1 rgba(255,255,255,0.04));
         color: rgba(255,255,255,0.55);
-        border: 1px solid rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.10);
+        border-top: 1px solid rgba(255,255,255,0.28);
         border-radius: 8px;
         padding: 6px 14px;
         font-size: 12px;
         font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
     }
     QPushButton:hover {
-        background: rgba(255,255,255,0.16);
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(255,255,255,0.26),
+            stop:0.45 rgba(255,255,255,0.13),
+            stop:1 rgba(255,255,255,0.08));
+        border-top: 1px solid rgba(255,255,255,0.40);
         color: rgba(255,255,255,0.90);
     }
 """
 
 _FALLBACK_BTN_STYLE_PROMINENT = """
     QPushButton {
-        background: rgba(255,255,255,0.08);
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(255,255,255,0.22),
+            stop:0.45 rgba(255,255,255,0.10),
+            stop:1 rgba(255,255,255,0.06));
         color: rgba(255,255,255,0.90);
-        border: 1px solid rgba(255,255,255,0.12);
+        border: 1px solid rgba(255,255,255,0.14);
+        border-top: 1px solid rgba(255,255,255,0.42);
         border-radius: 8px;
         padding: 6px 14px;
         font-size: 12px;
         font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
     }
     QPushButton:hover {
-        background: rgba(255,255,255,0.16);
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 rgba(255,255,255,0.30),
+            stop:0.45 rgba(255,255,255,0.15),
+            stop:1 rgba(255,255,255,0.09));
+        border-top: 1px solid rgba(255,255,255,0.55);
         color: rgba(255,255,255,0.95);
     }
 """
@@ -815,6 +831,35 @@ class SoftLockOverlay(QWidget):
         brand: bool = False,
     ) -> None:
         if brand:
+            path = QPainterPath()
+            path.addRoundedRect(rect, 17, 17)
+
+            body = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+            body.setColorAt(0.0, QColor(255, 255, 255, 58))
+            body.setColorAt(0.5, QColor(240, 244, 250, 34))
+            body.setColorAt(1.0, QColor(225, 231, 240, 46))
+            painter.fillPath(path, body)
+
+            # Subtle drifting sheen — reuses the phase clock already driving
+            # the ambient background glow, so this costs nothing extra per
+            # frame. Liquid Glass communicates depth mainly through edge
+            # highlights and layered translucency even at rest; the drift
+            # here is a light touch on top of that, not the main effect.
+            sheen_x = rect.left() + rect.width() * (0.5 + 0.5 * math.sin(self._phase * math.tau))
+            sheen = QLinearGradient(sheen_x - 40, rect.top(), sheen_x + 40, rect.top())
+            sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
+            sheen.setColorAt(0.5, QColor(255, 255, 255, 30))
+            sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.save()
+            painter.setClipPath(path)
+            painter.fillRect(rect, sheen)
+            painter.restore()
+
+            border = QColor(255, 255, 255, 90)
+            painter.setPen(QPen(border, 1.0))
+            painter.drawPath(path)
+            painter.fillRect(QRectF(rect.left() + 4, rect.top(), rect.width() - 8, 1.0), QColor(255, 255, 255, 120))
+
             text_rect = rect.adjusted(14, 0, -14, 0)
         else:
             path = QPainterPath()

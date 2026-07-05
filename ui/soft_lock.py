@@ -186,6 +186,85 @@ def _release_cursor_lock():
     ctypes.windll.user32.ClipCursor(None)
 
 
+# --- Accessibility-shortcut lockdown (Sticky/Toggle/Filter Keys) ---
+# These are handled by Windows below the WH_KEYBOARD_LL hook chain (5x-Shift,
+# holding Shift 8s, holding NumLock 5s), so no keyboard hook can intercept
+# them — they can pop an OS-level dialog regardless of anything this app
+# does. This is Microsoft's own documented kiosk-mode mitigation: clear only
+# the HOTKEYACTIVE bit while locked (the shortcut trigger), leave every other
+# setting untouched, and restore the original saved value on unlock.
+SPI_GETFILTERKEYS, SPI_SETFILTERKEYS = 0x0032, 0x0033
+SPI_GETTOGGLEKEYS, SPI_SETTOGGLEKEYS = 0x0034, 0x0035
+SPI_GETSTICKYKEYS, SPI_SETSTICKYKEYS = 0x003A, 0x003B
+_SPIF_SENDCHANGE = 0x0002
+_HOTKEYACTIVE_BIT = 0x00000004  # same bit position in all three structs
+
+
+class _STICKYKEYS(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint32)]
+
+
+class _TOGGLEKEYS(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint32)]
+
+
+class _FILTERKEYS(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint), ("dwFlags", ctypes.c_uint32),
+        ("iWaitMSec", ctypes.c_uint32), ("iDelayMSec", ctypes.c_uint32),
+        ("iRepeatMSec", ctypes.c_uint32), ("iBounceMSec", ctypes.c_uint32),
+    ]
+
+
+_saved_stickykeys: "_STICKYKEYS | None" = None
+_saved_togglekeys: "_TOGGLEKEYS | None" = None
+_saved_filterkeys: "_FILTERKEYS | None" = None
+
+
+def _disable_accessibility_shortcuts() -> None:
+    global _saved_stickykeys, _saved_togglekeys, _saved_filterkeys
+    user32 = ctypes.windll.user32
+    try:
+        sk = _STICKYKEYS(cbSize=ctypes.sizeof(_STICKYKEYS))
+        user32.SystemParametersInfoW(SPI_GETSTICKYKEYS, ctypes.sizeof(sk), ctypes.byref(sk), 0)
+        _saved_stickykeys = _STICKYKEYS(cbSize=sk.cbSize, dwFlags=sk.dwFlags)
+        sk.dwFlags &= ~_HOTKEYACTIVE_BIT
+        user32.SystemParametersInfoW(SPI_SETSTICKYKEYS, ctypes.sizeof(sk), ctypes.byref(sk), _SPIF_SENDCHANGE)
+
+        tk = _TOGGLEKEYS(cbSize=ctypes.sizeof(_TOGGLEKEYS))
+        user32.SystemParametersInfoW(SPI_GETTOGGLEKEYS, ctypes.sizeof(tk), ctypes.byref(tk), 0)
+        _saved_togglekeys = _TOGGLEKEYS(cbSize=tk.cbSize, dwFlags=tk.dwFlags)
+        tk.dwFlags &= ~_HOTKEYACTIVE_BIT
+        user32.SystemParametersInfoW(SPI_SETTOGGLEKEYS, ctypes.sizeof(tk), ctypes.byref(tk), _SPIF_SENDCHANGE)
+
+        fk = _FILTERKEYS(cbSize=ctypes.sizeof(_FILTERKEYS))
+        user32.SystemParametersInfoW(SPI_GETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), 0)
+        _saved_filterkeys = _FILTERKEYS(
+            cbSize=fk.cbSize, dwFlags=fk.dwFlags, iWaitMSec=fk.iWaitMSec,
+            iDelayMSec=fk.iDelayMSec, iRepeatMSec=fk.iRepeatMSec, iBounceMSec=fk.iBounceMSec,
+        )
+        fk.dwFlags &= ~_HOTKEYACTIVE_BIT
+        user32.SystemParametersInfoW(SPI_SETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), _SPIF_SENDCHANGE)
+    except Exception:
+        pass  # never let this block the actual lock from engaging
+
+
+def _restore_accessibility_shortcuts() -> None:
+    global _saved_stickykeys, _saved_togglekeys, _saved_filterkeys
+    user32 = ctypes.windll.user32
+    try:
+        if _saved_stickykeys is not None:
+            user32.SystemParametersInfoW(SPI_SETSTICKYKEYS, ctypes.sizeof(_saved_stickykeys), ctypes.byref(_saved_stickykeys), _SPIF_SENDCHANGE)
+        if _saved_togglekeys is not None:
+            user32.SystemParametersInfoW(SPI_SETTOGGLEKEYS, ctypes.sizeof(_saved_togglekeys), ctypes.byref(_saved_togglekeys), _SPIF_SENDCHANGE)
+        if _saved_filterkeys is not None:
+            user32.SystemParametersInfoW(SPI_SETFILTERKEYS, ctypes.sizeof(_saved_filterkeys), ctypes.byref(_saved_filterkeys), _SPIF_SENDCHANGE)
+    except Exception:
+        pass
+    finally:
+        _saved_stickykeys = _saved_togglekeys = _saved_filterkeys = None
+
+
 def _hook_thread_func():
     global _kb_hook_id, _kb_callback_ref, _mouse_hook_id, _mouse_callback_ref, _hook_thread_stop
     import time as _time
@@ -229,6 +308,7 @@ def _install_hooks() -> None:
     _overlay_locked = True
     _mouse_locked = True
     _engage_cursor_lock()
+    _disable_accessibility_shortcuts()
     if _kb_hook_id is not None:
         return
     _hook_thread_stop = False
@@ -243,6 +323,7 @@ def _uninstall_hooks() -> None:
     _overlay_locked = False
     _mouse_locked = False
     _release_cursor_lock()
+    _restore_accessibility_shortcuts()
     _hook_thread_stop = True
     if _kb_hook_id is not None:
         try:

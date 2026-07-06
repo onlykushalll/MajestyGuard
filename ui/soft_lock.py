@@ -718,6 +718,15 @@ class SoftLockOverlay(QWidget):
         if _mouse_locked:
             _engage_cursor_lock()
 
+        if _overlay_locked:
+            # Re-assert every tick, not just once at lock-entry. A touchpad
+            # gesture (3/4-finger "show desktop") can bring the taskbar back
+            # regardless of anything this app does — that trigger itself
+            # can't be blocked from user space, but nothing stops us from
+            # putting it back within one tick instead of leaving it exposed
+            # until the next full lock/unlock cycle.
+            _set_taskbar_visible(False)
+
         if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 5.0:
             if not getattr(self, "_fallback_prominent", False):
                 self._fallback_prominent = True

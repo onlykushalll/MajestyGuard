@@ -186,7 +186,6 @@ class State(Enum):
     SCANNING = auto()
     ACTIVE = auto()
     SOFT_LOCK = auto()
-    LOCKED = auto()
     SOCIAL_LOCK = auto()
     HOSTILE_LOCK = auto()
     SYSTEM_LOCKED = auto()
@@ -1527,15 +1526,6 @@ class MajestyGuardDaemon:
             self._soft_lock_owner_candidate_frames = 0
             self._soft_lock_fast_pass_frames = 0
             self._defer_input_idle_soft_lock()
-        elif new_state == State.LOCKED:
-            self._absent_frames = 0
-            self._stranger_frames = 0
-            self._active_reacquire_grace_frames = 0
-            self._owner_continuity_grace_frames = 0
-            self.ipc.broadcast_state("locked")
-            threading.Timer(
-                2.0, self._post_lock_idle, args=(self._transition_generation,)
-            ).start()
         elif new_state == State.SOCIAL_LOCK:
             self._absent_frames = 0
             self._stranger_frames = 0
@@ -1589,21 +1579,6 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("idle")
 
         log.info("STATE: %s -> %s", old.name, new_state.name)
-
-    def _post_lock_idle(self, expected_generation: int) -> None:
-        # H15 fix: guard against a stale timer firing after the daemon has
-        # already left and re-entered LOCKED within the 2s window. Checking
-        # only `self.state == State.LOCKED` is not enough on its own, since a
-        # fresh, legitimate LOCKED period looks identical to the state this
-        # stale timer was originally scheduled for.
-        if (
-            self.state == State.LOCKED
-            and self._transition_generation == expected_generation
-        ):
-            self.state = State.IDLE
-            self.motion.reset()
-            self.ipc.broadcast_state("idle")
-            log.info("Post-lock: returned to IDLE monitoring")
 
     def _require_face_engine(self) -> FaceEngine:
         if self.face_eng is None:

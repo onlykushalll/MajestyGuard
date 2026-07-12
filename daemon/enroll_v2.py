@@ -40,7 +40,23 @@ logging.basicConfig(level=logging.WARNING)
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models_insightface"
 LIVENESS_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
-ENROLL_LIVENESS_THRESHOLD = float(os.environ.get("MG_ENROLL_LIVENESS_THRESHOLD", "0.82"))
+DEFAULT_ENROLL_LIVENESS_THRESHOLD = 0.70
+
+
+def _enrollment_liveness_threshold(env: Mapping[str, str] | None = None) -> float:
+    """Allow stricter enrollment liveness, never a weaker RGB floor."""
+    source = os.environ if env is None else env
+    raw = source.get("MG_ENROLL_LIVENESS_THRESHOLD", str(DEFAULT_ENROLL_LIVENESS_THRESHOLD))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_ENROLL_LIVENESS_THRESHOLD
+    if not DEFAULT_ENROLL_LIVENESS_THRESHOLD <= value <= 1.0:
+        return DEFAULT_ENROLL_LIVENESS_THRESHOLD
+    return value
+
+
+ENROLL_LIVENESS_THRESHOLD = _enrollment_liveness_threshold()
 OUT_DIR = Path(os.environ.get("LOCALAPPDATA", os.environ.get("ProgramData", r"C:\ProgramData"))) / "MajestyGuard"
 OUT_FILE = OUT_DIR / "embeddings_v2.npy"
 OUT_META_FILE = OUT_DIR / "embeddings_v2_meta.json"

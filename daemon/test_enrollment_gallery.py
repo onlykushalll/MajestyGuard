@@ -150,6 +150,16 @@ def test_enrollment_timeout_defaults_from_mg_max_seconds():
     assert enroll_v2._env_max_seconds({}) == 0.0
 
 
+def test_enrollment_default_liveness_gate_matches_calibrated_rgb_daemon_floor():
+    assert enroll_v2.ENROLL_LIVENESS_THRESHOLD == 0.70
+
+
+def test_enrollment_liveness_override_cannot_weaken_calibrated_floor():
+    assert enroll_v2._enrollment_liveness_threshold({"MG_ENROLL_LIVENESS_THRESHOLD": "0.65"}) == 0.70
+    assert enroll_v2._enrollment_liveness_threshold({"MG_ENROLL_LIVENESS_THRESHOLD": "0.80"}) == 0.80
+    assert enroll_v2._enrollment_liveness_threshold({"MG_ENROLL_LIVENESS_THRESHOLD": "bad"}) == 0.70
+
+
 def test_enrollment_deadline_helpers_treat_zero_as_unbounded():
     assert enroll_v2._deadline_from_max_seconds(0.0, now=100.0) is None
     assert enroll_v2._deadline_from_max_seconds(-1.0, now=100.0) is None

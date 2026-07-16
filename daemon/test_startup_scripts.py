@@ -13,7 +13,7 @@ def test_install_startup_registers_user_task_with_safe_daemon_flags():
     assert "MajestyGuard_UserDaemon" in script
     assert "pythonw.exe" in script
     assert "MG_ENABLE_LOCK=0" in script
-    assert "MG_IDLE_TIMEOUT=90" in script
+    assert "MG_IDLE_TIMEOUT=60" in script
     assert "MG_PASSIVE_FPS=0" in script
     assert "MG_OVERLAY_WATCHDOG=1" in script
     assert "MG_ENABLE_WHCDF_IPC=0" in script

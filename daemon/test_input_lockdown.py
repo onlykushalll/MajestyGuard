@@ -202,6 +202,18 @@ def test_verify_cooldown_allows_after_expiry():
     assert len(verify_states) == 1, "verify_requested should work after cooldown expires"
 
 
+def test_verify_request_cannot_extend_an_active_verification_window():
+    """Space spam must not reset or prolong the active camera burst."""
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._soft_lock_verify_until = time.monotonic() + 10.0
+    started_at = daemon._soft_lock_verify_until
+
+    daemon._handle_ui_command("verify_requested", "space")
+
+    assert daemon._soft_lock_verify_until == started_at
+    assert [state for state, _ in daemon.ipc.states if state == "verifying_lock"] == []
+
+
 def test_verify_cooldown_does_not_block_confirmed_stranger_escalation():
     """Stranger escalation path must work regardless of cooldown."""
     daemon = _bare_daemon(State.SOFT_LOCK)

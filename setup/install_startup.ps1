@@ -70,7 +70,7 @@ if (!(Test-Path $Python)) {
 }
 
 $env:MG_ENABLE_LOCK = "0"
-$env:MG_IDLE_TIMEOUT = "90"
+$env:MG_IDLE_TIMEOUT = "60"
 $env:MG_PASSIVE_FPS = "0"
 $env:MG_OVERLAY_WATCHDOG = "1"
 $env:MG_ENABLE_WHCDF_IPC = "0"
@@ -81,7 +81,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Policy audit failed; startup task was not installed."
 }
 
-$Command = "set MG_ENABLE_LOCK=0&& set MG_IDLE_TIMEOUT=90&& set MG_PASSIVE_FPS=0&& set MG_OVERLAY_WATCHDOG=1&& set MG_ENABLE_WHCDF_IPC=0&& set MG_ENABLE_SERVICE_IPC=0&& set MG_ADAFACE_FLIP_FUSION=1&& `"$Pythonw`" `"$Daemon`""
+$Command = "set MG_ENABLE_LOCK=0&& set MG_IDLE_TIMEOUT=60&& set MG_PASSIVE_FPS=0&& set MG_OVERLAY_WATCHDOG=1&& set MG_ENABLE_WHCDF_IPC=0&& set MG_ENABLE_SERVICE_IPC=0&& set MG_ADAFACE_FLIP_FUSION=1&& `"$Pythonw`" `"$Daemon`""
 $InstalledMode = "ScheduledTask"
 try {
     $Action = New-ScheduledTaskAction -Execute "$env:ComSpec" -Argument "/d /c $Command" -WorkingDirectory $Root

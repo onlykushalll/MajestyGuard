@@ -9,7 +9,7 @@ $PolicyAudit = Join-Path $Root "daemon\mg_policy_audit.py"
 $InstallStartupScript = Join-Path $PSScriptRoot "install_startup.ps1"
 
 $env:MG_ENABLE_LOCK = "0"
-$env:MG_IDLE_TIMEOUT = "90"
+$env:MG_IDLE_TIMEOUT = "60"
 $env:MG_PASSIVE_FPS = "0"
 $env:MG_OVERLAY_WATCHDOG = "1"
 $env:MG_ENABLE_WHCDF_IPC = "0"

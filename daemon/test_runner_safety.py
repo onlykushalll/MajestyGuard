@@ -9,9 +9,9 @@ def test_run_daemon_batch_is_lock_disabled_and_time_bounded_by_default():
     assert "%~dp0daemon\\main.py" in script
     assert "%~dp0daemon\\mg_policy_audit.py" in script
     assert "SET MG_ENABLE_LOCK=0" in script
-    assert "SET MG_IDLE_TIMEOUT=90" in script
+    assert "SET MG_IDLE_TIMEOUT=60" in script
     assert "SET MG_PASSIVE_FPS=0" in script
-    assert "SET MG_SOFT_LOCK_VERIFY_WINDOW_SECONDS=12" in script
+    assert "SET MG_SOFT_LOCK_VERIFY_WINDOW_SECONDS=15" in script
     assert "SET MG_ENABLE_WHCDF_IPC=0" in script
     assert "SET MG_ENABLE_SERVICE_IPC=0" in script
     assert "SET MG_ADAFACE_FLIP_FUSION=1" in script

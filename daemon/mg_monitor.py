@@ -33,7 +33,7 @@ logging.basicConfig(
 
 MIN_IDLE_TIMEOUT_S = 15.0
 MAX_IDLE_TIMEOUT_S = 600.0
-DEFAULT_IDLE_TIMEOUT_S = 90.0
+DEFAULT_IDLE_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 2.0
 
 _DAEMON_DIR = pathlib.Path(__file__).resolve().parent
@@ -44,6 +44,7 @@ _MG_STATE_DIR = pathlib.Path(
 MONITOR_PID_FILE = _MG_STATE_DIR / "monitor.pid"
 DAEMON_PID_FILE = _MG_STATE_DIR / "daemon.pid"
 LOCK_STATE_FILE = _MG_STATE_DIR / "lock_state.txt"
+IDLE_CHECK_RESULT_FILE = _MG_STATE_DIR / "idle_check_result.txt"
 
 
 # ── Idle detection (ctypes, no pywin32) ────────────────────────────────────
@@ -123,6 +124,21 @@ def _read_lock_state() -> str:
     return "UNLOCKED"
 
 
+def _write_idle_check_result(result: str) -> None:
+    try:
+        _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
+        IDLE_CHECK_RESULT_FILE.write_text(f"{result}\n", encoding="utf-8")
+    except OSError as exc:
+        log.warning("Failed to write idle-check result: %s", exc)
+
+
+def _read_idle_check_result() -> str:
+    try:
+        return IDLE_CHECK_RESULT_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 # ── Daemon launcher ───────────────────────────────────────────────────────
 
 _DAEMON_LOG_PATH = _MG_STATE_DIR / "daemon_stdout.log"
@@ -134,8 +150,10 @@ def _launch_full_daemon() -> subprocess.Popen:
     python = sys.executable
     env = dict(os.environ)
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env["MG_FORCE_LOCK_STARTUP"] = "1"
+    env.pop("MG_FORCE_LOCK_STARTUP", None)
+    env["MG_IDLE_CHECK_MODE"] = "1"
     env["MG_OVERLAY_WATCHDOG"] = "1"
+    _write_idle_check_result("PENDING")
     log.info("Launching full daemon: %s %s", python, daemon_script)
     log_fh = open(_DAEMON_LOG_PATH, "a", encoding="utf-8")
     proc = subprocess.Popen(
@@ -167,13 +185,19 @@ class MonitorDaemon:
     def run(self) -> None:
         _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
         
-        # Clear any stale lock state from a previous crash
-        try:
-            LOCK_STATE_FILE.write_text("UNLOCKED\n", encoding="utf-8")
-            DAEMON_PID_FILE.unlink(missing_ok=True)
-        except OSError:
-            pass
-        log.info("Cleared stale lock state on startup")
+        locked_daemon_is_live = (
+            _read_lock_state() == "LOCKED"
+            and _is_pid_alive(_read_pid(DAEMON_PID_FILE))
+        )
+        if locked_daemon_is_live:
+            log.info("Preserving live locked state on monitor startup")
+        else:
+            try:
+                LOCK_STATE_FILE.write_text("UNLOCKED\n", encoding="utf-8")
+                DAEMON_PID_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+            log.info("Cleared stale lock state on startup")
 
         _write_pid(MONITOR_PID_FILE, os.getpid())
         log.info(
@@ -248,7 +272,7 @@ class MonitorDaemon:
         if ret is not None:
             log.info("Full daemon exited (code=%s) — resuming idle watch", ret)
             self._daemon_proc = None
-            self._idle_fired = False  # Reset so next idle stretch can fire
+            self._idle_fired = _read_idle_check_result() == "OWNER_VERIFIED"
             return False
         return True
 

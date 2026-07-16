@@ -274,6 +274,19 @@ def test_soft_lock_passive_branch_releases_camera(monkeypatch):
     assert daemon._cap is None
 
 
+def test_soft_lock_never_opens_camera_without_explicit_verify_request(monkeypatch):
+    """The passive overlay stays camera-cold even if a legacy FPS setting exists."""
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    opens = []
+    monkeypatch.setattr(daemon_main, "PASSIVE_FPS", 1.0)
+    monkeypatch.setattr(daemon_main.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(daemon, "_open_camera", lambda **_kwargs: opens.append("open") or True)
+
+    daemon._handle_passive_soft_lock(loop_start=0.0)
+
+    assert opens == []
+
+
 def test_soft_lock_verification_timeout_returns_to_passive_state(monkeypatch):
     now = {"value": 100.0}
     monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])

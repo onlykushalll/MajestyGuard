@@ -1,5 +1,6 @@
 """Tests for the lightweight monitor daemon (mg_monitor.py)."""
 import ast
+import importlib.util
 from pathlib import Path
 
 
@@ -73,3 +74,41 @@ def test_mg_monitor_launches_main_py():
     """mg_monitor.py must launch main.py (not itself) as the full daemon."""
     source = (DAEMON / "mg_monitor.py").read_text(encoding="utf-8")
     assert "main.py" in source
+
+
+def _load_monitor_module():
+    path = DAEMON / "mg_monitor.py"
+    spec = importlib.util.spec_from_file_location("mg_monitor_under_test", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_monitor_launches_bounded_idle_check_not_force_lock(monkeypatch):
+    monitor = _load_monitor_module()
+    captured = {}
+
+    class FakeProcess:
+        pid = 123
+
+    monkeypatch.setattr(monitor.subprocess, "Popen", lambda _args, **kwargs: captured.update(kwargs) or FakeProcess())
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", Path("C:/tmp/mg-monitor-test"))
+
+    monitor._launch_full_daemon()
+
+    assert captured["env"]["MG_IDLE_CHECK_MODE"] == "1"
+    assert "MG_FORCE_LOCK_STARTUP" not in captured["env"]
+
+
+def test_monitor_keeps_same_idle_stretch_latched_after_owner_success(monkeypatch, tmp_path):
+    monitor = _load_monitor_module()
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", tmp_path / "idle_check_result.txt")
+    (tmp_path / "idle_check_result.txt").write_text("OWNER_VERIFIED\n", encoding="utf-8")
+    watcher = monitor.MonitorDaemon()
+    watcher._daemon_proc = type("Exited", (), {"poll": lambda self: 0})()
+    watcher._idle_fired = True
+
+    assert watcher._is_daemon_running() is False
+    assert watcher._idle_fired is True

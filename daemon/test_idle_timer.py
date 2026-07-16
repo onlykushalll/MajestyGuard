@@ -9,7 +9,7 @@ def test_idle_timeout_env_clamps_to_safe_range():
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "15"}, warn=warnings.append) == 15.0
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "900"}, warn=warnings.append) == 600.0
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "120"}, warn=warnings.append) == 120.0
-    assert read_idle_timeout({"MG_IDLE_TIMEOUT": "bad"}, warn=warnings.append) == 90.0
+    assert read_idle_timeout({"MG_IDLE_TIMEOUT": "bad"}, warn=warnings.append) == 60.0
     assert len(warnings) == 2
 
 

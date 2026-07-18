@@ -47,7 +47,8 @@ def test_worker_uses_configured_programdata_cv_script_path_with_read_probe():
 def test_uninstaller_removes_programdata_runtime_but_preserves_user_data_by_default():
     text = UNINSTALLER.read_text(encoding="utf-8")
 
-    assert "$PROGRAMDATA_DIR = Join-Path $env:ProgramData \"MajestyGuard\"" in text
+    assert '$programDataBase = if ($env:ProgramData) { $env:ProgramData } else { "C:\\ProgramData" }' in text
+    assert '$PROGRAMDATA_DIR = Join-Path $programDataBase "MajestyGuard"' in text
     assert "$PROGRAMDATA_DIR" in text
     assert "Remove MajestyGuard ProgramData runtime files" in text
     assert text.find("Remove MajestyGuard ProgramData runtime files") < text.find("Preserving user data")

@@ -9,7 +9,7 @@ INSTALLERS = [
 WORKER = ROOT / "src" / "MajestyGuard.Service" / "Worker.cs"
 APP_CONFIG = ROOT / "src" / "MajestyGuard.Core" / "Models" / "AppConfig.cs"
 UNINSTALLER = ROOT / "Uninstall.ps1"
-BUILD = ROOT / "Build.ps1"
+BUILD = ROOT / "scripts" / "Build.ps1"
 
 
 def test_cv_scripts_are_installed_to_programdata_with_explicit_acl():

@@ -18,7 +18,7 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DAEMON_DIR = ROOT / "daemon"
 sys.path.insert(0, str(DAEMON_DIR))
 

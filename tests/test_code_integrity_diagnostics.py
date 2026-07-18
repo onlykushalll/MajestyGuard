@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNNER = ROOT / "run_phase3_admin.ps1"
+RUNNER = ROOT / "scripts" / "run_phase3_admin.ps1"
 DIAGNOSE = ROOT / "diagnose_localsystem_cv.ps1"
 
 

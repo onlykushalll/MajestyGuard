@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+# Keeps every existing bare import in daemon/ and ui/ source and test files
+# working (e.g. `from main import ...`, `from liveness_detector import ...`)
+# without touching a single import statement, regardless of where the test
+# files themselves live in the tree.
+pythonpath = ["daemon", "ui"]
+testpaths = ["tests"]

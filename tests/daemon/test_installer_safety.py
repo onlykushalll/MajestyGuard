@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 INSTALLERS = [
     ROOT / "Install.ps1",
     ROOT / "build" / "staged" / "Install.ps1",
@@ -42,7 +42,7 @@ def test_installer_stops_runtime_before_copying_locked_files():
 
 
 def test_build_restages_core_project_after_dependent_publish_outputs():
-    build_script = ROOT / "Build.ps1"
+    build_script = ROOT / "scripts" / "Build.ps1"
     text = build_script.read_text(encoding="utf-8")
     core_copy = 'Copy-RequiredItems -SourcePattern (Join-Path $OutDir "MajestyGuard.Core\\*") -Destination $StageDir'
     dpapi_copy = 'Copy-RequiredItems -SourcePattern (Join-Path $OutDir "MajestyGuard.DpapiHelper\\*") -Destination $StageDir'
@@ -52,7 +52,7 @@ def test_build_restages_core_project_after_dependent_publish_outputs():
 
 
 def test_service_is_published_self_contained_for_localsystem_runtime():
-    build_script = ROOT / "Build.ps1"
+    build_script = ROOT / "scripts" / "Build.ps1"
     build_text = build_script.read_text(encoding="utf-8")
     service_csproj = ROOT / "src" / "MajestyGuard.Service" / "MajestyGuard.Service.csproj"
     service_text = service_csproj.read_text(encoding="utf-8")
@@ -63,7 +63,7 @@ def test_service_is_published_self_contained_for_localsystem_runtime():
 
 
 def test_build_stages_framework_dependent_dotnet_service_host_fallback():
-    build_script = ROOT / "Build.ps1"
+    build_script = ROOT / "scripts" / "Build.ps1"
     text = build_script.read_text(encoding="utf-8")
 
     assert "MajestyGuard.Service.Host" in text
@@ -73,7 +73,7 @@ def test_build_stages_framework_dependent_dotnet_service_host_fallback():
 
 
 def test_phase3_runner_requires_explicit_test_signing_opt_in():
-    runner = ROOT / "run_phase3_admin.ps1"
+    runner = ROOT / "scripts" / "run_phase3_admin.ps1"
     text = runner.read_text(encoding="utf-8")
 
     assert "[switch]$EnableTestSigningIfNeeded" in text
@@ -98,7 +98,7 @@ def test_installer_dev_signs_all_majestyguard_user_mode_binaries():
 
 
 def test_phase3_runner_dev_signing_is_explicit_before_service_install():
-    runner = ROOT / "run_phase3_admin.ps1"
+    runner = ROOT / "scripts" / "run_phase3_admin.ps1"
     text = runner.read_text(encoding="utf-8")
 
     assert "[switch]$EnableDevSigningIfNeeded" in text
@@ -119,7 +119,7 @@ def test_installer_can_use_microsoft_signed_dotnet_service_host():
 
 
 def test_phase3_service_only_uses_dotnet_host_fallback():
-    runner = ROOT / "run_phase3_admin.ps1"
+    runner = ROOT / "scripts" / "run_phase3_admin.ps1"
     text = runner.read_text(encoding="utf-8")
 
     assert "[switch]$UseDotnetServiceHost" in text
@@ -128,7 +128,7 @@ def test_phase3_service_only_uses_dotnet_host_fallback():
 
 
 def test_phase3_runner_uses_hashtable_splatting_for_installer_switches():
-    runner = ROOT / "run_phase3_admin.ps1"
+    runner = ROOT / "scripts" / "run_phase3_admin.ps1"
     text = runner.read_text(encoding="utf-8")
 
     assert "$installArgs = @{" in text
@@ -139,7 +139,7 @@ def test_phase3_runner_uses_hashtable_splatting_for_installer_switches():
 
 
 def test_phase3_runner_has_service_only_checkpoint_before_cp_registration():
-    runner = ROOT / "run_phase3_admin.ps1"
+    runner = ROOT / "scripts" / "run_phase3_admin.ps1"
     text = runner.read_text(encoding="utf-8")
 
     assert "[switch]$ServiceOnly" in text

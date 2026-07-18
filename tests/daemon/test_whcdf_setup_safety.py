@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 def test_whcdf_setup_does_not_publish_env_key_by_default():
-    script = (Path(__file__).resolve().parents[1] / "setup" / "setup_whcdf.ps1").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "setup" / "setup_whcdf.ps1").read_text(encoding="utf-8")
 
     assert "[switch]$AllowInsecureEnvKey" in script
     assert "MAJESTYGUARD_MUTUAL_AUTH_KEY" in script
@@ -16,7 +16,7 @@ def test_whcdf_setup_does_not_publish_env_key_by_default():
 
 def test_companion_registration_comment_does_not_claim_default_env_key_handoff():
     source = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
         / "companion"
         / "Services"
         / "CompanionRegistration.cs"

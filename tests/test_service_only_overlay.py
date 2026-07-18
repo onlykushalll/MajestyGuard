@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_CONFIG = ROOT / "src" / "MajestyGuard.Core" / "Models" / "AppConfig.cs"
 WORKER = ROOT / "src" / "MajestyGuard.Service" / "Worker.cs"
 INSTALLER = ROOT / "Install.ps1"
-RUNNER = ROOT / "run_phase3_admin.ps1"
+RUNNER = ROOT / "scripts" / "run_phase3_admin.ps1"
 
 
 def test_service_config_can_disable_service_launched_overlay():

@@ -3,11 +3,11 @@ import re
 
 
 def test_run_daemon_batch_is_lock_disabled_and_time_bounded_by_default():
-    script = (Path(__file__).resolve().parents[1] / "run_daemon.bat").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "scripts" / "run_daemon.bat").read_text(encoding="utf-8")
 
     assert r"C:\tmp\MajestyGuard-v2" not in script
-    assert "%~dp0daemon\\main.py" in script
-    assert "%~dp0daemon\\mg_policy_audit.py" in script
+    assert "%~dp0..\\daemon\\main.py" in script
+    assert "%~dp0..\\daemon\\mg_policy_audit.py" in script
     assert "SET MG_ENABLE_LOCK=0" in script
     assert "SET MG_IDLE_TIMEOUT=60" in script
     assert "SET MG_PASSIVE_FPS=0" in script
@@ -25,7 +25,7 @@ def test_run_daemon_batch_is_lock_disabled_and_time_bounded_by_default():
 
 
 def test_run_ui_batch_uses_moved_repo_relative_ui_path():
-    script = (Path(__file__).resolve().parents[1] / "run_ui.bat").read_text(encoding="utf-8")
+    script = (Path(__file__).resolve().parents[2] / "scripts" / "run_ui.bat").read_text(encoding="utf-8")
 
     assert r"C:\tmp\MajestyGuard-v2" not in script
-    assert "%~dp0ui\\main.py" in script
+    assert "%~dp0..\\ui\\main.py" in script

@@ -1,8 +1,8 @@
 @echo off
 REM run_daemon.bat - MajestyGuard v2 Python Daemon
 SET "VENV=C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"
-SET "DAEMON=%~dp0daemon\main.py"
-SET "POLICY_AUDIT=%~dp0daemon\mg_policy_audit.py"
+SET "DAEMON=%~dp0..\daemon\main.py"
+SET "POLICY_AUDIT=%~dp0..\daemon\mg_policy_audit.py"
 
 REM Locking: set to 1 only when ready for real lock behavior.
 SET MG_ENABLE_LOCK=0

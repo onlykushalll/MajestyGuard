@@ -592,7 +592,7 @@ namespace MajestyGuard.Overlay
             }
 
             throw new DirectoryNotFoundException(
-                "Could not find MajestyGuard CVEngine. Rebuild with .\\Build.ps1 or reinstall the staged package.");
+                "Could not find MajestyGuard CVEngine. Rebuild with .\\scripts\\Build.ps1 or reinstall the staged package.");
         }
 
         private string ResolvePythonExe(string cvEngineDir)

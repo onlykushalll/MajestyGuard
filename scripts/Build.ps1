@@ -1,11 +1,11 @@
-# MajestyGuard/Build.ps1
+# MajestyGuard/scripts/Build.ps1
 # Builds all projects and stages a clean local-dev package for Install.ps1.
-# Run from the repo root. Requires Visual Studio Build Tools for the C++ provider.
+# Can be run from anywhere. Requires Visual Studio Build Tools for the C++ provider.
 #
-# USAGE:
-#   .\Build.ps1              # Debug build
-#   .\Build.ps1 -Release     # Release build
-#   .\Build.ps1 -Clean       # Clean + rebuild
+# USAGE (from repo root):
+#   .\scripts\Build.ps1              # Debug build
+#   .\scripts\Build.ps1 -Release     # Release build
+#   .\scripts\Build.ps1 -Clean       # Clean + rebuild
 
 param(
     [switch]$Release,
@@ -15,7 +15,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$RepoRoot = (Resolve-Path -LiteralPath $PSScriptRoot).ProviderPath
+$RepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).ProviderPath
 $Config = if ($Release) { "Release" } else { "Debug" }
 $BuildRoot = Join-Path $RepoRoot "build"
 $OutDir = Join-Path $BuildRoot $Config

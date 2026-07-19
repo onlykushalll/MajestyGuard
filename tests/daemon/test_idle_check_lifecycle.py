@@ -46,7 +46,7 @@ def _bare_daemon() -> MajestyGuardDaemon:
 
 
 def test_idle_owner_probe_is_short_and_separate_from_locked_verification():
-    assert daemon_main.IDLE_OWNER_PROBE_SECONDS == 8.0
+    assert daemon_main.IDLE_OWNER_PROBE_SECONDS == 14.0
     assert daemon_main.SOFT_LOCK_VERIFY_WINDOW_SECONDS == 15.0
 
 

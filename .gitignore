@@ -6,6 +6,7 @@ models/
 *.npz
 *.pkl
 *.pickle
+*.zip
 
 # Build output
 build/
@@ -14,6 +15,7 @@ bin/
 
 # Local research/workspace buckets
 archive/
+_archive/
 external/
 
 # Python cache
@@ -43,6 +45,7 @@ scratchpad.txt
 CODEX_CURRENT_HANDOFF.md
 PHASE2_CHAT_SUMMARY_*.md
 admin-logs/
+test-artifacts/
 diagnose_localsystem_cv.ps1
 docs/legacy-imports/logs/
 docs/legacy-imports/

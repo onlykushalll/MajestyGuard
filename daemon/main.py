@@ -119,7 +119,7 @@ BURST_FAST_LIVENESS_THRESHOLD = _env_float("MG_BURST_FAST_LIVENESS_THRESHOLD", 0
 BURST_FAST_CONFIRM_FRAMES = _env_int("MG_BURST_FAST_CONFIRM_FRAMES", 3, 1)
 
 ABSENT_FRAMES_LOCK = 75
-NO_FACE_LIVENESS_RESET_FRAMES = _env_int("MG_NO_FACE_LIVENESS_RESET_FRAMES", 5, 1)
+NO_FACE_LIVENESS_RESET_FRAMES = _env_int("MG_NO_FACE_LIVENESS_RESET_FRAMES", 15, 1)
 ACTIVE_REACQUIRE_GRACE_FRAMES = _env_int("MG_ACTIVE_REACQUIRE_GRACE_FRAMES", 8, 0)
 # SCANNING: 3 consecutive unrecognized frames → social lock (fast response to intruder)
 # ACTIVE: 8 consecutive unrecognized frames → social lock (tolerates brief quality drops)

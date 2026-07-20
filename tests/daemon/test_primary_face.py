@@ -412,15 +412,16 @@ def test_face_engine_presence_confidence_does_not_boost_bad_or_untracked_frames(
 
 def test_scanning_carries_brief_face_loss_before_idle_reset():
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    face_engine = FakeFaceEngine([_no_face_result() for _ in range(5)])
+    reset_frames = daemon_main.NO_FACE_LIVENESS_RESET_FRAMES
+    face_engine = FakeFaceEngine([_no_face_result() for _ in range(reset_frames)])
     daemon = _daemon_for_tick_tests(State.SCANNING, face_engine)
 
-    for frame_no in range(1, 5):
+    for frame_no in range(1, reset_frames):
         daemon._tick_scanning(frame, frame_no)
         assert daemon.state == State.SCANNING
         assert face_engine.reset_liveness_calls == 0
 
-    daemon._tick_scanning(frame, 5)
+    daemon._tick_scanning(frame, reset_frames)
 
     assert daemon.state == State.IDLE
     assert face_engine.reset_liveness_calls == 1
@@ -429,19 +430,20 @@ def test_scanning_carries_brief_face_loss_before_idle_reset():
 
 def test_active_resets_liveness_only_after_sustained_face_loss():
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    face_engine = FakeFaceEngine([_no_face_result() for _ in range(5)])
+    reset_frames = daemon_main.NO_FACE_LIVENESS_RESET_FRAMES
+    face_engine = FakeFaceEngine([_no_face_result() for _ in range(reset_frames)])
     daemon = _daemon_for_tick_tests(State.ACTIVE, face_engine)
 
-    for frame_no in range(1, 5):
+    for frame_no in range(1, reset_frames):
         daemon._tick_active(frame, frame_no)
         assert daemon.state == State.ACTIVE
         assert daemon._absent_frames == frame_no
         assert face_engine.reset_liveness_calls == 0
 
-    daemon._tick_active(frame, 5)
+    daemon._tick_active(frame, reset_frames)
 
     assert daemon.state == State.ACTIVE
-    assert daemon._absent_frames == 5
+    assert daemon._absent_frames == reset_frames
     assert face_engine.reset_liveness_calls == 1
 
 
@@ -449,10 +451,11 @@ def test_active_face_state_expires_after_sustained_face_loss():
     FaceState.clear()
     FaceState.set_recognized(liveness_score=0.92)
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    face_engine = FakeFaceEngine([_no_face_result() for _ in range(5)])
+    reset_frames = daemon_main.NO_FACE_LIVENESS_RESET_FRAMES
+    face_engine = FakeFaceEngine([_no_face_result() for _ in range(reset_frames)])
     daemon = _daemon_for_tick_tests(State.ACTIVE, face_engine)
 
-    for frame_no in range(1, 6):
+    for frame_no in range(1, reset_frames + 1):
         daemon._tick_active(frame, frame_no)
 
     authorized, reason = FaceState.is_authorized()

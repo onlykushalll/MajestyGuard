@@ -90,3 +90,36 @@ def test_key_release_is_consumed():
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "keyReleaseEvent" in source
     assert "event.accept()" in source
+
+
+def test_install_hooks_waits_for_thread_confirmation():
+    """_install_hooks must not return until the hook thread has actually
+    attempted installation. Previously it returned the instant the thread
+    was merely scheduled to start, leaving a real OS-scheduling-dependent
+    race window where ClipCursor (synchronous) was already active but the
+    keyboard/mouse hooks were not -- so input could pass through unblocked
+    for however long the OS took to run the new thread."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    assert "_hooks_ready" in source
+    assert "threading.Event()" in source
+    assert "_hooks_ready.wait(timeout=" in source
+    assert "_hooks_ready.set()" in source
+
+
+def test_hook_installation_failures_are_logged_not_silent():
+    """SetWindowsHookExW returns NULL on failure. Both the keyboard and
+    mouse hook install calls must check their return value and log an
+    error -- silently proceeding as if locked when a hook actually failed
+    to install is a real security gap, not a cosmetic one."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    assert "GetLastError" in source
+    kb_hook_idx = source.index("WH_KEYBOARD_LL, _kb_callback_ref")
+    mouse_hook_idx = source.index("WH_MOUSE_LL, _mouse_callback_ref")
+    # The failure-check for each hook must appear shortly after its own
+    # install call, not just anywhere in the file.
+    kb_check_region = source[kb_hook_idx:kb_hook_idx + 400]
+    mouse_check_region = source[mouse_hook_idx:mouse_hook_idx + 400]
+    assert "if not _kb_hook_id:" in kb_check_region
+    assert "log.error(" in kb_check_region
+    assert "if not _mouse_hook_id:" in mouse_check_region
+    assert "log.error(" in mouse_check_region

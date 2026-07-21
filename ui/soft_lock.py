@@ -145,6 +145,7 @@ _hook_thread = None
 _hook_thread_stop = False
 _overlay_locked = False
 _mouse_locked = False
+_hooks_ready = None
 
 
 def _any_modifier_held() -> bool:
@@ -268,15 +269,36 @@ def _restore_accessibility_shortcuts() -> None:
 def _hook_thread_func():
     global _kb_hook_id, _kb_callback_ref, _mouse_hook_id, _mouse_callback_ref, _hook_thread_stop
     import time as _time
+    import logging
+    log = logging.getLogger("MajestyGuard.UI")
     HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p)
     _kb_callback_ref = HOOKPROC(_keyboard_ll_callback)
     _kb_hook_id = ctypes.windll.user32.SetWindowsHookExW(
         WH_KEYBOARD_LL, _kb_callback_ref, None, 0
     )
+    if not _kb_hook_id:
+        _kb_err = ctypes.windll.kernel32.GetLastError()
+        log.error(
+            "Keyboard hook install FAILED - SetWindowsHookExW(WH_KEYBOARD_LL) "
+            "returned NULL (GetLastError=%d). Keyboard input will NOT be "
+            "blocked while locked.", _kb_err,
+        )
+
     _mouse_callback_ref = HOOKPROC(_mouse_ll_callback)
     _mouse_hook_id = ctypes.windll.user32.SetWindowsHookExW(
         WH_MOUSE_LL, _mouse_callback_ref, None, 0
     )
+    if not _mouse_hook_id:
+        _mouse_err = ctypes.windll.kernel32.GetLastError()
+        log.error(
+            "Mouse hook install FAILED - SetWindowsHookExW(WH_MOUSE_LL) "
+            "returned NULL (GetLastError=%d). Mouse-click blocking will NOT "
+            "be active (cursor-position clamp via ClipCursor is separate "
+            "and unaffected).", _mouse_err,
+        )
+
+    if _hooks_ready is not None:
+        _hooks_ready.set()
 
     msg = ctypes.wintypes.MSG()
     _last_taskmgr_check = 0.0
@@ -304,7 +326,7 @@ def _hook_thread_func():
 
 
 def _install_hooks() -> None:
-    global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop
+    global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop, _hooks_ready
     _overlay_locked = True
     _mouse_locked = True
     _engage_cursor_lock()
@@ -313,8 +335,26 @@ def _install_hooks() -> None:
         return
     _hook_thread_stop = False
     import threading
+    import logging
+    _hooks_ready = threading.Event()
     _hook_thread = threading.Thread(target=_hook_thread_func, name="mg-input-hook", daemon=True)
     _hook_thread.start()
+    # Block briefly until the hook thread has actually attempted
+    # installation and reported success/failure. Previously this function
+    # returned the instant the thread was merely *scheduled* to run, not
+    # once hooks were actually active -- leaving a real, OS-scheduling-
+    # dependent race window where ClipCursor (synchronous, above) had
+    # already engaged but the keyboard/mouse hooks had not, so keystrokes
+    # or clicks could pass through unblocked for however long the OS took
+    # to actually run the new thread. 1s is far more than SetWindowsHookExW
+    # itself ever needs; hitting this timeout means something is wrong and
+    # should be visible, not silent.
+    if not _hooks_ready.wait(timeout=1.0):
+        logging.getLogger("MajestyGuard.UI").error(
+            "Input hook thread did not confirm installation within 1s - "
+            "keyboard/mouse-click blocking may not be active yet. Overlay "
+            "display and cursor-position lock remain engaged regardless."
+        )
 
 
 def _uninstall_hooks() -> None:

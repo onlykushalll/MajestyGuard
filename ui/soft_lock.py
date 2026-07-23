@@ -180,7 +180,13 @@ def _engage_cursor_lock():
     screen_h = ctypes.windll.user32.GetSystemMetrics(1)
     cx, cy = screen_w // 2, screen_h // 2
     rect = wintypes.RECT(cx, cy, cx + 1, cy + 1)
-    ctypes.windll.user32.ClipCursor(ctypes.byref(rect))
+    if not ctypes.windll.user32.ClipCursor(ctypes.byref(rect)):
+        import logging
+        err = ctypes.windll.kernel32.GetLastError()
+        logging.getLogger("MajestyGuard.UI").error(
+            "ClipCursor FAILED (GetLastError=%d) - mouse position will NOT "
+            "be pinned while locked.", err,
+        )
 
 
 def _release_cursor_lock():
@@ -247,7 +253,14 @@ def _disable_accessibility_shortcuts() -> None:
         fk.dwFlags &= ~_HOTKEYACTIVE_BIT
         user32.SystemParametersInfoW(SPI_SETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), _SPIF_SENDCHANGE)
     except Exception:
-        pass  # never let this block the actual lock from engaging
+        import logging
+        logging.getLogger("MajestyGuard.UI").warning(
+            "Disabling accessibility-shortcut hotkeys (Sticky/Toggle/Filter "
+            "Keys) failed - proceeding with the lock anyway since the "
+            "primary lockdown (overlay, cursor clip, input hooks) does not "
+            "depend on this.", exc_info=True,
+        )
+        # Still never let this block the actual lock from engaging.
 
 
 def _restore_accessibility_shortcuts() -> None:
@@ -261,7 +274,13 @@ def _restore_accessibility_shortcuts() -> None:
         if _saved_filterkeys is not None:
             user32.SystemParametersInfoW(SPI_SETFILTERKEYS, ctypes.sizeof(_saved_filterkeys), ctypes.byref(_saved_filterkeys), _SPIF_SENDCHANGE)
     except Exception:
-        pass
+        import logging
+        logging.getLogger("MajestyGuard.UI").warning(
+            "Restoring accessibility-shortcut hotkeys after unlock failed - "
+            "Sticky/Toggle/Filter Keys shortcuts may remain suppressed "
+            "until next login or a manual toggle in Windows Settings.",
+            exc_info=True,
+        )
     finally:
         _saved_stickykeys = _saved_togglekeys = _saved_filterkeys = None
 

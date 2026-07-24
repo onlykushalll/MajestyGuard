@@ -200,7 +200,12 @@ def lock_workstation() -> None:
         log.warning("LOCK SUPPRESSED (set MG_ENABLE_LOCK=1 to enable real locking)")
         return
     log.warning("LOCKING WORKSTATION")
-    ctypes.windll.user32.LockWorkStation()
+    if not ctypes.windll.user32.LockWorkStation():
+        log.error(
+            "LockWorkStation FAILED (GetLastError=%d) - system is NOT locked "
+            "despite the escalation that triggered this call.",
+            ctypes.windll.kernel32.GetLastError(),
+        )
 
 
 class MajestyGuardDaemon:
@@ -1704,9 +1709,18 @@ if __name__ == "__main__":
                     if hwnd2:
                         ctypes.windll.user32.ShowWindow(hwnd2, 5)
                     # Call Windows lock
-                    ctypes.windll.user32.LockWorkStation()
+                    if not ctypes.windll.user32.LockWorkStation():
+                        log.error(
+                            "[EmergencyUnlock] LockWorkStation FAILED on abnormal "
+                            "exit (GetLastError=%d) - system may NOT be locked "
+                            "despite an active lock state.",
+                            ctypes.windll.kernel32.GetLastError(),
+                        )
         except Exception:
-            pass
+            log.error(
+                "[EmergencyUnlock] fail-safe lock attempt raised an exception",
+                exc_info=True,
+            )
 
     _atexit.register(_emergency_unlock)
 

@@ -61,10 +61,22 @@ class DepthLivenessDetector:
             import onnxruntime as ort
             sess_opts = ort.SessionOptions()
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            # CPU-first by default: DirectML can hang on some laptop ONNX
+            # stacks (same lesson already applied in face_engine.py's
+            # InsightFace loading). This machine has no discrete GPU, so
+            # DirectML would run on integrated graphics at best, or spend
+            # real time failing/retrying before falling back to CPU.
+            # Set MG_ONNX_PROVIDERS=DmlExecutionProvider,CPUExecutionProvider
+            # to opt in.
+            provider_env = os.environ.get("MG_ONNX_PROVIDERS", "").strip()
+            providers = (
+                [p.strip() for p in provider_env.split(",") if p.strip()]
+                if provider_env else ["CPUExecutionProvider"]
+            )
             self._session = ort.InferenceSession(
                 model_path,
                 sess_options=sess_opts,
-                providers=["DmlExecutionProvider", "CPUExecutionProvider"],
+                providers=providers,
             )
             self._input_name = self._session.get_inputs()[0].name
             logger.info("MiDaS depth model loaded: %s", os.path.basename(model_path))

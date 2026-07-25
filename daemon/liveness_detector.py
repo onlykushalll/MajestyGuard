@@ -164,10 +164,22 @@ class LivenessDetector:
             opts.intra_op_num_threads = 2
             opts.graph_optimization_level = _ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
+            # CPU-first by default: DirectML can hang on some laptop ONNX
+            # stacks (same lesson already applied in face_engine.py's
+            # InsightFace loading). This model is tiny (600KB) and runs
+            # essentially instantly on CPU regardless, so there is no real
+            # upside to risking DirectML here.
+            # Set MG_ONNX_PROVIDERS=DmlExecutionProvider,CPUExecutionProvider
+            # to opt in.
+            _provider_env = os.environ.get("MG_ONNX_PROVIDERS", "").strip()
+            _providers = (
+                [p.strip() for p in _provider_env.split(",") if p.strip()]
+                if _provider_env else ["CPUExecutionProvider"]
+            )
             self._antispoof_session = _ort.InferenceSession(
                 model_path,
                 sess_options=opts,
-                providers=["DmlExecutionProvider", "CPUExecutionProvider"],
+                providers=_providers,
             )
 
             # Detect expected input size from model metadata

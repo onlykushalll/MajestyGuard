@@ -268,7 +268,13 @@ class FaceEngine:
                 # The 5-point kps from det_10g.onnx are sufficient for recognition alignment.
                 allowed_modules=["detection", "recognition"],
             )
-            # Start in low-RAM idle mode. Service raises this to 320x320 only while verifying.
+            # Always prepares at the fixed 320x320 self._det_size set in
+            # __init__. A smaller idle-mode size (160x160) was tried
+            # previously and found to hurt recognition embedding quality
+            # (see the __init__ comment on _det_size), so the dynamic
+            # low-RAM-idle / raise-when-verifying switch this comment used
+            # to describe was abandoned -- set_det_size() below still exists
+            # and works, but nothing currently calls it.
             self._app.prepare(ctx_id=0, det_size=self._det_size)
 
             logger.info("InsightFace loaded successfully")

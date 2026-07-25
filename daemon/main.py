@@ -440,24 +440,24 @@ class MajestyGuardDaemon:
             if attempt < max_attempts and retry_delay_s > 0:
                 time.sleep(retry_delay_s)
         self._last_camera_retry_at = time.monotonic()
-        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
-            log.error("[Camera] Cannot open camera after all retries — writing UNLOCKED and exiting")
-            try:
-                (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
-                (_MG_STATE_DIR / "daemon.pid").unlink(missing_ok=True)
-            except OSError:
-                pass
-            sys.exit(1)
-
-        log.error("Camera unavailable after %d open attempts", max_attempts)
+        log.error("[Camera] Camera occupied or unavailable after %d attempts — executing straight lock", max_attempts)
         if getattr(self, "_idle_check_mode", False):
-            # An owner cannot be proven without the camera. Preserve the
-            # desktop behind the soft-lock rather than leaving it exposed.
-            self._enter_soft_lock("camera_unavailable")
+            self._write_idle_check_result("CAMERA_OCCUPIED")
+            _atomic_write_file(_MG_STATE_DIR / "lock_state.txt", "LOCKED\n")
+            lock_workstation()
             return False
+
+        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
+            lock_workstation()
+            self._transition(State.HOSTILE_LOCK)
+            return False
+
         if self.state != State.SYSTEM_LOCKED:
-            self._transition(State.CAMERA_UNAVAILABLE)
+            _atomic_write_file(_MG_STATE_DIR / "lock_state.txt", "LOCKED\n")
+            lock_workstation()
+            self._transition(State.HOSTILE_LOCK)
         return False
+
 
     def _release_camera(self) -> None:
         if self._cap:

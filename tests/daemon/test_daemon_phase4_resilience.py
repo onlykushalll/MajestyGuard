@@ -102,8 +102,9 @@ def test_camera_open_failure_transitions_to_camera_unavailable(monkeypatch):
 
     assert opened is False
     assert len(attempts) == 4
-    assert daemon.state == State.CAMERA_UNAVAILABLE
-    assert daemon.ipc.states[-1][0] == "idle"
+    assert daemon.state == State.HOSTILE_LOCK
+    assert daemon.ipc.states[-1][0] == "hostile_lock"
+
 
 
 def test_camera_open_success_recovers_from_camera_unavailable(monkeypatch):

@@ -17,28 +17,29 @@ A total of **20 critical bugs and architectural defects** were identified across
 
 ## 1. Summary of Identified Defects
 
-| ID | File Path | Defect Category | Failure Mode / Impact |
-|---|---|---|---|
-| **BUG-01** | `ui/soft_lock.py:111-138,158-175,288-318` | ctypes Binding / x64 ABI | `CallNextHookEx`, `SetWindowsHookExW` omit `argtypes`/`restype`, truncating 64-bit `HHOOK`/`LRESULT` handles. |
-| **BUG-02** | `ui/soft_lock.py:379-408` | Race Condition / GC | `_uninstall_hooks` sets `_kb_callback_ref = None` while message pump is active, triggering `0xC0000005: Access Violation`. |
-| **BUG-03** | `ui/island.py:31-36,234-241` | Missing Feature | `Dot Suck-In` animation missing when exiting `dot_scan` mode. |
-| **BUG-04** | `ui/island.py:170-177` | Memory Leak | `QTimer(self)` objects re-instantiated on every state update, leaking Qt child objects. |
-| **BUG-05** | `ui/main.py:60-80,146-165` | Win32 Handle Mismatch | `c_void_p(-1)` unsigned equality check `-1 == 18446744073709551615` fails silently. |
-| **BUG-06** | `ui/main.py:130-179` | GUI Main Thread Block | Synchronous `WaitNamedPipeW` on main thread blocks Qt event loop up to 250ms during IPC writes. |
-| **BUG-07** | `daemon/mg_monitor.py:63,65,303` | ctypes Signature / Win32 | Omitted `argtypes`/`restype` on `GetLastInputInfo`, `CreateMutexW`; 32-bit `GetTickCount` underflow every 49.7 days. |
-| **BUG-08** | `daemon/mg_monitor.py:158-166` | Resource Leak | Unclosed log file descriptor `log_fh` leaks open process handle on daemon spawn. |
-| **BUG-09** | `daemon/cmd_server.py:146` | IPC Deadlock | Synchronous blocking `win32file.ReadFile` locks `CMDServer` loop if client opens pipe without sending bytes. |
-| **BUG-10** | `daemon/main.py:1314` | IPC Race Condition | Non-atomic `Path.write_text()` truncates file to 0 bytes before writing, causing false `UNLOCKED` reads. |
-| **BUG-11** | `daemon/face_engine.py:117` | Numerical Instability | `np.linalg.inv(s)` in Kalman filter throws `LinAlgError` on singular matrix without fallback. |
-| **BUG-12** | `src/MajestyGuard.Service/SessionWatcher.cs:19,151` | OS Session Isolation | `NOTIFY_FOR_THIS_SESSION` (`0`) in Session 0 misses Session 1 `Win+L` lock/unlock events. |
-| **BUG-13** | `src/MajestyGuard.Service/Worker.cs:1108-1128` | Unmanaged Memory Leak | `ConvertStringSecurityDescriptorToSecurityDescriptor` allocates unmanaged memory without `LocalFree(pSd)`. |
-| **BUG-14** | `src/MajestyGuard.Service/Worker.cs:98,1136` | P/Invoke Invalid Parameter | `SetProcessMitigationPolicy` policy 7 called with `sizeof(ulong)` (8) instead of 4, returning Win32 Error 87. |
-| **BUG-15** | `src/MajestyGuard.Service/Worker.cs:998-1058` | Handle Leak on Exception | `CreateProcessAsUserW` pipe handles unclosed when `ReadFile` or `JsonSerializer` throws exceptions. |
-| **BUG-16** | `src/MajestyGuard.Core/IPC/PipeServer.cs:85-127` | IPC Thread Safety | Unsynchronized `NamedPipeServerStream.WriteAsync` throws `InvalidOperationException` on concurrent writes. |
-| **BUG-17** | `src/MajestyGuard.Core/IPC/PipeServer.cs:152-175` | Allocation Overhead | Reading pipe stream 1 character at a time creates excessive async state machine allocations per message. |
-| **BUG-18** | `src/MajestyGuard.Service/ProcessRestrictor.cs:370` | DACL Self-Restriction | `WindowsIdentity.GetCurrent().User` resolves to SYSTEM (`S-1-5-18`), applying `Deny` rule to service itself. |
-| **BUG-19** | `src/MajestyGuard.CredentialProvider/...cpp:281` | LogonUI Crash / UAF | Destructor sets flag but leaves `ReadFile` blocked; thread attempts `delete this` callback causing `LogonUI.exe` crash. |
-| **BUG-20** | `daemon/mg_monitor.py:117` vs `Worker.cs:220` | Two-Tier Desync | Split-brain state conflict between file-based Python monitor and pipe-based C# Windows Service. |
+| ID | File Path | Defect Category | Failure Mode / Impact | Resolution Status |
+|---|---|---|---|---|
+| **BUG-01** | `ui/soft_lock.py:111-138,158-175,288-318` | ctypes Binding / x64 ABI | `CallNextHookEx`, `SetWindowsHookExW` omit `argtypes`/`restype`, truncating 64-bit `HHOOK`/`LRESULT` handles. | ✅ **FIXED & VERIFIED** (Commit `ed59131`) |
+| **BUG-02** | `ui/soft_lock.py:379-408` | Race Condition / GC | `_uninstall_hooks` sets `_kb_callback_ref = None` while message pump is active, triggering `0xC0000005: Access Violation`. | Pending |
+| **BUG-03** | `ui/island.py:31-36,234-241` | Missing Feature | `Dot Suck-In` (`blipp`) animation missing when exiting unlock sequence. | ✅ **IMPLEMENTED & VERIFIED** (Commit `ed59131`) |
+| **BUG-04** | `ui/island.py:170-177` | Memory Leak | `QTimer(self)` objects re-instantiated on every state update, leaking Qt child objects. | Pending |
+| **BUG-05** | `ui/main.py:60-80,146-165` | Win32 Handle Mismatch | `c_void_p(-1)` unsigned equality check `-1 == 18446744073709551615` fails silently. | Pending |
+| **BUG-06** | `ui/main.py:130-179` | GUI Main Thread Block | Synchronous `WaitNamedPipeW` on main thread blocks Qt event loop up to 250ms during IPC writes. | Pending |
+| **BUG-07** | `daemon/mg_monitor.py:63,65,303` | ctypes Signature / Pre-Warm | Omitted `argtypes`/`restype` on `GetLastInputInfo`; 9.0s Pre-Warming offset launch. | ✅ **FIXED & IMPLEMENTED** (Commit `ed59131`) |
+| **BUG-08** | `daemon/mg_monitor.py:158-166` | Resource Leak | Unclosed log file descriptor `log_fh` leaks open process handle on daemon spawn. | Pending |
+| **BUG-09** | `daemon/cmd_server.py:146` | IPC Deadlock | Synchronous blocking `win32file.ReadFile` locks `CMDServer` loop if client opens pipe without sending bytes. | Pending |
+| **BUG-10** | `daemon/main.py:1314` | IPC Race Condition | Non-atomic `Path.write_text()` truncates file to 0 bytes before writing, causing false `UNLOCKED` reads. | Pending |
+| **BUG-11** | `daemon/face_engine.py:117` | Numerical Instability | `np.linalg.inv(s)` in Kalman filter throws `LinAlgError` on singular matrix without fallback. | Pending |
+| **BUG-12** | `src/MajestyGuard.Service/SessionWatcher.cs:19,151` | OS Session Isolation | `NOTIFY_FOR_THIS_SESSION` (`0`) in Session 0 misses Session 1 `Win+L` lock/unlock events. | Pending |
+| **BUG-13** | `src/MajestyGuard.Service/Worker.cs:1108-1128` | Unmanaged Memory Leak | `ConvertStringSecurityDescriptorToSecurityDescriptor` allocates unmanaged memory without `LocalFree(pSd)`. | Pending |
+| **BUG-14** | `src/MajestyGuard.Service/Worker.cs:98,1136` | P/Invoke Invalid Parameter | `SetProcessMitigationPolicy` policy 7 called with `sizeof(ulong)` (8) instead of 4, returning Win32 Error 87. | Pending |
+| **BUG-15** | `src/MajestyGuard.Service/Worker.cs:998-1058` | Handle Leak on Exception | `CreateProcessAsUserW` pipe handles unclosed when `ReadFile` or `JsonSerializer` throws exceptions. | Pending |
+| **BUG-16** | `src/MajestyGuard.Core/IPC/PipeServer.cs:85-127` | IPC Thread Safety | Unsynchronized `NamedPipeServerStream.WriteAsync` throws `InvalidOperationException` on concurrent writes. | Pending |
+| **BUG-17** | `src/MajestyGuard.Core/IPC/PipeServer.cs:152-175` | Allocation Overhead | Reading pipe stream 1 character at a time creates excessive async state machine allocations per message. | Pending |
+| **BUG-18** | `src/MajestyGuard.Service/ProcessRestrictor.cs:370` | DACL Self-Restriction | `WindowsIdentity.GetCurrent().User` resolves to SYSTEM (`S-1-5-18`), applying `Deny` rule to service itself. | Pending |
+| **BUG-19** | `src/MajestyGuard.CredentialProvider/...cpp:281` | LogonUI Crash / UAF | Destructor sets flag but leaves `ReadFile` blocked; thread attempts `delete this` callback causing `LogonUI.exe` crash. | Pending |
+| **BUG-20** | `daemon/mg_monitor.py:117` vs `Worker.cs:220` | Two-Tier Desync | Split-brain state conflict between file-based Python monitor and pipe-based C# Windows Service. | Pending |
+
 
 ---
 

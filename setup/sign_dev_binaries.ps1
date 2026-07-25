@@ -75,7 +75,8 @@ Write-Host "[3/3] Locating and signing compiled binaries (.dll, .exe)..." -Foreg
 $targetPath = [System.IO.Path]::GetFullPath($TargetDir)
 $extensions = @("*.dll", "*.exe")
 
-$binaries = Get-ChildItem -Path $targetPath -Recurse -Include $extensions | Where-Object {
+$binaries = Get-ChildItem -Path $targetPath -Recurse -Include $extensions -ErrorAction SilentlyContinue | Where-Object {
+
     $_.FullName -notmatch '\\\.venv\\' -and
     $_.FullName -notmatch '\\obj\\' -and
     $_.FullName -notmatch '\\node_modules\\'

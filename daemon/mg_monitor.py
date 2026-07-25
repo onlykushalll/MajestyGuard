@@ -31,7 +31,8 @@ logging.basicConfig(
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-MIN_IDLE_TIMEOUT_S = 15.0
+MIN_IDLE_TIMEOUT_S = 3.0
+
 MAX_IDLE_TIMEOUT_S = 600.0
 DEFAULT_IDLE_TIMEOUT_S = 60.0
 POLL_INTERVAL_S = 2.0

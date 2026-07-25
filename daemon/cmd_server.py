@@ -77,14 +77,28 @@ class CMDServer:
         self._thread: Optional[threading.Thread] = None
 
     def _is_expected_client(self, client_pid: int) -> bool:
-        if self._expected_client_pid is None:
+        if client_pid <= 0 or self._expected_client_pid is None:
             return False
         try:
             expected_pid = self._expected_client_pid()
         except Exception:
             log.exception("CMDServer failed to resolve owned UI PID")
             return False
-        return bool(expected_pid and client_pid == expected_pid)
+        if not expected_pid:
+            return False
+        if client_pid == expected_pid:
+            return True
+        try:
+            import psutil
+            proc = psutil.Process(client_pid)
+            if proc.ppid() == expected_pid:
+                return True
+        except Exception:
+            pass
+        return False
+
+
+
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():

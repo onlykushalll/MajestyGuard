@@ -145,9 +145,6 @@ class IslandWidget(QWidget):
             else:
                 state = get_state("idle")
 
-        # If we are unlocked (idle) and we get scanning, ignore it to prevent popping open
-        if state.name == "scanning" and self._state.name == "idle" and not self._in_exit_sequence:
-            return
 
         # Show/hide window based on active lock state
         if state.name == "idle" and not self._in_exit_sequence:

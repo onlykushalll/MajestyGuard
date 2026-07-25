@@ -246,7 +246,10 @@ class MonitorDaemon:
         # ── Normal idle monitoring ─────────────────────────────────────
         idle_seconds = get_idle_seconds()
 
-        if idle_seconds < self._idle_timeout:
+        # Pre-warm full daemon 9s prior to target idle timeout so ONNX models are warm on-demand
+        prewarm_threshold = max(5.0, self._idle_timeout - 9.0)
+
+        if idle_seconds < prewarm_threshold:
             self._idle_fired = False
             return
 
@@ -256,13 +259,14 @@ class MonitorDaemon:
         if self._idle_fired:
             return  # Already fired this idle stretch
 
-        # Idle timeout reached — launch full daemon
+        # Idle pre-warm threshold reached — launch full daemon
         self._idle_fired = True
         log.info(
-            "Idle timeout reached (%.0fs >= %.0fs) — launching full daemon",
-            idle_seconds, self._idle_timeout,
+            "Idle pre-warm threshold reached (%.0fs >= %.0fs, target %.0fs) — launching full daemon",
+            idle_seconds, prewarm_threshold, self._idle_timeout,
         )
         self._daemon_proc = _launch_full_daemon()
+
 
     def _is_daemon_running(self) -> bool:
         """Check if our launched daemon process is still running."""

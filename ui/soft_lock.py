@@ -110,6 +110,22 @@ VK_RWIN = 0x5C
 
 import ctypes.wintypes as wintypes
 
+LRESULT = ctypes.c_ssize_t
+WPARAM = ctypes.c_size_t
+LPARAM = ctypes.c_ssize_t
+HHOOK = wintypes.HANDLE
+
+HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, WPARAM, LPARAM)
+
+ctypes.windll.user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
+ctypes.windll.user32.SetWindowsHookExW.restype = HHOOK
+
+ctypes.windll.user32.CallNextHookEx.argtypes = [HHOOK, ctypes.c_int, WPARAM, LPARAM]
+ctypes.windll.user32.CallNextHookEx.restype = LRESULT
+
+ctypes.windll.user32.UnhookWindowsHookEx.argtypes = [HHOOK]
+ctypes.windll.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -136,6 +152,7 @@ _BLOCKED_MOUSE_MSGS = {
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
     WM_XBUTTONDOWN, WM_XBUTTONUP,
 }
+
 
 _kb_hook_id = None
 _mouse_hook_id = None
@@ -290,11 +307,11 @@ def _hook_thread_func():
     import time as _time
     import logging
     log = logging.getLogger("MajestyGuard.UI")
-    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p)
     _kb_callback_ref = HOOKPROC(_keyboard_ll_callback)
     _kb_hook_id = ctypes.windll.user32.SetWindowsHookExW(
         WH_KEYBOARD_LL, _kb_callback_ref, None, 0
     )
+
     if not _kb_hook_id:
         _kb_err = ctypes.windll.kernel32.GetLastError()
         log.error(

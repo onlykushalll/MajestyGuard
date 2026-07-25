@@ -310,8 +310,12 @@ class IslandWidget(QWidget):
         self._welcome_dwell_timer.start(_WELCOME_DWELL_MS)
 
     def _begin_pill_fade(self) -> None:
-        """Fade pill out over 400ms."""
+        """Instant Sucking Blipp: Rapidly contract pill to a dot and snap hide."""
         if not self._reduce_motion:
+            self._content_alpha = 0.0
+            self._target_w = 4.0
+            self._target_h = 4.0
+            self._anim_morph_active = True
             self._anim_pill_fade_active = True
             self._start_animation_timer()
         else:
@@ -320,7 +324,7 @@ class IslandWidget(QWidget):
     def _finish_exit_sequence(self) -> None:
         """Clean up after exit sequence completes."""
         self._in_exit_sequence = False
-        self._pill_opacity = 0.0
+        self._pill_opacity = 1.0
         self._anim_pill_fade_active = False
         self._anim_checkmark_active = False
         # Reset to idle
@@ -337,6 +341,7 @@ class IslandWidget(QWidget):
         self._update_mask()
         self.update()
         self.hide()
+
 
     def _abort_exit_sequence(self) -> None:
         """Cancel exit sequence if interrupted by a non-active state."""
@@ -409,8 +414,12 @@ class IslandWidget(QWidget):
             updated = True
 
         if self._anim_morph_active:
-            stiffness = 0.18
-            damping = 0.70
+            if getattr(self, "_anim_pill_fade_active", False):
+                stiffness = 0.26
+                damping = 0.82  # High damping for butter-smooth contraction frames
+            else:
+                stiffness = 0.18
+                damping = 0.70
             self._vel_w = (self._vel_w + (self._target_w - self._anim_w) * stiffness) * damping
             self._vel_h = (self._vel_h + (self._target_h - self._anim_h) * stiffness) * damping
             self._anim_w += self._vel_w
@@ -440,12 +449,19 @@ class IslandWidget(QWidget):
             updated = True
 
         if self._anim_pill_fade_active:
-            step = _FRAME_MS / _PILL_FADE_MS
-            self._pill_opacity = max(0.0, self._pill_opacity - step)
-            if self._pill_opacity <= 0.0:
+            # Snap off instantly once contracted to dot size (< 5.5px) or opacity depleted
+            if self._anim_w <= 5.5 and self._anim_h <= 5.5:
                 self._anim_pill_fade_active = False
                 self._finish_exit_sequence()
+            else:
+                step = _FRAME_MS / 180.0
+                self._pill_opacity = max(0.0, self._pill_opacity - step)
+                if self._pill_opacity <= 0.0:
+                    self._anim_pill_fade_active = False
+                    self._finish_exit_sequence()
             updated = True
+
+
 
         if updated:
             self.update()

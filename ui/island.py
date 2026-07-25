@@ -139,9 +139,11 @@ class IslandWidget(QWidget):
         if state.name == "active":
             if self._in_exit_sequence:
                 return
-            if self._state.name in {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "locked"}:
+            if self._state.name in {"idle_detected", "scanning", "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "locked"}:
                 self._begin_exit_sequence(state)
                 return
+
+
             else:
                 state = get_state("idle")
 

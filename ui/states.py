@@ -45,6 +45,18 @@ STATES: dict[str, IslandState] = {
         label="",
         label_color="#77777C",
     ),
+    "idle_detected": IslandState(
+        name="idle_detected",
+        width=180,
+        height=34,
+        bg_color="#0A0A0A",
+        border_color="#3A3A3C",
+        accent_color="#FF9F0A",
+        label="System Idle Detected",
+        label_color="#FFD60A",
+        mode="dot_scan",
+        pulse=True,
+    ),
     "scanning": IslandState(
         name="scanning",
         width=160,
@@ -52,11 +64,12 @@ STATES: dict[str, IslandState] = {
         bg_color="#0A0A0A",
         border_color="#3A2F1F",
         accent_color="#FFB340",
-        label="",
+        label="Verifying...",
         label_color="#E7FFEC",
         mode="dot_scan",
         pulse=True,
     ),
+
     "active": IslandState(
         name="active",
         width=160,

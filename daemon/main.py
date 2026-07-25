@@ -287,8 +287,7 @@ class MajestyGuardDaemon:
                 pass
             self.ipc.broadcast_state("locked_passive", detail="Force lock startup")
         elif self._idle_check_mode:
-            self._launch_ui()
-            self.ipc.broadcast_state("scanning", detail="Checking owner")
+            self.ipc.broadcast_state("idle")
         else:
             self.ipc.broadcast_state("idle")
         self.session_monitor.start()
@@ -330,6 +329,11 @@ class MajestyGuardDaemon:
         if self._idle_check_mode:
             self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
             log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
+            self._launch_ui()
+            self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
+            time.sleep(0.35)
+            self.ipc.broadcast_state("scanning", detail="Verifying...")
+
 
         try:
             self._run_loop()

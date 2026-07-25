@@ -22,7 +22,8 @@ def test_soft_lock_states_exist_for_ipc_and_ui():
     hostile = get_state("hostile_lock")
 
     assert scanning.mode == "dot_scan"
-    assert scanning.label == ""
+    assert scanning.label == "Verifying..."
+
     assert scanning.accent_color == "#FFB340"
     assert passive.mode == "shield"
     assert passive.label == "Locked"

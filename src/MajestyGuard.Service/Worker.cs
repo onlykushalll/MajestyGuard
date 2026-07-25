@@ -95,8 +95,12 @@ namespace MajestyGuard.Service
             out IntPtr pDacl, out bool lpbDaclDefaulted);
 
         [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr hMem);
+
+        [DllImport("kernel32.dll")]
         private static extern bool SetProcessMitigationPolicy(
-            int MitigationPolicy, ref ulong lpBuffer, int dwLength);
+            int MitigationPolicy, ref uint lpBuffer, int dwLength);
+
 
         private const uint SE_KERNEL_OBJECT = 6;
         private const uint DACL_SECURITY_INFORMATION = 0x00000004;
@@ -1039,22 +1043,28 @@ namespace MajestyGuard.Service
                     // Close write end in parent so ReadFile will see EOF
                     CloseHandle(hWritePipe);
 
-                    // Read stdout from child
                     var output = new System.Text.StringBuilder();
-                    var buf = new byte[4096];
-                    while (true)
+                    try
                     {
-                        bool ok = ReadFile(hReadPipe, buf, (uint)buf.Length, out uint bytesRead, IntPtr.Zero);
-                        if (!ok || bytesRead == 0) break;
-                        output.Append(System.Text.Encoding.UTF8.GetString(buf, 0, (int)bytesRead));
+                        // Read stdout from child
+                        var buf = new byte[4096];
+                        while (true)
+                        {
+                            bool ok = ReadFile(hReadPipe, buf, (uint)buf.Length, out uint bytesRead, IntPtr.Zero);
+                            if (!ok || bytesRead == 0) break;
+                            output.Append(System.Text.Encoding.UTF8.GetString(buf, 0, (int)bytesRead));
+                        }
+
+                        // Wait for process exit (max 10s)
+                        WaitForSingleObject(pi.hProcess, 10000);
+                    }
+                    finally
+                    {
+                        CloseHandle(hReadPipe);
+                        CloseHandle(pi.hProcess);
+                        CloseHandle(pi.hThread);
                     }
 
-                    // Wait for process exit (max 10s)
-                    WaitForSingleObject(pi.hProcess, 10000);
-
-                    CloseHandle(hReadPipe);
-                    CloseHandle(pi.hProcess);
-                    CloseHandle(pi.hThread);
 
                     var stdout = output.ToString().Trim();
                     if (string.IsNullOrWhiteSpace(stdout))
@@ -1100,6 +1110,7 @@ namespace MajestyGuard.Service
         // ─────────────────────────────────────────────────────────────
         private void HardenProcess()
         {
+            IntPtr pSd = IntPtr.Zero;
             try
             {
                 // SDDL: SYSTEM=full, Admins=full, Everyone=read-only (no terminate)
@@ -1111,7 +1122,7 @@ namespace MajestyGuard.Service
                     "(A;;0x00100000;;;WD)";      // Everyone: SYNCHRONIZE only (no kill/suspend)
 
                 if (!ConvertStringSecurityDescriptorToSecurityDescriptor(
-                        sddl, 1, out var pSd, out _))
+                        sddl, 1, out pSd, out _))
                 {
                     _logger.LogWarning("HardenProcess: SDDL parse failed (err {E})",
                         Marshal.GetLastWin32Error());
@@ -1132,15 +1143,23 @@ namespace MajestyGuard.Service
                         Marshal.GetLastWin32Error());
 
                 // Enable DEP + CFG mitigations (belt-and-suspenders)
-                // ProcessExtensionPointDisablePolicy = 7 — blocks injected DLLs via shims
-                ulong policy = 1UL;
-                SetProcessMitigationPolicy(7, ref policy, sizeof(ulong));
+                // ProcessExtensionPointDisablePolicy = 7 — blocks injected DLLs via shims (uint = 4 bytes)
+                uint policy = 1U;
+                SetProcessMitigationPolicy(7, ref policy, sizeof(uint));
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "HardenProcess failed — continuing without hardening");
             }
+            finally
+            {
+                if (pSd != IntPtr.Zero)
+                {
+                    LocalFree(pSd);
+                }
+            }
         }
+
 
         public override async Task StopAsync(CancellationToken ct)
         {

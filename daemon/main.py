@@ -95,6 +95,17 @@ def _env_float(name: str, default: float, minimum: float = 0.0, maximum: float =
     return value
 
 
+def _atomic_write_file(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(f".tmp.{os.getpid()}")
+    try:
+        tmp_path.write_text(text, encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        log.warning("Atomic write failed for %s: %s", path, exc)
+
+
+
 CAMERA_INDEX = _env_int("MG_CAMERA_IDX", 0, 0)
 TARGET_FPS = _env_int("MG_TARGET_FPS", 15, 1)
 MAX_FRAMES = _env_int("MG_MAX_FRAMES", 0, 0)
@@ -1338,10 +1349,8 @@ class MajestyGuardDaemon:
 
     @staticmethod
     def _write_idle_check_result(result: str) -> None:
-        try:
-            (_MG_STATE_DIR / "idle_check_result.txt").write_text(f"{result}\n", encoding="utf-8")
-        except OSError as exc:
-            log.warning("Failed to write idle-check result: %s", exc)
+        _atomic_write_file(_MG_STATE_DIR / "idle_check_result.txt", f"{result}\n")
+
 
     def _defer_input_idle_soft_lock(self) -> None:
         self._input_idle_soft_lock_armed = False

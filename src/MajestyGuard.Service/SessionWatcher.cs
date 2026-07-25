@@ -16,7 +16,8 @@ namespace MajestyGuard.Service
         private uint _threadId;
         private WndProcDelegate? _wndProcDelegate;
 
-        private const int NOTIFY_FOR_THIS_SESSION = 0;
+        private const int NOTIFY_FOR_ALL_SESSIONS = 1;
+
         private const uint WM_WTSSESSION_CHANGE = 0x02B1;
         private const uint WM_POWERBROADCAST = 0x0218;
         private const int WTS_SESSION_LOCK = 0x7;
@@ -148,7 +149,8 @@ namespace MajestyGuard.Service
                 return;
             }
 
-            if (!WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION))
+            if (!WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_ALL_SESSIONS))
+
             {
                 _logger.LogWarning("WTSRegisterSessionNotification failed (err {Err})",
                     Marshal.GetLastWin32Error());

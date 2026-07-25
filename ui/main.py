@@ -59,7 +59,7 @@ class PipeReader(threading.Thread):
     def run(self) -> None:
         GENERIC_READ  = 0x80000000
         OPEN_EXISTING = 3
-        INVALID       = ctypes.c_void_p(-1).value
+        INVALID       = 18446744073709551615
         k32           = ctypes.windll.kernel32
 
         log.info("Pipe reader started — connecting to %s", PIPE_NAME)
@@ -75,9 +75,10 @@ class PipeReader(threading.Thread):
                 PIPE_NAME, GENERIC_READ,
                 0, None, OPEN_EXISTING, 0, None
             )
-            if handle == INVALID:
+            if handle in (-1, 0, INVALID):
                 time.sleep(0.3)
                 continue
+
 
             try:
                 while not self._stop.is_set():
@@ -144,9 +145,12 @@ class CommandWriter:
         self._write_command(payload)
 
     def _write_command(self, payload: str) -> None:
+        threading.Thread(target=self._sync_write_command, args=(payload,), daemon=True).start()
+
+    def _sync_write_command(self, payload: str) -> None:
         GENERIC_WRITE = 0x40000000
         OPEN_EXISTING = 3
-        INVALID = ctypes.c_void_p(-1).value
+        INVALID = 18446744073709551615
         k32 = ctypes.windll.kernel32
 
         k32.WaitNamedPipeW(ctypes.create_unicode_buffer(COMMAND_PIPE_NAME), 250)
@@ -159,7 +163,7 @@ class CommandWriter:
             0,
             None,
         )
-        if handle == INVALID:
+        if handle in (-1, 0, INVALID):
             log.debug("Command pipe unavailable")
             return
         try:
@@ -176,6 +180,7 @@ class CommandWriter:
                 log.debug("Command pipe write failed")
         finally:
             k32.CloseHandle(handle)
+
 
 
 def main() -> None:

@@ -30,9 +30,11 @@ namespace MajestyGuard.Core.IPC
         private readonly string _pipeName;
         private readonly ILogger _logger;
         private readonly string? _enrolledUserSid;
+        private readonly SemaphoreSlim _writeLock = new(1, 1);
         private NamedPipeServerStream? _pipe;
         private CancellationTokenSource _cts = new();
         private readonly ConcurrentQueue<string> _pendingMessages = new();
+
 
         public event Func<IpcMessage, Task>? MessageReceived;
 
@@ -110,6 +112,7 @@ namespace MajestyGuard.Core.IPC
         {
             var pipe = _pipe;
             if (pipe?.IsConnected != true) return;
+            await _writeLock.WaitAsync();
             try
             {
                 var bytes = Encoding.UTF8.GetBytes(json + "\n");
@@ -124,7 +127,12 @@ namespace MajestyGuard.Core.IPC
                     _pendingMessages.Enqueue(json);
                 }
             }
+            finally
+            {
+                _writeLock.Release();
+            }
         }
+
 
         private async Task ReadLoopAsync(NamedPipeServerStream pipe, CancellationToken ct)
         {
@@ -152,27 +160,32 @@ namespace MajestyGuard.Core.IPC
         internal static async Task<string?> ReadLineWithLimitAsync(StreamReader reader, int maxChars, CancellationToken ct)
         {
             var sb = new StringBuilder();
-            char[] buffer = new char[1];
+            char[] buffer = new char[512];
             while (sb.Length < maxChars)
             {
-                int read = await reader.ReadAsync(new Memory<char>(buffer), ct);
+                int maxToRead = Math.Min(buffer.Length, maxChars - sb.Length);
+                int read = await reader.ReadAsync(buffer.AsMemory(0, maxToRead), ct);
                 if (read == 0)
                 {
                     return sb.Length > 0 ? sb.ToString() : null;
                 }
-                char c = buffer[0];
-                if (c == '\n')
+                for (int i = 0; i < read; i++)
                 {
-                    if (sb.Length > 0 && sb[sb.Length - 1] == '\r')
+                    char c = buffer[i];
+                    if (c == '\n')
                     {
-                        sb.Length--;
+                        if (sb.Length > 0 && sb[sb.Length - 1] == '\r')
+                        {
+                            sb.Length--;
+                        }
+                        return sb.ToString();
                     }
-                    return sb.ToString();
+                    sb.Append(c);
                 }
-                sb.Append(c);
             }
             throw new InvalidDataException($"IPC message size limit exceeded ({maxChars} characters)");
         }
+
 
         /// <summary>
         /// Creates a NamedPipeServerStream with an ACL that restricts

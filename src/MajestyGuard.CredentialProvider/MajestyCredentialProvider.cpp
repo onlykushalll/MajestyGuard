@@ -284,13 +284,21 @@ CMajestyCredential::CMajestyCredential()
 CMajestyCredential::~CMajestyCredential()
 {
     m_stopPipeThread = true;
+    if (m_hPipe != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(m_hPipe);
+        m_hPipe = INVALID_HANDLE_VALUE;
+    }
     if (m_hPipeThread)
     {
+        CancelSynchronousIo(m_hPipeThread);
         WaitForSingleObject(m_hPipeThread, 2000);
         CloseHandle(m_hPipeThread);
+        m_hPipeThread = nullptr;
     }
     if (m_pcpce) m_pcpce->Release();
 }
+
 
 HRESULT CMajestyCredential::Initialize(
     CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,

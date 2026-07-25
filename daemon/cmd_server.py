@@ -143,7 +143,18 @@ class CMDServer:
                 if not self._is_expected_client(client_pid):
                     log.warning("CMDServer rejected unowned client PID %d", client_pid)
                     continue
+                try:
+                    _flags, avail, _message = win32pipe.PeekNamedPipe(handle, 0)
+                    if avail == 0:
+                        time.sleep(0.05)
+                        _flags, avail, _message = win32pipe.PeekNamedPipe(handle, 0)
+                        if avail == 0:
+                            log.warning("CMDServer client PID %d connected without sending data", client_pid)
+                            continue
+                except pywintypes.error:
+                    continue
                 _hr, raw = win32file.ReadFile(handle, 4096)
+
                 parsed = parse_cmd(raw.decode("utf-8", errors="replace"))
                 if parsed is None:
                     log.warning("CMDServer ignored invalid command")

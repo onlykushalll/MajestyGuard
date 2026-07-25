@@ -368,12 +368,18 @@ namespace MajestyGuard.Service
                 _originalSddl[path] = security.GetSecurityDescriptorSddlForm(AccessControlSections.Access);
 
                 var currentUser = WindowsIdentity.GetCurrent().User!;
+                if (currentUser != null && currentUser.Value.Equals("S-1-5-18", StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogWarning("RestrictPath skipped applying self-Deny rule to SYSTEM identity S-1-5-18");
+                    return;
+                }
                 var denyRule = new FileSystemAccessRule(
-                    currentUser,
+                    currentUser!,
                     FileSystemRights.ReadData | FileSystemRights.ListDirectory,
                     InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
                     PropagationFlags.None,
                     AccessControlType.Deny);
+
 
                 security.AddAccessRule(denyRule);
                 dirInfo.SetAccessControl(security);

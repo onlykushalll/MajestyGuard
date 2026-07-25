@@ -114,7 +114,14 @@ class _OwnerBoxKalman:
         r = np.eye(4, dtype=np.float64) * (self.measurement_std ** 2)
         innovation = measurement - (h @ self._x)
         s = h @ self._p @ h.T + r
-        k = self._p @ h.T @ np.linalg.inv(s)
+        try:
+            s_inv = np.linalg.inv(s)
+        except np.linalg.LinAlgError:
+            s_inv = np.linalg.pinv(s)
+        k = self._p @ h.T @ s_inv
+
+
+
         self._x = self._x + (k @ innovation)
         self._p = (np.eye(8, dtype=np.float64) - k @ h) @ self._p
         self._last_ts = timestamp

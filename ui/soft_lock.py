@@ -401,20 +401,22 @@ def _uninstall_hooks() -> None:
     _release_cursor_lock()
     _restore_accessibility_shortcuts()
     _hook_thread_stop = True
+
+    # Unhook Windows hook handles first while Python callback references remain strongly held
     if _kb_hook_id is not None:
         try:
             ctypes.windll.user32.UnhookWindowsHookEx(_kb_hook_id)
         except Exception:
             pass
         _kb_hook_id = None
-        _kb_callback_ref = None
     if _mouse_hook_id is not None:
         try:
             ctypes.windll.user32.UnhookWindowsHookEx(_mouse_hook_id)
         except Exception:
             pass
         _mouse_hook_id = None
-        _mouse_callback_ref = None
+
+    # Join hook message pump thread to guarantee no incoming events are processed
     t = _hook_thread
     if t is not None and t.is_alive():
         try:
@@ -422,6 +424,11 @@ def _uninstall_hooks() -> None:
         except Exception:
             pass
     _hook_thread = None
+
+    # Safely release GC references to callback wrappers only after thread is dead
+    _kb_callback_ref = None
+    _mouse_callback_ref = None
+
 
 
 # Legacy aliases for backward compat with tests

@@ -156,16 +156,20 @@ def _launch_full_daemon() -> subprocess.Popen:
     _write_idle_check_result("PENDING")
     log.info("Launching full daemon: %s %s", python, daemon_script)
     log_fh = open(_DAEMON_LOG_PATH, "a", encoding="utf-8")
-    proc = subprocess.Popen(
-        [python, str(daemon_script)],
-        cwd=str(_DAEMON_DIR.parent),
-        env=env,
-        stdout=log_fh,
-        stderr=log_fh,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    try:
+        proc = subprocess.Popen(
+            [python, str(daemon_script)],
+            cwd=str(_DAEMON_DIR.parent),
+            env=env,
+            stdout=log_fh,
+            stderr=log_fh,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    finally:
+        log_fh.close()
     log.info("Full daemon launched (PID %d), log: %s", proc.pid, _DAEMON_LOG_PATH)
     return proc
+
 
 
 # ── Main monitor loop ─────────────────────────────────────────────────────

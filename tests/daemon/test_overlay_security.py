@@ -157,3 +157,20 @@ def test_topmost_reasserted_every_tick_not_only_at_lock_entry():
     assert "self._force_topmost()" in tick_fn
     assert "self.raise_()" in tick_fn
     assert "self.activateWindow()" in tick_fn
+
+
+def test_media_stopped_on_lock_engage():
+    """Kio's real-world scenario: watching a movie in a background tab,
+    soft-lock engaged, media kept playing (and the spacebar leak on top of
+    that could control it). Stopping media -- not just muting -- must
+    fire as part of the lock-engagement sequence, not be optional/absent."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    assert "VK_MEDIA_STOP" in source
+    assert "VK_MEDIA_PLAY_PAUSE" in source
+    assert "_stop_background_media()" in source
+    # Must actually be called from the lock-engagement sequence, not just
+    # defined and never invoked (exactly the kind of gap already found and
+    # fixed once this session for the exit animation).
+    lock_seq_idx = source.index("_install_hooks(self)")
+    lock_seq_region = source[lock_seq_idx:lock_seq_idx + 300]
+    assert "_stop_background_media()" in lock_seq_region

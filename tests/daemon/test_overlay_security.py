@@ -123,3 +123,37 @@ def test_hook_installation_failures_are_logged_not_silent():
     assert "log.error(" in kb_check_region
     assert "if not _mouse_hook_id:" in mouse_check_region
     assert "log.error(" in mouse_check_region
+
+
+def test_space_and_tab_are_consumed_not_forwarded_while_locked():
+    """Confirmed live: forwarding Space/Tab via CallNextHookEx let them
+    reach whatever window had OS focus, including a background app
+    (Space triggered play/pause on a background YouTube tab while
+    locked). Both must now be consumed at the hook level and routed to
+    the overlay's own action via a thread-safe Qt signal instead."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    assert "hook_space_pressed = pyqtSignal()" in source
+    assert "hook_tab_pressed = pyqtSignal()" in source
+    assert "hook_space_pressed.connect(" in source
+    assert "hook_tab_pressed.connect(" in source
+    # The old pass-through path (CallNextHookEx immediately after detecting
+    # Tab/Space) must be gone -- the fixed callback returns 1 (consume) for
+    # every KEYDOWN while locked, Tab/Space included.
+    kb_callback = source[source.index("def _keyboard_ll_callback"):source.index("def _mouse_ll_callback")]
+    assert "VK_TAB, VK_SPACE" in kb_callback
+    assert ".emit()" in kb_callback
+
+
+def test_topmost_reasserted_every_tick_not_only_at_lock_entry():
+    """Confirmed via Microsoft's own Precision Touchpad documentation:
+    3/4-finger system gestures (Task View, virtual desktop switch) are
+    OS-shell-level 'global gestures', not interceptable/blockable from a
+    normal userspace app (WM_GESTURE, the legacy touch-screen API, is not
+    involved). The only real mitigation is minimizing the exposure window
+    by re-asserting topmost/foreground every tick, mirroring the same
+    strategy already used for taskbar re-hide."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    tick_fn = source[source.index("def _tick(self)"):source.index("def _use_windows_lock")]
+    assert "self._force_topmost()" in tick_fn
+    assert "self.raise_()" in tick_fn
+    assert "self.activateWindow()" in tick_fn

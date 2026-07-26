@@ -163,6 +163,12 @@ _hook_thread_stop = False
 _overlay_locked = False
 _mouse_locked = False
 _hooks_ready = None
+# The SoftLockOverlay instance currently locked. Set by _install_hooks(),
+# cleared by _uninstall_hooks(). Lets the hook thread safely signal Space/
+# Tab back to the main Qt thread instead of forwarding them via
+# CallNextHookEx, which would let them reach whatever window (including a
+# background app) currently has OS focus, not just this overlay.
+_active_overlay = None
 
 
 def _any_modifier_held() -> bool:
@@ -177,7 +183,19 @@ def _keyboard_ll_callback(nCode, wParam, lParam):
         kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
         if wParam in (WM_KEYDOWN, WM_SYSKEYDOWN):
             if kb.vkCode in (VK_TAB, VK_SPACE) and not _any_modifier_held():
-                return ctypes.windll.user32.CallNextHookEx(_kb_hook_id, nCode, wParam, lParam)
+                # Consume here rather than forwarding via CallNextHookEx --
+                # forwarding would let the key reach whatever window
+                # currently has OS focus, which could be a background app
+                # (confirmed: this leaked Space to a background YouTube tab,
+                # triggering play/pause, while locked). Signal the main Qt
+                # thread instead so the overlay's own verify/lock action
+                # still fires, safely across threads via a queued signal.
+                overlay = _active_overlay
+                if overlay is not None:
+                    if kb.vkCode == VK_SPACE:
+                        overlay.hook_space_pressed.emit()
+                    else:
+                        overlay.hook_tab_pressed.emit()
             return 1
         # WM_KEYUP / WM_SYSKEYUP: always pass through. Releasing a key cannot
         # trigger any bypass action, and swallowing it leaves the OS thinking
@@ -361,10 +379,11 @@ def _hook_thread_func():
                 pass
 
 
-def _install_hooks() -> None:
-    global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop, _hooks_ready
+def _install_hooks(overlay=None) -> None:
+    global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop, _hooks_ready, _active_overlay
     _overlay_locked = True
     _mouse_locked = True
+    _active_overlay = overlay
     _engage_cursor_lock()
     _disable_accessibility_shortcuts()
     if _kb_hook_id is not None:
@@ -395,9 +414,10 @@ def _install_hooks() -> None:
 
 def _uninstall_hooks() -> None:
     global _kb_hook_id, _kb_callback_ref, _mouse_hook_id, _mouse_callback_ref
-    global _overlay_locked, _mouse_locked, _hook_thread_stop, _hook_thread
+    global _overlay_locked, _mouse_locked, _hook_thread_stop, _hook_thread, _active_overlay
     _overlay_locked = False
     _mouse_locked = False
+    _active_overlay = None
     _release_cursor_lock()
     _restore_accessibility_shortcuts()
     _hook_thread_stop = True
@@ -463,10 +483,14 @@ atexit.register(_atexit_release_all)
 class SoftLockOverlay(QWidget):
     """Fullscreen, topmost, frameless glass shield for desktop soft-lock."""
     background_ready = pyqtSignal(QImage)
+    hook_space_pressed = pyqtSignal()
+    hook_tab_pressed = pyqtSignal()
 
     def __init__(self, on_verify_requested=None, on_windows_lock_used=None):
         super().__init__()
         self.background_ready.connect(self._on_background_ready)
+        self.hook_space_pressed.connect(lambda: self._request_verification("overlay_key"))
+        self.hook_tab_pressed.connect(self._use_windows_lock)
         self._state: IslandState = get_state("idle")
         self._on_verify_requested = on_verify_requested
         self._on_windows_lock_used = on_windows_lock_used
@@ -573,7 +597,7 @@ class SoftLockOverlay(QWidget):
                 self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                 self._timer.start()
                 self._animate_opacity(0.0, 1.0)
-                _install_hooks()
+                _install_hooks(self)
                 _set_taskbar_visible(False)
                 QTimer.singleShot(0, self._capture_background)
 
@@ -809,6 +833,18 @@ class SoftLockOverlay(QWidget):
             # putting it back within one tick instead of leaving it exposed
             # until the next full lock/unlock cycle.
             _set_taskbar_visible(False)
+            # Same reasoning for topmost/foreground: a 3/4-finger gesture
+            # (Task View, virtual desktop switch) can briefly bring another
+            # window in front of or in place of this one. Confirmed via
+            # Microsoft's own docs that these are OS-shell-level "global
+            # gestures", not something a normal userspace app can intercept
+            # or block at the source (WM_GESTURE is the legacy touch-screen
+            # API and isn't involved in modern Precision Touchpad global
+            # gestures at all) — so the same "re-assert every tick to
+            # minimize the exposure window" strategy applies here too.
+            self._force_topmost()
+            self.raise_()
+            self.activateWindow()
 
         if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 5.0:
             if not getattr(self, "_fallback_prominent", False):

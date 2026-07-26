@@ -255,6 +255,31 @@ class MonitorDaemon:
         prewarm_threshold = max(5.0, self._idle_timeout - 9.0)
 
         if idle_seconds < prewarm_threshold:
+            if self._idle_fired and daemon_running:
+                # User went active again before the pre-warmed daemon ever
+                # reached full idle timeout. If it's still sitting in its
+                # own pre-camera wait (idle_check_result.txt is still the
+                # "PENDING" it wrote at launch -- see _launch_full_daemon),
+                # it hasn't opened the camera, shown UI, or made any
+                # user-visible decision yet, so it's safe to terminate
+                # rather than leave a ~400-500MB model-loaded process
+                # sitting alive in memory until the next uninterrupted
+                # idle stretch, however long that takes.
+                if _read_idle_check_result() == "PENDING":
+                    log.info(
+                        "User active again before full idle timeout — "
+                        "terminating pre-warmed daemon (PID %d), it never "
+                        "reached camera/UI.",
+                        self._daemon_proc.pid,
+                    )
+                    try:
+                        self._daemon_proc.terminate()
+                    except OSError:
+                        log.warning(
+                            "Failed to terminate pre-warmed daemon (PID %d)",
+                            self._daemon_proc.pid,
+                            exc_info=True,
+                        )
             self._idle_fired = False
             return
 

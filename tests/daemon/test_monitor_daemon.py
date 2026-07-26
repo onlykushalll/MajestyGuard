@@ -112,3 +112,71 @@ def test_monitor_keeps_same_idle_stretch_latched_after_owner_success(monkeypatch
 
     assert watcher._is_daemon_running() is False
     assert watcher._idle_fired is True
+
+
+def test_tick_terminates_prewarmed_daemon_if_user_active_before_full_idle(monkeypatch, tmp_path):
+    """If the user goes active again before reaching the full idle
+    timeout, a pre-warmed daemon that's still PENDING (hasn't opened the
+    camera or shown UI yet) must be terminated rather than left alive in
+    memory until the next uninterrupted idle stretch."""
+    monitor = _load_monitor_module()
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    result_file = tmp_path / "idle_check_result.txt"
+    result_file.write_text("PENDING", encoding="utf-8")
+    monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
+    # User is active now (well below any reasonable prewarm threshold).
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 1.0)
+
+    terminated = {"called": False}
+
+    class FakeAliveProcess:
+        pid = 999
+
+        def poll(self):
+            return None  # still running
+
+        def terminate(self):
+            terminated["called"] = True
+
+    watcher = monitor.MonitorDaemon()
+    watcher._idle_timeout = 60.0
+    watcher._idle_fired = True  # a pre-warm launch already fired earlier
+    watcher._daemon_proc = FakeAliveProcess()
+
+    watcher._tick()
+
+    assert terminated["called"] is True
+    assert watcher._idle_fired is False
+
+
+def test_tick_does_not_terminate_daemon_once_it_progressed_past_pending(monkeypatch, tmp_path):
+    """Once the pre-warmed daemon has moved past PENDING (e.g. it reached
+    the probe and wrote a real result), it must NOT be killed just
+    because the user's idle counter dipped -- it's already doing
+    something real, not just waiting."""
+    monitor = _load_monitor_module()
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    result_file = tmp_path / "idle_check_result.txt"
+    result_file.write_text("OWNER_VERIFIED", encoding="utf-8")
+    monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 1.0)
+
+    terminated = {"called": False}
+
+    class FakeAliveProcess:
+        pid = 999
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            terminated["called"] = True
+
+    watcher = monitor.MonitorDaemon()
+    watcher._idle_timeout = 60.0
+    watcher._idle_fired = True
+    watcher._daemon_proc = FakeAliveProcess()
+
+    watcher._tick()
+
+    assert terminated["called"] is False

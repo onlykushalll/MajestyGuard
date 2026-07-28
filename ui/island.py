@@ -34,6 +34,39 @@ _DOT_RADIUS = 2.5  # 5px diameter
 _DOT_GAP = 6.0
 _DOT_SCAN_PERIOD_MS = 1200
 
+# --- Orb particle icon system -----------------------------------------
+# One reusable, parameterized dot-cluster renderer shared across states,
+# differentiated by motion character rather than bespoke per-state code
+# (mirrors the reference: a single component, tuned per state by a few
+# numbers). Deliberately monochrome -- state meaning now comes from
+# motion character and the pill's existing border/background color, not
+# from recoloring the icon itself per state.
+#   (particle_count, orbit_speed, radius_jitter, spread, base_dot_px)
+#   orbit_speed:   revolutions per second of _phase-driven rotation
+#   radius_jitter: how much each particle's radius breathes over time
+#   spread:        0 = clustered near center, 1 = reaching the icon edge
+_ORB_STYLES: dict[str, tuple[int, float, float, float, float]] = {
+    "listening": (6, 0.12, 0.10, 0.88, 1.6),   # searching: sparse, calm drift
+    "working": (9, 0.42, 0.18, 0.78, 1.5),      # verifying: busier, faster
+    "resolving": (7, 0.20, 0.05, 0.42, 1.7),    # welcome: settled, converged
+    "guarded": (8, 0.05, 0.02, 0.95, 1.5),      # locked: static, structured ring
+}
+
+_GOLDEN_ANGLE = 2.399963  # radians (~137.5°) — even, organic-looking spacing
+
+
+def _orb_particle_seed(i: int) -> tuple[float, float, float]:
+    """Stable per-particle (angle_offset, radius_frac, size_frac). Must
+    stay fixed across frames for a given index -- only _phase should move
+    the dots, never re-randomizing per paint, or they'd jitter/flicker
+    instead of animating smoothly."""
+    angle_offset = (i * _GOLDEN_ANGLE) % (2 * math.pi)
+    h1 = math.sin(i * 12.9898) * 43758.5453
+    h2 = math.sin(i * 78.233) * 12543.899
+    radius_frac = 0.35 + 0.55 * (h1 - math.floor(h1))
+    size_frac = 0.5 + 0.5 * (h2 - math.floor(h2))
+    return angle_offset, radius_frac, size_frac
+
 # Verified → Welcome → Fade sequence timing
 _VERIFIED_DURATION_MS = 400
 _CHECKMARK_DRAW_MS = 150
@@ -709,22 +742,64 @@ class IslandWidget(QWidget):
 
     # ── New pill content modes ──────────────────────────────────────────
 
-    def _paint_dot_scan(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Three dots that pulse in sequence — scanning state."""
-        total_width = _DOT_RADIUS * 2 * _DOT_COUNT + _DOT_GAP * (_DOT_COUNT - 1)
-        start_x = rect.center().x() - total_width / 2 + _DOT_RADIUS
-        cy = rect.center().y()
-
-        for i in range(_DOT_COUNT):
-            # Phase offset per dot for sequential pulse
-            dot_phase = (self._dot_scan_phase - i * 0.33) % 1.0
-            # Smooth pulse: 0.6 → 1.0 opacity
-            pulse = 0.6 + 0.4 * max(0.0, math.sin(dot_phase * math.pi))
-            dot_color = QColor(255, 255, 255, int(self._alpha * self._content_alpha * 255 * pulse))
+    def _paint_orb_particles(
+        self, painter: QPainter, cx: float, cy: float, icon_radius: float,
+        style_name: str, color: str = "#F2F2F7", opacity_mult: float = 1.0,
+    ) -> None:
+        """Draw one animated particle cluster. Same renderer for every
+        state that uses it -- only the (count, speed, jitter, spread)
+        tuple looked up from _ORB_STYLES differs, matching the reference
+        library's own approach of one component tuned per state rather
+        than bespoke code for each."""
+        n, speed, jitter, spread, dot_px = _ORB_STYLES[style_name]
+        for i in range(n):
+            angle_offset, radius_frac, size_frac = _orb_particle_seed(i)
+            angle = angle_offset + self._phase * 2 * math.pi * speed
+            breathe = 1.0 + jitter * math.sin(self._phase * 2 * math.pi * 2 + i * 1.7)
+            r = icon_radius * spread * radius_frac * breathe
+            px = cx + r * math.cos(angle)
+            py = cy + r * math.sin(angle) * 0.94  # very slight vertical ease, less mechanical
+            dot_r = dot_px * (0.65 + 0.55 * size_frac)
+            alpha = self._alpha * self._content_alpha * opacity_mult * (0.5 + 0.5 * size_frac)
+            dot_color = QColor(color)
+            dot_color.setAlphaF(max(0.0, min(1.0, alpha)))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(dot_color)
-            dx = start_x + i * (_DOT_RADIUS * 2 + _DOT_GAP)
-            painter.drawEllipse(QPointF(dx, cy), _DOT_RADIUS, _DOT_RADIUS)
+            painter.drawEllipse(QPointF(px, py), dot_r, dot_r)
+
+    def _paint_orb_badge(
+        self, painter: QPainter, rect: QRect, state: IslandState,
+        style_name: str, icon_diameter: float = 30.0,
+    ) -> None:
+        """Compact icon-left, text-right badge layout -- the orb replacing
+        the old bulky Face ID glyph/shell. Deliberately smaller: this used
+        to be up to 56px inside a gradient sub-shell; the orb itself needs
+        no shell, it reads fine directly against the pill background."""
+        icon_d = min(rect.height() - 12, icon_diameter)
+        icon_cx = rect.left() + 15 + icon_d / 2
+        icon_cy = rect.center().y()
+        self._paint_orb_particles(painter, icon_cx, icon_cy, icon_d / 2, style_name)
+
+        label = state.label
+        if not label:
+            return
+        text_left = int(icon_cx + icon_d / 2 + 12)
+        text_right = rect.right() - 16
+        if text_right <= text_left:
+            return
+        self._draw_text(
+            painter,
+            QRect(text_left, rect.top(), text_right - text_left, rect.height()),
+            label, state.label_color, 10,
+        )
+
+    def _paint_dot_scan(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
+        """Orb badge, 'listening' style — searching for the owner. Also
+        fixes the label never actually rendering in this mode before:
+        idle_detected/scanning both define a state.label in states.py
+        ("System Idle Detected" / "Verifying...") that this mode never
+        drew."""
+        self._paint_orb_badge(painter, rect, state, "listening")
 
     def _paint_verified(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
         """Checkmark draw animation — verified state. No text."""
@@ -769,17 +844,13 @@ class IslandWidget(QWidget):
         painter.drawPath(path)
 
     def _paint_welcome(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Welcome text — final state before pill fades."""
+        """Welcome badge — final state before pill fades. 'resolving'
+        style: dots settled into a calm, converged formation, completing
+        the visual arc (listening -> working -> checkmark -> resolving ->
+        blipp exit) instead of a bare centered text label."""
         if not state.label:
             return
-        tc = QColor(state.label_color)
-        tc.setAlphaF(self._alpha * self._content_alpha)
-        painter.setPen(tc)
-        font = QFont("Segoe UI Variable Display", 10, QFont.Weight.DemiBold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.5)
-        painter.setFont(font)
-        text_rect = rect.adjusted(14, 0, -14, 0)
-        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignCenter, state.label)
+        self._paint_orb_badge(painter, rect, state, "resolving", icon_diameter=26.0)
 
     # ── Existing pill content modes (preserved) ─────────────────────────
 
@@ -828,35 +899,12 @@ class IslandWidget(QWidget):
             self._draw_score_chip(painter, chip_x, chip_y + idx * 13, label, value, state.accent_color)
 
     def _paint_face_scan(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        icon_size = min(rect.height() - 16, 56)
-        icon_shell = QRectF(
-            rect.left() + 13,
-            rect.center().y() - icon_size / 2,
-            icon_size,
-            icon_size,
-        )
+        icon_size = min(rect.height() - 16, 32)
+        icon_cx = rect.left() + 15 + icon_size / 2
+        icon_cy = rect.center().y()
+        self._paint_orb_particles(painter, icon_cx, icon_cy, icon_size / 2, "working")
 
-        shell_path = QPainterPath()
-        shell_path.addRoundedRect(icon_shell, 18, 18)
-        shell_gradient = QRadialGradient(icon_shell.center(), icon_shell.width() * 0.78)
-        shell_gradient.setColorAt(0.0, QColor(18, 38, 27, int(self._alpha * self._content_alpha * 232)))
-        shell_gradient.setColorAt(0.72, QColor(4, 9, 8, int(self._alpha * self._content_alpha * 246)))
-        shell_gradient.setColorAt(1.0, QColor(0, 0, 0, int(self._alpha * self._content_alpha * 252)))
-        painter.fillPath(shell_path, shell_gradient)
-
-        rim = QColor(state.accent_color)
-        rim.setAlpha(int(self._alpha * self._content_alpha * 62))
-        painter.setPen(QPen(rim, 1.0))
-        painter.drawPath(shell_path)
-
-        glyph_box = icon_shell.adjusted(9, 8, -9, -8)
-        self._paint_face_id_glyph(
-            painter,
-            glyph_box,
-            verifying=(state.name == "verifying_lock"),
-        )
-
-        text_left = int(icon_shell.right() + 14)
+        text_left = int(icon_cx + icon_size / 2 + 14)
         text_right = rect.right() - 16
         title = state.label or ("Verifying" if state.name == "verifying_lock" else "Scanning")
         detail = state.detail or ("Hold steady" if state.name == "verifying_lock" else "Face check")

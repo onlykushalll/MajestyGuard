@@ -6,6 +6,26 @@
 # all compiled executables (.exe) and dynamic libraries (.dll).
 #
 # Requires: Administrator privileges
+#
+# WHAT THIS DOES NOT DO — READ BEFORE RELYING ON THIS FOR THE CREDENTIAL
+# PROVIDER / SAC-BLOCKING PROBLEM:
+# This does NOT bypass Smart App Control (SAC). Verified directly against
+# Microsoft's own documentation: SAC only trusts a binary if either (a) its
+# cloud reputation system already recognizes it (never happens for a
+# personal, low-volume app), or (b) it's signed with a certificate from a
+# CA that participates in the Microsoft Trusted Root Program -- a
+# centrally-curated list Microsoft maintains. Installing a self-signed
+# cert into this machine's own LocalMachine\Root store (what this script
+# does) does not add it to that program; these are different things
+# despite the similar name. Microsoft's own FAQ states there is currently
+# no supported way to bypass SAC for an individual app short of a real
+# Trusted-Root-Program-chained signature (see docs/signing -- SignPath.io
+# Foundation's free OSS tier is the identified path for that) or disabling
+# SAC entirely, which is explicitly off the table on the main dev machine.
+# What THIS script legitimately does: reduces generic "unknown publisher"
+# SmartScreen friction and produces a properly Authenticode-signed binary
+# for local testing -- useful on its own, just not a fix for the actual
+# SAC block that's been this project's real obstacle.
 # ==============================================================================
 
 [CmdletBinding()]
@@ -110,4 +130,9 @@ Write-Host "`nSigning Results Summary:" -ForegroundColor Cyan
 $results | Format-Table -AutoSize
 
 Write-Host "`n[SUCCESS] MajestyGuard Developer Self-Signing Completed!" -ForegroundColor Green
-Write-Host "Binaries signed with this certificate are now trusted locally by Windows Defender & SmartScreen.`n" -ForegroundColor Green
+Write-Host "Binaries are now properly Authenticode-signed with a certificate this" -ForegroundColor Green
+Write-Host "machine locally trusts, which reduces generic 'unknown publisher'" -ForegroundColor Green
+Write-Host "SmartScreen friction here." -ForegroundColor Green
+Write-Host "This does NOT unblock Smart App Control -- SAC requires a certificate" -ForegroundColor Yellow
+Write-Host "from Microsoft's Trusted Root Program specifically, which a locally" -ForegroundColor Yellow
+Write-Host "self-signed cert does not chain to. See the header comment above." -ForegroundColor Yellow

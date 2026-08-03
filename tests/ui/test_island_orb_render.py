@@ -73,6 +73,9 @@ def qapp():
     ("verifying_lock", 0.2),
     ("verifying_lock", 0.85),
     ("welcome", 0.4),
+    ("soft_locked", 0.2),
+    ("soft_locked", 0.8),
+    ("social_lock", 0.5),
 ])
 def test_orb_states_render_without_exception_and_draw_something(qapp, state_name, phase):
     """Real offscreen render, not a text assertion -- catches the exact

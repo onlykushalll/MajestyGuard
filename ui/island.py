@@ -1100,9 +1100,16 @@ class IslandWidget(QWidget):
                                 int(self._alpha * self._content_alpha * 18)))
         painter.drawRoundedRect(badge, 12, 12)
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(accent)
-        painter.drawEllipse(QPointF(badge.center().x(), badge.center().y()), 4.0, 4.0)
+        # 'guarded' orb style: a near-static, evenly-spread particle ring
+        # instead of one bare dot -- same calm/stable role, consistent
+        # with the rest of the redesign's texture, while the badge ring
+        # and fill above (untouched) still carry the per-state accent
+        # color, matching the same "color stays on the container, icon
+        # stays monochrome" split already used for scanning/verifying/
+        # welcome.
+        self._paint_orb_particles(
+            painter, badge.center().x(), badge.center().y(), 11.0, "guarded",
+        )
 
         text_x = int(start_x + 43)
         self._draw_text(painter, QRect(text_x, rect.top() + 12, int(content_w - 44), 20),

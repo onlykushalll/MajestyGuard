@@ -154,7 +154,7 @@ def _launch_full_daemon() -> subprocess.Popen:
     env.pop("MG_FORCE_LOCK_STARTUP", None)
     env["MG_IDLE_CHECK_MODE"] = "1"
     env["MG_OVERLAY_WATCHDOG"] = "1"
-    _write_idle_check_result("PENDING")
+    _write_idle_check_result("PREWARMING")
     log.info("Launching full daemon: %s %s", python, daemon_script)
     log_fh = open(_DAEMON_LOG_PATH, "a", encoding="utf-8")
     try:
@@ -176,6 +176,7 @@ def _launch_full_daemon() -> subprocess.Popen:
 # ── Main monitor loop ─────────────────────────────────────────────────────
 
 _WATCHDOG_COOLDOWN_S = 10.0
+_PRE_CAMERA_IDLE_PHASES = frozenset({"PREWARMING", "WAITING_FOR_IDLE"})
 
 
 class MonitorDaemon:
@@ -256,21 +257,18 @@ class MonitorDaemon:
 
         if idle_seconds < prewarm_threshold:
             if self._idle_fired and daemon_running:
-                # User went active again before the pre-warmed daemon ever
-                # reached full idle timeout. If it's still sitting in its
-                # own pre-camera wait (idle_check_result.txt is still the
-                # "PENDING" it wrote at launch -- see _launch_full_daemon),
-                # it hasn't opened the camera, shown UI, or made any
-                # user-visible decision yet, so it's safe to terminate
-                # rather than leave a ~400-500MB model-loaded process
-                # sitting alive in memory until the next uninterrupted
-                # idle stretch, however long that takes.
-                if _read_idle_check_result() == "PENDING":
+                # Only terminate a daemon that positively reports a phase
+                # before UI/camera startup. Older PENDING files are not
+                # proof of that lifecycle boundary, so treat them fail-safe
+                # and leave the daemon alone rather than tear down a live
+                # owner probe mid-verification.
+                idle_phase = _read_idle_check_result()
+                if idle_phase in _PRE_CAMERA_IDLE_PHASES:
                     log.info(
                         "User active again before full idle timeout — "
-                        "terminating pre-warmed daemon (PID %d), it never "
-                        "reached camera/UI.",
+                        "terminating pre-camera daemon (PID %d, phase=%s).",
                         self._daemon_proc.pid,
+                        idle_phase,
                     )
                     try:
                         self._daemon_proc.terminate()

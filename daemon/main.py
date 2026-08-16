@@ -311,8 +311,34 @@ class MajestyGuardDaemon:
         t_model = time.perf_counter()
         self._warmup_inference()
         t_warm = time.perf_counter()
-        self._open_camera()
-        t_cam = time.perf_counter()
+        t_cam = t_warm
+
+        if self._idle_check_mode:
+            self._set_idle_check_phase("PREWARMING")
+            target_idle = read_idle_timeout()
+            log.info("Models preloaded in background. Waiting for system idle >= %.1fs...", target_idle)
+            self._set_idle_check_phase("WAITING_FOR_IDLE")
+            while get_idle_seconds() < target_idle:
+                time.sleep(0.05)
+
+            log.info("System idle threshold reached (%.1fs) — launching Dynamic Island", get_idle_seconds())
+            self._set_idle_check_phase("STARTING_UI")
+            self._launch_ui()
+            self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
+
+            self._set_idle_check_phase("CAMERA_OPENING")
+            self._open_camera()
+            t_cam = time.perf_counter()
+            time.sleep(0.4)
+            self.ipc.broadcast_state("scanning", detail="Verifying...")
+
+            self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
+            self._set_idle_check_phase("PROBING")
+            log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
+        else:
+            self._open_camera()
+            t_cam = time.perf_counter()
+
         self._cold_start_ms = {
             "model_load": round((t_model - t0) * 1000),
             "warmup": round((t_warm - t_model) * 1000),
@@ -326,15 +352,6 @@ class MajestyGuardDaemon:
             self._cold_start_ms["camera_open"],
             self._cold_start_ms["total"],
         )
-        if self._idle_check_mode:
-            self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
-            log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
-            self._launch_ui()
-            self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
-            time.sleep(0.35)
-            self.ipc.broadcast_state("scanning", detail="Verifying...")
-
-
         try:
             self._run_loop()
         except KeyboardInterrupt:
@@ -1354,6 +1371,11 @@ class MajestyGuardDaemon:
     @staticmethod
     def _write_idle_check_result(result: str) -> None:
         _atomic_write_file(_MG_STATE_DIR / "idle_check_result.txt", f"{result}\n")
+
+    def _set_idle_check_phase(self, phase: str) -> None:
+        """Publish lifecycle boundaries used by the lightweight monitor."""
+        if self._idle_check_mode:
+            self._write_idle_check_result(phase)
 
 
     def _defer_input_idle_soft_lock(self) -> None:

@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import threading
+import sys
+from pathlib import Path
 from types import SimpleNamespace
+
+DAEMON = Path(__file__).resolve().parents[2] / "daemon"
+sys.path.insert(0, str(DAEMON))
 
 import main as daemon_main
 from main import MajestyGuardDaemon, State
@@ -83,3 +88,14 @@ def test_idle_check_bypasses_motion_prefilter(monkeypatch):
     daemon.motion = SimpleNamespace(has_motion=lambda _frame: False)
 
     assert daemon._should_skip_idle_frame(object()) is False
+
+
+def test_idle_check_phase_publishes_monitor_lifecycle_boundary(monkeypatch, tmp_path):
+    """The monitor may only cancel explicitly pre-camera phases, so the
+    full daemon must publish a durable phase before UI/camera startup."""
+    daemon = _bare_daemon()
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+
+    daemon._set_idle_check_phase("STARTING_UI")
+
+    assert (tmp_path / "idle_check_result.txt").read_text(encoding="utf-8") == "STARTING_UI\n"

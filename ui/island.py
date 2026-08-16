@@ -87,6 +87,9 @@ class IslandWidget(QWidget):
         self._pulse_phase = 0.0
         self._scan_phase = 0.0
         self._dot_scan_phase = 0.0
+        # Orb phase is wall-clock-like seconds, so each style's speed stays
+        # meaningfully expressed in revolutions per second.
+        self._phase = 0.0
         self._flash_count = 0
         self._reduce_motion = os.environ.get("MG_UI_REDUCE_MOTION", "0") == "1"
 
@@ -115,6 +118,7 @@ class IslandWidget(QWidget):
         self._anim_checkmark_active = False
         self._anim_pill_fade_active = False
         self._anim_flash_active = False
+        self._anim_orb_active = False
         self._flash_frame_counter = 0
         self._shake_phase = 0.0
         self._shake_offset = 0.0
@@ -277,6 +281,11 @@ class IslandWidget(QWidget):
             if state.mode != "dot_scan":
                 self._anim_dot_scan_active = False
 
+        self._anim_orb_active = (
+            state.mode in {"dot_scan", "face_scan", "welcome", "shield"}
+            and not self._reduce_motion
+        )
+
         if content_changed and not self._reduce_motion:
             self._pending_state = state
             self._content_fading_out = True
@@ -320,6 +329,7 @@ class IslandWidget(QWidget):
         self._anim_flash_active = False
         self._anim_dot_scan_active = False
         self._anim_scan_active = False
+        self._anim_orb_active = False
         self._alpha = 1.0
 
         if not self._reduce_motion:
@@ -420,6 +430,10 @@ class IslandWidget(QWidget):
 
         if self._anim_dot_scan_active:
             self._dot_scan_phase = (self._dot_scan_phase + _FRAME_MS / _DOT_SCAN_PERIOD_MS) % 1.0
+            updated = True
+
+        if self._anim_orb_active:
+            self._phase = (self._phase + _FRAME_MS / 1000.0) % 60.0
             updated = True
 
         if self._anim_shake_active:

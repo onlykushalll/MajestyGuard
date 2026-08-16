@@ -117,3 +117,33 @@ def test_orb_states_render_without_exception_and_draw_something(qapp, state_name
         f"{state_name} at phase={phase} drew nothing visible -- "
         "content may be defined but not actually wired up"
     )
+
+
+def test_apply_state_always_resets_alpha_to_visible(qapp):
+    """Critical safety property a real fix in ui/main.py depends on: the
+    startup sequence deliberately sets widget._alpha = 0.0 to hide the
+    placeholder 'idle' pill (states.py's "idle" entry has real 120x28
+    dimensions and a real opaque background color -- it was never
+    actually invisible, just contentless, and was appearing on screen
+    before any real daemon state ever arrived). That's only safe because
+    apply_state() unconditionally resets _alpha back to 1.0 on every
+    call, regardless of what it was set to before -- so the very next
+    real state transition makes the pill visible again at the correct
+    moment. If this property ever silently breaks, the whole Dynamic
+    Island would get stuck invisible forever after startup."""
+    widget = island.IslandWidget()
+    widget._alpha = 0.0
+    widget.apply_state(get_state("idle_detected"))
+    assert widget._alpha == 1.0
+
+
+def test_orb_phase_is_initialized_and_advances_for_an_animated_state(qapp):
+    """The actual live widget must own and advance the phase used by the
+    particle painter; assigning it only in offscreen tests masks a blank UI."""
+    widget = island.IslandWidget()
+    assert widget._phase == 0.0
+
+    widget.apply_state(get_state("scanning"))
+    assert widget._anim_orb_active is True
+    widget._tick_animations()
+    assert widget._phase > 0.0

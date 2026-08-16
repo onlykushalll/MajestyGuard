@@ -201,6 +201,21 @@ def main() -> None:
         widget.setParent(shield, widget.windowFlags())
     widget.show()
     widget.apply_state(get_state("idle"))
+    # apply_state() above unconditionally sets _alpha back to 1.0, so the
+    # placeholder "idle" pill (a real 120x28 dark rounded rect, not
+    # actually invisible -- confirmed by reading states.py) becomes
+    # genuinely visible on screen the instant this process starts, before
+    # any real state has ever arrived from the daemon. Contradicts the
+    # documented spec ("Idle/hidden when not needed") and is very likely
+    # what's been perceived as "the Dynamic Island appears too early" --
+    # this is a UI-side cause independent of whatever the daemon's own
+    # pre-warm/idle-detection timing does. Force it invisible immediately
+    # after; the very next real apply_state() call (idle_detected,
+    # scanning, etc.) resets _alpha to 1.0 on its own and makes the pill
+    # visible again at the actually-correct moment -- no risk of this
+    # getting stuck invisible.
+    widget._alpha = 0.0
+    widget.update()
 
     sig        = StateSignal()
     stop_event = threading.Event()

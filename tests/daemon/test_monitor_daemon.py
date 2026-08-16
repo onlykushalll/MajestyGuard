@@ -85,7 +85,7 @@ def _load_monitor_module():
     return module
 
 
-def test_monitor_launches_bounded_idle_check_not_force_lock(monkeypatch):
+def test_monitor_launches_bounded_idle_check_not_force_lock(monkeypatch, tmp_path):
     monitor = _load_monitor_module()
     captured = {}
 
@@ -93,12 +93,16 @@ def test_monitor_launches_bounded_idle_check_not_force_lock(monkeypatch):
         pid = 123
 
     monkeypatch.setattr(monitor.subprocess, "Popen", lambda _args, **kwargs: captured.update(kwargs) or FakeProcess())
-    monkeypatch.setattr(monitor, "_MG_STATE_DIR", Path("C:/tmp/mg-monitor-test"))
+    result_file = tmp_path / "idle_check_result.txt"
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
+    monkeypatch.setattr(monitor, "_DAEMON_LOG_PATH", tmp_path / "daemon_stdout.log")
 
     monitor._launch_full_daemon()
 
     assert captured["env"]["MG_IDLE_CHECK_MODE"] == "1"
     assert "MG_FORCE_LOCK_STARTUP" not in captured["env"]
+    assert monitor._read_idle_check_result() == "PREWARMING"
 
 
 def test_monitor_keeps_same_idle_stretch_latched_after_owner_success(monkeypatch, tmp_path):
@@ -116,13 +120,13 @@ def test_monitor_keeps_same_idle_stretch_latched_after_owner_success(monkeypatch
 
 def test_tick_terminates_prewarmed_daemon_if_user_active_before_full_idle(monkeypatch, tmp_path):
     """If the user goes active again before reaching the full idle
-    timeout, a pre-warmed daemon that's still PENDING (hasn't opened the
+    timeout, a pre-warmed daemon that positively reports PREWARMING (hasn't opened the
     camera or shown UI yet) must be terminated rather than left alive in
     memory until the next uninterrupted idle stretch."""
     monitor = _load_monitor_module()
     monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
     result_file = tmp_path / "idle_check_result.txt"
-    result_file.write_text("PENDING", encoding="utf-8")
+    result_file.write_text("PREWARMING", encoding="utf-8")
     monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
     # User is active now (well below any reasonable prewarm threshold).
     monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 1.0)
@@ -149,8 +153,8 @@ def test_tick_terminates_prewarmed_daemon_if_user_active_before_full_idle(monkey
     assert watcher._idle_fired is False
 
 
-def test_tick_does_not_terminate_daemon_once_it_progressed_past_pending(monkeypatch, tmp_path):
-    """Once the pre-warmed daemon has moved past PENDING (e.g. it reached
+def test_tick_does_not_terminate_daemon_once_it_progressed_past_pre_camera(monkeypatch, tmp_path):
+    """Once the pre-warmed daemon has moved past a pre-camera phase (e.g. it reached
     the probe and wrote a real result), it must NOT be killed just
     because the user's idle counter dipped -- it's already doing
     something real, not just waiting."""
@@ -158,6 +162,37 @@ def test_tick_does_not_terminate_daemon_once_it_progressed_past_pending(monkeypa
     monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
     result_file = tmp_path / "idle_check_result.txt"
     result_file.write_text("OWNER_VERIFIED", encoding="utf-8")
+    monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 1.0)
+
+    terminated = {"called": False}
+
+    class FakeAliveProcess:
+        pid = 999
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            terminated["called"] = True
+
+    watcher = monitor.MonitorDaemon()
+    watcher._idle_timeout = 60.0
+    watcher._idle_fired = True
+    watcher._daemon_proc = FakeAliveProcess()
+
+    watcher._tick()
+
+    assert terminated["called"] is False
+
+
+def test_tick_does_not_trust_legacy_pending_as_a_pre_camera_boundary(monkeypatch, tmp_path):
+    """PENDING can belong to a daemon already launching UI/camera, so the
+    monitor must fail safe rather than terminate it during renewed input."""
+    monitor = _load_monitor_module()
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    result_file = tmp_path / "idle_check_result.txt"
+    result_file.write_text("PENDING", encoding="utf-8")
     monkeypatch.setattr(monitor, "IDLE_CHECK_RESULT_FILE", result_file)
     monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 1.0)
 

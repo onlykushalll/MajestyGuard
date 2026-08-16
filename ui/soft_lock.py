@@ -12,7 +12,7 @@ import ctypes
 import atexit
 import time
 
-from PyQt6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -534,6 +534,8 @@ class SoftLockOverlay(QWidget):
         self._opacity_value = 0.0
         self._allow_close = False
         self._lock_shown_at = None
+        self._lock_generation = 0
+        self._dissolve_generation = -1
 
         self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
         self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
@@ -607,12 +609,15 @@ class SoftLockOverlay(QWidget):
     def apply_state(self, state: IslandState) -> None:
         if state.name == self._state.name and self.isVisible():
             self._state = state
+            self._resume_lock_state(new_lock=False)
             self._force_topmost()
             self.raise_()
             return
         self._state = state
         if state.name in _LOCK_NAMES:
-            if not self.isVisible():
+            entering_lock = not self.isVisible()
+            self._resume_lock_state(new_lock=entering_lock)
+            if entering_lock:
                 self._opacity_value = 0.0  # Reset opacity before showing to avoid one-frame flash
                 self._fit_virtual_screen()
                 # Stutter-on-load fix: show first, capture second. grabWindow()
@@ -630,9 +635,6 @@ class SoftLockOverlay(QWidget):
                 self.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
                 self._timer.start()
                 self._animate_opacity(0.0, 1.0)
-                _install_hooks(self)
-                _set_taskbar_visible(False)
-                _stop_background_media()
                 QTimer.singleShot(0, self._capture_background)
 
                 self._lock_shown_at = time.monotonic()
@@ -649,10 +651,23 @@ class SoftLockOverlay(QWidget):
             return
 
         if state.name not in _LOCK_NAMES:
-            _uninstall_hooks()
-            _set_taskbar_visible(True)
             if self.isVisible():
                 self.dissolve()
+            else:
+                _uninstall_hooks()
+                _set_taskbar_visible(True)
+
+    def _resume_lock_state(self, *, new_lock: bool) -> None:
+        """Cancel an obsolete unlock animation and restore lock ownership."""
+        self._lock_generation += 1
+        if self._dissolve_anim.state() != QAbstractAnimation.State.Stopped:
+            self._dissolve_anim.stop()
+            self._animate_opacity(self._opacity_value, 1.0)
+        self._timer.start()
+        _install_hooks(self)
+        _set_taskbar_visible(False)
+        if new_lock:
+            _stop_background_media()
 
     def _capture_background(self) -> None:
         screen = QGuiApplication.primaryScreen()
@@ -806,6 +821,7 @@ class SoftLockOverlay(QWidget):
 
     def dissolve(self) -> None:
         _uninstall_hooks()
+        self._dissolve_generation = self._lock_generation
         self._dissolve_anim.stop()
         self._dissolve_anim.setStartValue(self._opacity_value)
         self._dissolve_anim.setEndValue(0.0)
@@ -821,6 +837,8 @@ class SoftLockOverlay(QWidget):
             self._dissolve_anim.finished.disconnect(self._hide_after_dissolve)
         except TypeError:
             pass
+        if self._dissolve_generation != self._lock_generation or self._state.name in _LOCK_NAMES:
+            return
         self._timer.stop()
         self.hide()
         self._fallback_btn.hide()

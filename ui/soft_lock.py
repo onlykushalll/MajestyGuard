@@ -108,7 +108,6 @@ VK_ALT = 0x12
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 VK_MEDIA_STOP = 0xB2
-VK_MEDIA_PLAY_PAUSE = 0xB3
 
 import ctypes.wintypes as wintypes
 
@@ -231,29 +230,15 @@ def _release_cursor_lock():
 
 
 def _stop_background_media():
-    """Send the standard media-stop and play/pause virtual keys once, the
-    same signal a physical media-stop key on a keyboard sends. Windows
-    routes this through System Media Transport Controls to whatever app(s)
-    currently have an active media session -- covers apps that implement
-    a real stop handler (VLC, Windows Media Player) as well as
-    browser-based players that only implement play/pause (confirmed: this
-    is exactly what YouTube in a browser responds to; it has no distinct
-    stop state, only play/pause). No new dependency required -- this is
-    the same simulated-keypress mechanism already used elsewhere in this
-    file, just for media keys instead of Tab/Space.
+    """Send a one-way media stop signal when a privacy lock engages.
 
-    Sending PLAY_PAUSE is a toggle, so if media happens to already be
-    paused when this fires, it could start it playing instead. Accepted
-    as a rare, low-consequence tradeoff -- the alternative (only sending
-    STOP) would silently fail to affect the exact real-world scenario this
-    was built for (a background YouTube tab actively playing while
-    locked), since STOP alone does nothing there.
+    Some browser players do not implement a distinct stop action, but a
+    play/pause toggle is unsafe here because it can start previously paused
+    media. The lock must never create background playback as a side effect.
     """
     try:
         ctypes.windll.user32.keybd_event(VK_MEDIA_STOP, 0, 0, 0)
         ctypes.windll.user32.keybd_event(VK_MEDIA_STOP, 0, 2, 0)  # KEYEVENTF_KEYUP
-        ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
-        ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 2, 0)
     except Exception:
         import logging
         logging.getLogger("MajestyGuard.UI").warning(

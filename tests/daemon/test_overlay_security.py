@@ -166,7 +166,9 @@ def test_media_stopped_on_lock_engage():
     fire as part of the lock-engagement sequence, not be optional/absent."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "VK_MEDIA_STOP" in source
-    assert "VK_MEDIA_PLAY_PAUSE" in source
+    # PLAY_PAUSE is a toggle: when the media session is already paused it
+    # starts playback. A privacy lock must never create new background output.
+    assert "VK_MEDIA_PLAY_PAUSE" not in source
     assert "_stop_background_media()" in source
     # Must actually be called from the lock-engagement sequence, not just
     # defined and never invoked (exactly the kind of gap already found and

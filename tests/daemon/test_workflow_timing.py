@@ -16,6 +16,9 @@ def test_workflow_test_script_documents_supervised_timing_targets():
     assert "--idle-timeout" in text
     assert "--runs" in text
     assert "MG_ENABLE_LOCK" in text
+    assert "MG_OVERLAY_WATCHDOG" in text
+    assert "_start_daemon" in text
+    assert "str(UI)" not in text
 
 
 def test_soft_lock_document_preserves_door_lock_principle():

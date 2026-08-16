@@ -152,7 +152,7 @@ class IslandWidget(QWidget):
         # Exit sequence single-shot timers (dwells)
         self._verified_dwell_timer = QTimer(self)
         self._verified_dwell_timer.setSingleShot(True)
-        self._verified_dwell_timer.timeout.connect(self._begin_welcome)
+        self._verified_dwell_timer.timeout.connect(self._after_verified)
 
         self._welcome_dwell_timer = QTimer(self)
         self._welcome_dwell_timer.setSingleShot(True)
@@ -172,12 +172,19 @@ class IslandWidget(QWidget):
             self._deferred_lock_state = state
             return
 
-        # Intercept active state → begin exit sequence or treat as idle if already unlocked
+        # A normal owner check should confirm and disappear.  Reserve the
+        # friendlier welcome moment for an actual return from the soft lock.
         if state.name == "active":
             if self._in_exit_sequence:
                 return
             if self._state.name in {"idle_detected", "scanning", "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "locked"}:
-                self._begin_exit_sequence(state)
+                self._begin_exit_sequence(
+                    state,
+                    show_welcome=self._state.name in {
+                        "locked_passive", "soft_locked", "verifying_lock",
+                        "social_lock", "hostile_lock", "locked",
+                    },
+                )
                 return
 
 
@@ -309,14 +316,15 @@ class IslandWidget(QWidget):
 
     # ── Exit sequence orchestration ─────────────────────────────────────
 
-    def _begin_exit_sequence(self, active_state: IslandState) -> None:
-        """Verified → Welcome → Fade pill sequence."""
+    def _begin_exit_sequence(self, active_state: IslandState, *, show_welcome: bool) -> None:
+        """Confirm a verification, optionally welcoming a returned owner."""
         self._in_exit_sequence = True
+        self._show_welcome_after_verification = show_welcome
         self._pill_opacity = 1.0
         self._checkmark_progress = 0.0
 
-        # Tell overlay to start dissolving immediately
-        if self._on_overlay_dissolve is not None:
+        # Only an actual soft-lock return has an overlay to dissolve.
+        if show_welcome and self._on_overlay_dissolve is not None:
             self._on_overlay_dissolve()
 
         # Apply verified state (green border, checkmark only)
@@ -337,8 +345,14 @@ class IslandWidget(QWidget):
             self._anim_checkmark_active = True
             self._start_animation_timer()
 
-        # After verified dwell, transition to welcome
+        # After the confirmed dwell, either welcome a returned owner or fade.
         self._verified_dwell_timer.start(_VERIFIED_DURATION_MS)
+
+    def _after_verified(self) -> None:
+        if self._show_welcome_after_verification:
+            self._begin_welcome()
+        else:
+            self._begin_pill_fade()
 
     def _begin_welcome(self) -> None:
         """Transition pill to Welcome state."""
@@ -372,6 +386,7 @@ class IslandWidget(QWidget):
     def _finish_exit_sequence(self) -> None:
         """Clean up after exit sequence completes."""
         self._in_exit_sequence = False
+        self._show_welcome_after_verification = False
         self._pill_opacity = 1.0
         self._anim_pill_fade_active = False
         self._anim_checkmark_active = False
@@ -394,6 +409,7 @@ class IslandWidget(QWidget):
     def _abort_exit_sequence(self) -> None:
         """Cancel exit sequence if interrupted by a non-active state."""
         self._in_exit_sequence = False
+        self._show_welcome_after_verification = False
         self._pill_opacity = 1.0
         self._verified_dwell_timer.stop()
         self._welcome_dwell_timer.stop()

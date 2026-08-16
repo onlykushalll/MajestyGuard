@@ -160,6 +160,15 @@ def test_owner_verification_clears_soft_lock_and_restores_active():
     assert FaceState.is_authorized()[0] is True
 
 
+def test_passive_soft_lock_startup_does_not_open_camera_until_verify_requested(monkeypatch):
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 100.0)
+
+    assert daemon._should_open_camera_on_start() is False
+    daemon._soft_lock_verify_until = 115.0
+    assert daemon._should_open_camera_on_start() is True
+
+
 def test_stranger_while_soft_locked_keeps_shield_and_enters_social_lock():
     daemon = _bare_daemon(State.SOFT_LOCK)
 

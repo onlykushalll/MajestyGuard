@@ -147,3 +147,26 @@ def test_orb_phase_is_initialized_and_advances_for_an_animated_state(qapp):
     assert widget._anim_orb_active is True
     widget._tick_animations()
     assert widget._phase > 0.0
+
+
+def test_normal_owner_check_confirms_without_welcome(qapp):
+    """Sitting at an already-unlocked desktop is a confirmation, not a login."""
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("scanning"))
+    widget.apply_state(get_state("active"))
+
+    assert widget._show_welcome_after_verification is False
+    widget._after_verified()
+    assert widget._state.name == "active"
+    assert widget._anim_pill_fade_active is True
+
+
+def test_soft_lock_owner_return_uses_welcome(qapp):
+    """Welcome is reserved for a successful return from the blocking overlay."""
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("locked_passive"))
+    widget.apply_state(get_state("active"))
+
+    assert widget._show_welcome_after_verification is True
+    widget._after_verified()
+    assert widget._state.name == "welcome"

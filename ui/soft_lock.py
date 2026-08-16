@@ -515,7 +515,7 @@ atexit.register(_atexit_release_all)
 
 class SoftLockOverlay(QWidget):
     """Fullscreen, topmost, frameless glass shield for desktop soft-lock."""
-    background_ready = pyqtSignal(QImage)
+    background_ready = pyqtSignal(QImage, int)
     hook_space_pressed = pyqtSignal()
     hook_tab_pressed = pyqtSignal()
 
@@ -670,6 +670,7 @@ class SoftLockOverlay(QWidget):
             _stop_background_media()
 
     def _capture_background(self) -> None:
+        capture_generation = self._lock_generation
         screen = QGuiApplication.primaryScreen()
         if screen is None:
             self._background = QPixmap()
@@ -792,7 +793,7 @@ class SoftLockOverlay(QWidget):
                     painter.restore()
 
                 painter.end()
-                self.background_ready.emit(cache)
+                self.background_ready.emit(cache, capture_generation)
             except Exception as e:
                 import logging
                 logging.getLogger("MajestyGuard.UI").error("Asynchronous background blur failed: %s", e)
@@ -800,7 +801,15 @@ class SoftLockOverlay(QWidget):
         import threading
         threading.Thread(target=_worker, name="mg-bg-blur", daemon=True).start()
 
-    def _on_background_ready(self, image: QImage) -> None:
+    def _on_background_ready(self, image: QImage, capture_generation: int) -> None:
+        # Rendering happens off-thread. Never let a delayed lock backdrop
+        # repaint the window after its owner has already been verified.
+        if (
+            capture_generation != self._lock_generation
+            or self._state.name not in _LOCK_NAMES
+            or self._dissolve_anim.state() != QAbstractAnimation.State.Stopped
+        ):
+            return
         self._background = QPixmap.fromImage(image)
         self.update()
 
@@ -820,9 +829,18 @@ class SoftLockOverlay(QWidget):
         return QImage(argb.tobytes(), w, h, QImage.Format.Format_ARGB32).copy()
 
     def dissolve(self) -> None:
+        # The unlock decision is already final by the time this runs. Restore
+        # desktop ownership before the visual exit, then let the glass fade as
+        # a purely cosmetic last step.
+        if not self.isVisible():
+            _uninstall_hooks()
+            _set_taskbar_visible(True)
+            return
+        if self._dissolve_anim.state() != QAbstractAnimation.State.Stopped:
+            return
         _uninstall_hooks()
+        _set_taskbar_visible(True)
         self._dissolve_generation = self._lock_generation
-        self._dissolve_anim.stop()
         self._dissolve_anim.setStartValue(self._opacity_value)
         self._dissolve_anim.setEndValue(0.0)
         try:

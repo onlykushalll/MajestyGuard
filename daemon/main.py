@@ -335,9 +335,13 @@ class MajestyGuardDaemon:
             self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
             self._set_idle_check_phase("PROBING")
             log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
-        else:
+        elif self._should_open_camera_on_start():
             self._open_camera()
             t_cam = time.perf_counter()
+        else:
+            # A daemon restored directly into a passive soft lock must remain
+            # camera-cold until its owned UI requests a bounded verification.
+            log.info("Passive soft-lock startup: camera parked until verification request")
 
         self._cold_start_ms = {
             "model_load": round((t_model - t0) * 1000),
@@ -1286,6 +1290,13 @@ class MajestyGuardDaemon:
         if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK):
             return False
         return time.monotonic() <= getattr(self, "_soft_lock_verify_until", 0.0)
+
+    def _should_open_camera_on_start(self) -> bool:
+        """Keep a restored passive lock camera-cold until its owner asks to verify."""
+        return not (
+            self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK)
+            and not self._is_soft_lock_verifying()
+        )
 
     def _expire_soft_lock_verification_if_needed(self) -> None:
         verify_until = getattr(self, "_soft_lock_verify_until", 0.0)

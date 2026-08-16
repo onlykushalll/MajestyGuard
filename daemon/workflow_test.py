@@ -1,9 +1,9 @@
 """
 workflow_test.py - Supervised soft-lock workflow timing test.
 
-This script prepares a bounded camera/UI run and prints exact instructions for
-the human operator. It keeps MG_ENABLE_LOCK=0 so no Windows hard-lock happens
-during timing validation.
+This script prepares a bounded daemon-owned UI run and prints exact
+instructions for the human operator. It keeps MG_ENABLE_LOCK=0 so no Windows
+hard-lock happens during timing validation.
 
 Measures:
   T1: ACTIVE -> INACTIVITY_LOCK / locked_passive
@@ -25,9 +25,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(sys.executable)
 DAEMON = ROOT / "daemon" / "main.py"
-UI = ROOT / "ui" / "main.py"
-
-
 def _env(idle_timeout: int, max_seconds: int) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
@@ -37,6 +34,11 @@ def _env(idle_timeout: int, max_seconds: int) -> dict[str, str]:
             "MG_ENABLE_SERVICE_IPC": "0",
             "MG_IDLE_TIMEOUT": str(idle_timeout),
             "MG_PASSIVE_FPS": "0",
+            # The daemon must create its own UI process.  The command pipe
+            # intentionally rejects sibling processes so a separately-started
+            # UI cannot request verification on its behalf.
+            "MG_OVERLAY_WATCHDOG": "1",
+            "MG_OVERLAY_WATCHDOG_INTERVAL_S": "0.5",
             "MG_MAX_SECONDS": str(max_seconds),
             "MG_LOG_EVERY_N_FRAMES": "5",
             "MG_BURST_FAST_CONFIRM_FRAMES": "3",
@@ -46,7 +48,7 @@ def _env(idle_timeout: int, max_seconds: int) -> dict[str, str]:
     return env
 
 
-def _start_processes(env: dict[str, str]) -> tuple[subprocess.Popen, subprocess.Popen]:
+def _start_daemon(env: dict[str, str]) -> subprocess.Popen:
     daemon = subprocess.Popen(
         [str(PYTHON), str(DAEMON)],
         cwd=str(ROOT),
@@ -55,15 +57,7 @@ def _start_processes(env: dict[str, str]) -> tuple[subprocess.Popen, subprocess.
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
-    time.sleep(1.0)
-    ui = subprocess.Popen(
-        [str(PYTHON), str(UI)],
-        cwd=str(ROOT),
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    return daemon, ui
+    return daemon
 
 
 def _stop_process(proc: subprocess.Popen | None) -> None:
@@ -84,9 +78,9 @@ def _print_operator_steps(idle_timeout: int, runs: int) -> None:
     print()
     print("For each run:")
     print("  1. Sit centered, good daylight, face camera.")
-    print("  2. Wait until Dynamic Island says Verified/ACTIVE.")
+    print("  2. Wait until the daemon reports ACTIVE.")
     print(f"  3. Stop touching laptop for {idle_timeout}s.")
-    print("  4. Overlay should appear as locked_passive / LOCKED.")
+    print("  4. The daemon-owned overlay should appear as locked_passive / LOCKED.")
     print("  5. Press Space once.")
     print("  6. Watch for verifying_lock / VERIFYING, then ACTIVE.")
     print()
@@ -108,10 +102,11 @@ def run(args: argparse.Namespace) -> int:
         print(json.dumps({k: env[k] for k in sorted(env) if k.startswith("MG_")}, indent=2))
         return 0
 
-    daemon = ui = None
+    daemon = None
     try:
-        daemon, ui = _start_processes(env)
-        print("Daemon/UI started. Use the visual UI and daemon logs to record T1/T2/T3/T4.")
+        daemon = _start_daemon(env)
+        print("Daemon started. It will launch its owned UI after SOFT_LOCK.")
+        print("Use the visual UI and daemon logs to record T1/T2/T3/T4.")
         print("Stop with Ctrl+C after the requested runs.")
         while daemon.poll() is None:
             line = daemon.stdout.readline() if daemon.stdout is not None else ""
@@ -122,7 +117,6 @@ def run(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\nStopping supervised workflow test.")
     finally:
-        _stop_process(ui)
         _stop_process(daemon)
     return 0
 

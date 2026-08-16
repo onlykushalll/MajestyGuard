@@ -35,6 +35,10 @@ def test_relock_cancels_stale_dissolve_and_reinstalls_hooks(monkeypatch, qapp):
     overlay = soft_lock.SoftLockOverlay()
     overlay.apply_state(get_state("soft_locked"))
     overlay.apply_state(get_state("active"))
+    assert calls[:4] == ["install", "taskbar:False", "uninstall", "taskbar:True"]
+    calls_after_first_dissolve = list(calls)
+    overlay.dissolve()
+    assert calls == calls_after_first_dissolve
     old_generation = overlay._dissolve_generation
     overlay.apply_state(get_state("soft_locked"))
     qapp.processEvents()
@@ -48,3 +52,19 @@ def test_relock_cancels_stale_dissolve_and_reinstalls_hooks(monkeypatch, qapp):
     assert overlay.isVisible()
     assert calls.count("uninstall") == 1
     overlay.hide()
+
+
+def test_delayed_backdrop_is_discarded_after_unlock_begins(qapp):
+    """A background-blur worker from the prior lock must not repaint glass
+    after ACTIVE has begun its dissolve animation."""
+    from PyQt6.QtGui import QImage
+
+    overlay = soft_lock.SoftLockOverlay()
+    overlay._lock_generation = 7
+    overlay._state = get_state("active")
+    image = QImage(4, 4, QImage.Format.Format_ARGB32)
+    image.fill(0xFFFFFFFF)
+
+    overlay._on_background_ready(image, capture_generation=7)
+
+    assert overlay._background.isNull()

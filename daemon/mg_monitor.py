@@ -35,6 +35,9 @@ MIN_IDLE_TIMEOUT_S = 3.0
 
 MAX_IDLE_TIMEOUT_S = 600.0
 DEFAULT_IDLE_TIMEOUT_S = 60.0
+MIN_PREWARM_LEAD_S = 5.0
+MAX_PREWARM_LEAD_S = 60.0
+DEFAULT_PREWARM_LEAD_S = 15.0
 POLL_INTERVAL_S = 2.0
 
 _DAEMON_DIR = pathlib.Path(__file__).resolve().parent
@@ -80,6 +83,32 @@ def read_idle_timeout() -> float:
     clamped = max(MIN_IDLE_TIMEOUT_S, min(MAX_IDLE_TIMEOUT_S, value))
     if clamped != value:
         log.warning("MG_IDLE_TIMEOUT=%.0fs outside 15-600s; using %.0fs", value, clamped)
+    return clamped
+
+
+def read_prewarm_lead_seconds() -> float:
+    """Read optional model-prewarm lead time without allowing unsafe extremes."""
+    raw = os.environ.get("MG_PREWARM_LEAD_S")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_PREWARM_LEAD_S
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "Invalid MG_PREWARM_LEAD_S=%r; using %.0fs",
+            raw,
+            DEFAULT_PREWARM_LEAD_S,
+        )
+        return DEFAULT_PREWARM_LEAD_S
+    clamped = max(MIN_PREWARM_LEAD_S, min(MAX_PREWARM_LEAD_S, value))
+    if clamped != value:
+        log.warning(
+            "MG_PREWARM_LEAD_S=%.0fs outside %.0f-%.0fs; using %.0fs",
+            value,
+            MIN_PREWARM_LEAD_S,
+            MAX_PREWARM_LEAD_S,
+            clamped,
+        )
     return clamped
 
 
@@ -183,6 +212,7 @@ class MonitorDaemon:
     def __init__(self):
         self._stop = False
         self._idle_timeout = read_idle_timeout()
+        self._prewarm_lead_s = read_prewarm_lead_seconds()
         self._daemon_proc = None
         self._idle_fired = False
         self._last_watchdog_launch = 0.0
@@ -252,8 +282,8 @@ class MonitorDaemon:
         # ── Normal idle monitoring ─────────────────────────────────────
         idle_seconds = get_idle_seconds()
 
-        # Pre-warm full daemon 9s prior to target idle timeout so ONNX models are warm on-demand
-        prewarm_threshold = max(5.0, self._idle_timeout - 9.0)
+        # Pre-warm before the full idle timeout so owner verification feels instant.
+        prewarm_threshold = max(MIN_PREWARM_LEAD_S, self._idle_timeout - self._prewarm_lead_s)
 
         if idle_seconds < prewarm_threshold:
             if self._idle_fired and daemon_running:

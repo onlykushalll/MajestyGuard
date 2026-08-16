@@ -39,6 +39,26 @@ def test_mg_monitor_reads_idle_timeout_from_env():
     assert "MG_IDLE_TIMEOUT" in source
 
 
+def test_monitor_uses_fifteen_second_default_prewarm_lead(monkeypatch):
+    """The normal monitor needs enough lead time to warm this machine's CV stack."""
+    monkeypatch.delenv("MG_PREWARM_LEAD_S", raising=False)
+    monitor = _load_monitor_module()
+
+    watcher = monitor.MonitorDaemon()
+
+    assert watcher._prewarm_lead_s == 15.0
+
+
+def test_monitor_clamps_configured_prewarm_lead(monkeypatch):
+    """A malformed or excessive environment override cannot defeat idle behavior."""
+    monkeypatch.setenv("MG_PREWARM_LEAD_S", "900")
+    monitor = _load_monitor_module()
+
+    watcher = monitor.MonitorDaemon()
+
+    assert watcher._prewarm_lead_s == 60.0
+
+
 def test_mg_monitor_writes_monitor_pid():
     """mg_monitor.py must write monitor.pid on startup."""
     source = (DAEMON / "mg_monitor.py").read_text(encoding="utf-8")

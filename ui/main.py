@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from island import IslandWidget
 from soft_lock import SoftLockOverlay
 from states import get_state, COMMAND_PIPE_NAME, PIPE_NAME
+from verification_feedback import request_verification_with_feedback
 
 log = logging.getLogger("MajestyGuard.UI")
 logging.basicConfig(
@@ -128,13 +129,14 @@ class CommandWriter:
     def __init__(self):
         self._last_verify_at = 0.0
 
-    def verify_requested(self, source: str) -> None:
+    def verify_requested(self, source: str) -> bool:
         now = time.monotonic()
         if now - self._last_verify_at < 0.35:
-            return
+            return False
         self._last_verify_at = now
         payload = json.dumps({"cmd": "verify_requested", "source": source}, separators=(",", ":")) + "\n"
         self._write_command(payload)
+        return True
 
     def emergency_lock(self, source: str = "ui") -> None:
         payload = json.dumps({"cmd": "emergency_lock", "source": source}, separators=(",", ":")) + "\n"
@@ -189,12 +191,20 @@ def main() -> None:
 
     command_writer = CommandWriter()
     disable_soft_lock_overlay = os.environ.get("MG_DISABLE_SOFT_LOCK_OVERLAY", "0") == "1"
+    shield: Optional[SoftLockOverlay] = None
+    widget: Optional[IslandWidget] = None
+
+    def _request_verification(source: str) -> None:
+        if widget is None:
+            return
+        request_verification_with_feedback(command_writer, shield, widget, source)
+
     shield = None if disable_soft_lock_overlay else SoftLockOverlay(
-        on_verify_requested=command_writer.verify_requested,
+        on_verify_requested=_request_verification,
         on_windows_lock_used=command_writer.windows_lock_used
     )
     widget = IslandWidget(
-        on_verify_requested=command_writer.verify_requested,
+        on_verify_requested=_request_verification,
         on_overlay_dissolve=shield.dissolve if shield is not None else None,
     )
     if shield is not None:

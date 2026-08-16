@@ -59,6 +59,127 @@ def test_all_orb_styles_have_consistent_shape():
         assert dot_px > 0
 
 
+@pytest.mark.parametrize(
+    "renderer_name",
+    [
+        "_paint_searching_orb",
+        "_paint_working_orb",
+        "_paint_resolving_orb",
+        "_paint_guarded_orb",
+    ],
+)
+def test_state_specific_orb_renderers_draw_visible_small_icon(qapp, renderer_name):
+    """Each security state needs its own readable 20-32px visual verb.
+
+    A generic particle cluster is too subtle at the Dynamic Island's actual
+    icon size; this verifies that every specialised renderer is real and draws
+    pixels, rather than merely being documented as a future design idea.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
+
+    widget = island.IslandWidget()
+    pixmap = QPixmap(48, 48)
+    pixmap.fill(QColor(20, 20, 20))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+
+    getattr(widget, renderer_name)(painter, 24.0, 24.0, 15.0)
+    painter.end()
+
+    background = QColor(20, 20, 20).rgb()
+    image = pixmap.toImage()
+    assert any(
+        image.pixel(x, y) != background
+        for x in range(image.width())
+        for y in range(image.height())
+    )
+
+
+@pytest.mark.parametrize("renderer_name", ["_paint_searching_orb", "_paint_working_orb"])
+def test_active_orb_renderers_change_between_animation_phases(qapp, renderer_name):
+    """Searching and verification must visibly evolve instead of reading as a static badge."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
+
+    widget = island.IslandWidget()
+
+    def render(phase: float) -> bytes:
+        widget._phase = phase
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(QColor(20, 20, 20))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        getattr(widget, renderer_name)(painter, 24.0, 24.0, 15.0)
+        painter.end()
+        return pixmap.toImage().bits().asstring(48 * 48 * 4)
+
+    assert render(0.10) != render(0.55)
+
+
+def test_locked_pill_renders_guarded_icon_and_status_content(qapp):
+    """A locked Dynamic Island must never degrade to an empty black shell."""
+    from PyQt6.QtCore import Qt, QRect
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
+
+    widget = island.IslandWidget()
+    state = get_state("locked_passive")
+    widget._state = state
+    widget._visible_state = state
+    widget._alpha = widget._content_alpha = 1.0
+    pixmap = QPixmap(state.width, state.height)
+    pixmap.fill(QColor(state.bg_color))
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    widget._paint_content(painter, QRect(0, 0, state.width, state.height), state)
+    painter.end()
+
+    background = QColor(state.bg_color).rgb()
+    image = pixmap.toImage()
+    assert any(
+        image.pixel(x, y) != background
+        for x in range(image.width())
+        for y in range(image.height())
+    )
+
+
+@pytest.mark.parametrize("state_name", ["locked_passive", "soft_locked", "social_lock", "hostile_lock"])
+def test_locked_pills_use_their_declared_readable_geometry(qapp, state_name):
+    """Lock states have purpose-built layouts; shrinking them clips their status UI."""
+    widget = island.IslandWidget()
+    state = get_state(state_name)
+
+    widget.apply_state(state)
+
+    assert widget._target_w == float(state.width)
+    assert widget._target_h == float(state.height)
+
+
+@pytest.mark.parametrize("renderer_name", ["_paint_searching_orb", "_paint_working_orb"])
+def test_reduced_motion_orbs_are_static_between_phases(qapp, renderer_name):
+    """Reduced motion retains the state icon without continuous movement."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QColor, QPainter, QPixmap
+
+    widget = island.IslandWidget()
+    widget._reduce_motion = True
+
+    def render(phase: float) -> bytes:
+        widget._phase = phase
+        pixmap = QPixmap(48, 48)
+        pixmap.fill(QColor(20, 20, 20))
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        getattr(widget, renderer_name)(painter, 24.0, 24.0, 15.0)
+        painter.end()
+        return pixmap.toImage().bits().asstring(48 * 48 * 4)
+
+    assert render(0.10) == render(0.55)
+
+
 @pytest.fixture(scope="module")
 def qapp():
     from PyQt6.QtWidgets import QApplication
@@ -170,3 +291,24 @@ def test_soft_lock_owner_return_uses_welcome(qapp):
     assert widget._show_welcome_after_verification is True
     widget._after_verified()
     assert widget._state.name == "welcome"
+
+
+def test_relock_interrupts_island_exit_without_leaving_a_stale_fade(qapp):
+    """A new lock may arrive while the prior verified pill is exiting.
+
+    The lock state must win immediately so the user never sees a stale success
+    animation or a pill shrinking away during a fresh protection event.
+    """
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("locked_passive"))
+    widget.apply_state(get_state("active"))
+    assert widget._in_exit_sequence is True
+
+    lock_state = get_state("soft_locked")
+    widget.apply_state(lock_state)
+
+    assert widget._in_exit_sequence is False
+    assert widget._state.name == "soft_locked"
+    assert widget._target_w == float(lock_state.width)
+    assert widget._target_h == float(lock_state.height)
+    assert widget._anim_pill_fade_active is False

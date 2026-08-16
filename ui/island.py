@@ -35,21 +35,17 @@ _DOT_GAP = 6.0
 _DOT_SCAN_PERIOD_MS = 1200
 
 # --- Orb particle icon system -----------------------------------------
-# One reusable, parameterized dot-cluster renderer shared across states,
-# differentiated by motion character rather than bespoke per-state code
-# (mirrors the reference: a single component, tuned per state by a few
-# numbers). Deliberately monochrome -- state meaning now comes from
-# motion character and the pill's existing border/background color, not
-# from recoloring the icon itself per state.
-#   (particle_count, orbit_speed, radius_jitter, spread, base_dot_px)
-#   orbit_speed:   revolutions per second of _phase-driven rotation
-#   radius_jitter: how much each particle's radius breathes over time
-#   spread:        0 = clustered near center, 1 = reaching the icon edge
+# Small-pixel recipes inspired by Thinking Orbs. These are separate visual
+# verbs, not one generic loop with different speeds: searching sweeps a dotted
+# globe, verification works through orbital bands, resolution settles inward,
+# and the lock stays deliberately static. The profiles retain a compact,
+# inspectable tuning surface for future visual adjustment.
+#   (particle_count, orbit_speed, reserved, spread, base_dot_px)
 _ORB_STYLES: dict[str, tuple[int, float, float, float, float]] = {
-    "listening": (6, 0.12, 0.10, 0.88, 1.6),   # searching: sparse, calm drift
-    "working": (9, 0.42, 0.18, 0.78, 1.5),      # verifying: busier, faster
-    "resolving": (7, 0.20, 0.05, 0.42, 1.7),    # welcome: settled, converged
-    "guarded": (8, 0.05, 0.02, 0.95, 1.5),      # locked: static, structured ring
+    "searching": (14, 0.16, 0.00, 0.90, 1.45),
+    "working": (15, 0.34, 0.00, 0.80, 1.35),
+    "resolving": (8, 0.08, 0.00, 0.38, 1.65),
+    "guarded": (10, 0.01, 0.00, 0.78, 1.35),
 }
 
 _GOLDEN_ANGLE = 2.399963  # radians (~137.5°) — even, organic-looking spacing
@@ -245,12 +241,11 @@ class IslandWidget(QWidget):
         )
 
         self._state = state
-        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked"}:
-            self._target_w = 120.0
-            self._target_h = 28.0
-        else:
-            self._target_w = float(state.width)
-            self._target_h = float(state.height)
+        # State geometry is part of the visual contract. Lock states need the
+        # larger layouts declared in states.py for their guarded icon and
+        # status label; collapsing them to the idle pill clips that feedback.
+        self._target_w = float(state.width)
+        self._target_h = float(state.height)
         
         # Reset previous animation states
         self._anim_flash_active = False
@@ -288,10 +283,7 @@ class IslandWidget(QWidget):
             if state.mode != "dot_scan":
                 self._anim_dot_scan_active = False
 
-        self._anim_orb_active = (
-            state.mode in {"dot_scan", "face_scan", "welcome", "shield"}
-            and not self._reduce_motion
-        )
+        self._anim_orb_active = state.mode in {"dot_scan", "face_scan", "welcome"} and not self._reduce_motion
 
         if content_changed and not self._reduce_motion:
             self._pending_state = state
@@ -747,8 +739,6 @@ class IslandWidget(QWidget):
     def _paint_content(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
         if rect.height() < 16:
             return
-        if state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked"}:
-            return
         if state.mode == "enrollment":
             self._paint_enrollment(painter, rect, state)
         elif state.mode == "diagnostic":
@@ -772,30 +762,99 @@ class IslandWidget(QWidget):
 
     # ── New pill content modes ──────────────────────────────────────────
 
-    def _paint_orb_particles(
-        self, painter: QPainter, cx: float, cy: float, icon_radius: float,
-        style_name: str, color: str = "#F2F2F7", opacity_mult: float = 1.0,
+    def _paint_orb_dot(
+        self, painter: QPainter, x: float, y: float, radius: float,
+        opacity: float = 1.0,
     ) -> None:
-        """Draw one animated particle cluster. Same renderer for every
-        state that uses it -- only the (count, speed, jitter, spread)
-        tuple looked up from _ORB_STYLES differs, matching the reference
-        library's own approach of one component tuned per state rather
-        than bespoke code for each."""
-        n, speed, jitter, spread, dot_px = _ORB_STYLES[style_name]
-        for i in range(n):
-            angle_offset, radius_frac, size_frac = _orb_particle_seed(i)
-            angle = angle_offset + self._phase * 2 * math.pi * speed
-            breathe = 1.0 + jitter * math.sin(self._phase * 2 * math.pi * 2 + i * 1.7)
-            r = icon_radius * spread * radius_frac * breathe
-            px = cx + r * math.cos(angle)
-            py = cy + r * math.sin(angle) * 0.94  # very slight vertical ease, less mechanical
-            dot_r = dot_px * (0.65 + 0.55 * size_frac)
-            alpha = self._alpha * self._content_alpha * opacity_mult * (0.5 + 0.5 * size_frac)
-            dot_color = QColor(color)
-            dot_color.setAlphaF(max(0.0, min(1.0, alpha)))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(dot_color)
-            painter.drawEllipse(QPointF(px, py), dot_r, dot_r)
+        dot = QColor("#F2F2F7")
+        dot.setAlphaF(max(0.0, min(1.0, self._alpha * self._content_alpha * opacity)))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(dot)
+        painter.drawEllipse(QPointF(x, y), radius, radius)
+
+    def _paint_searching_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
+        """Dotted globe with a meridian sweep: owner search is purposeful and legible."""
+        _, speed, _, spread, dot_px = _ORB_STYLES["searching"]
+        phase = 0.0 if self._reduce_motion else self._phase
+        for latitude, count in ((-0.46, 4), (0.0, 6), (0.46, 4)):
+            ring_radius = icon_radius * spread * math.sqrt(1.0 - latitude * latitude)
+            ring_height = max(0.9, icon_radius * 0.095)
+            for index in range(count):
+                theta = math.tau * (index / count + phase * speed)
+                self._paint_orb_dot(
+                    painter,
+                    cx + math.cos(theta) * ring_radius,
+                    cy + latitude * icon_radius * 1.25 + math.sin(theta) * ring_height,
+                    dot_px,
+                    0.55 + 0.35 * (index % 2),
+                )
+
+        meridian_x = math.sin(phase * math.tau * speed * 1.8) * icon_radius * 0.64
+        for index in range(5):
+            progress = -1.0 + index * 0.5
+            self._paint_orb_dot(
+                painter,
+                cx + meridian_x * math.cos(progress * math.pi / 2),
+                cy + progress * icon_radius * 0.76,
+                dot_px * (1.10 if index == 2 else 0.88),
+                0.60 + 0.09 * index,
+            )
+
+    def _paint_working_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
+        """Three tilted orbital bands: active biometric verification, not generic loading."""
+        _, speed, _, spread, dot_px = _ORB_STYLES["working"]
+        phase = 0.0 if self._reduce_motion else self._phase
+        for band, tilt in enumerate((-0.72, 0.0, 0.72)):
+            cos_tilt = math.cos(tilt)
+            sin_tilt = math.sin(tilt)
+            for index in range(5):
+                theta = math.tau * (index / 5 + phase * speed * (1.0 + band * 0.08))
+                x = math.cos(theta) * icon_radius * spread
+                y = math.sin(theta) * icon_radius * 0.28
+                self._paint_orb_dot(
+                    painter,
+                    cx + x * cos_tilt - y * sin_tilt,
+                    cy + x * sin_tilt + y * cos_tilt,
+                    dot_px * (1.08 if index == 0 else 0.90),
+                    0.66 + 0.10 * band,
+                )
+
+    def _paint_resolving_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
+        """A calm, compact formation for the brief successful-return acknowledgement."""
+        count, speed, _, spread, dot_px = _ORB_STYLES["resolving"]
+        phase = 0.0 if self._reduce_motion else self._phase
+        self._paint_orb_dot(painter, cx, cy, dot_px * 1.16, 1.0)
+        for index in range(count - 1):
+            angle = math.tau * (index / (count - 1) + phase * speed)
+            radius = icon_radius * spread * (0.76 + 0.10 * math.sin(phase * math.tau + index))
+            self._paint_orb_dot(
+                painter,
+                cx + math.cos(angle) * radius,
+                cy + math.sin(angle) * radius,
+                dot_px * 0.90,
+                0.62 + 0.05 * (index % 3),
+            )
+
+    def _paint_guarded_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
+        """Static, even ring: the locked state should feel stable, never busy."""
+        count, _, _, spread, dot_px = _ORB_STYLES["guarded"]
+        for index in range(count):
+            angle = math.tau * index / count - math.pi / 2
+            self._paint_orb_dot(
+                painter,
+                cx + math.cos(angle) * icon_radius * spread,
+                cy + math.sin(angle) * icon_radius * spread,
+                dot_px,
+                0.72 if index % 2 else 0.94,
+            )
+
+    def _paint_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float, style_name: str) -> None:
+        {
+            "searching": self._paint_searching_orb,
+            "working": self._paint_working_orb,
+            "resolving": self._paint_resolving_orb,
+            "guarded": self._paint_guarded_orb,
+        }[style_name](painter, cx, cy, icon_radius)
 
     def _paint_orb_badge(
         self, painter: QPainter, rect: QRect, state: IslandState,
@@ -808,7 +867,7 @@ class IslandWidget(QWidget):
         icon_d = min(rect.height() - 12, icon_diameter)
         icon_cx = rect.left() + 15 + icon_d / 2
         icon_cy = rect.center().y()
-        self._paint_orb_particles(painter, icon_cx, icon_cy, icon_d / 2, style_name)
+        self._paint_orb(painter, icon_cx, icon_cy, icon_d / 2, style_name)
 
         label = state.label
         if not label:
@@ -824,12 +883,12 @@ class IslandWidget(QWidget):
         )
 
     def _paint_dot_scan(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Orb badge, 'listening' style — searching for the owner. Also
+        """Orb badge, searching style — looking for the owner. Also
         fixes the label never actually rendering in this mode before:
         idle_detected/scanning both define a state.label in states.py
         ("System Idle Detected" / "Verifying...") that this mode never
         drew."""
-        self._paint_orb_badge(painter, rect, state, "listening")
+        self._paint_orb_badge(painter, rect, state, "searching")
 
     def _paint_verified(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
         """Checkmark draw animation — verified state. No text."""
@@ -932,7 +991,7 @@ class IslandWidget(QWidget):
         icon_size = min(rect.height() - 16, 32)
         icon_cx = rect.left() + 15 + icon_size / 2
         icon_cy = rect.center().y()
-        self._paint_orb_particles(painter, icon_cx, icon_cy, icon_size / 2, "working")
+        self._paint_orb(painter, icon_cx, icon_cy, icon_size / 2, "working")
 
         text_left = int(icon_cx + icon_size / 2 + 14)
         text_right = rect.right() - 16
@@ -1137,9 +1196,7 @@ class IslandWidget(QWidget):
         # color, matching the same "color stays on the container, icon
         # stays monochrome" split already used for scanning/verifying/
         # welcome.
-        self._paint_orb_particles(
-            painter, badge.center().x(), badge.center().y(), 11.0, "guarded",
-        )
+        self._paint_orb(painter, badge.center().x(), badge.center().y(), 11.0, "guarded")
 
         text_x = int(start_x + 43)
         self._draw_text(painter, QRect(text_x, rect.top() + 12, int(content_w - 44), 20),

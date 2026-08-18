@@ -135,21 +135,43 @@ class CommandWriter:
             return False
         self._last_verify_at = now
         payload = json.dumps({"cmd": "verify_requested", "source": source}, separators=(",", ":")) + "\n"
-        self._write_command(payload)
-        return True
+        return self._write_command(payload)
 
-    def emergency_lock(self, source: str = "ui") -> None:
+    def emergency_lock(self, source: str = "ui") -> bool:
         payload = json.dumps({"cmd": "emergency_lock", "source": source}, separators=(",", ":")) + "\n"
-        self._write_command(payload)
+        return self._write_command(payload)
 
-    def windows_lock_used(self, source: str = "ui") -> None:
+    def windows_lock_used(self, source: str = "ui") -> bool:
         payload = json.dumps({"cmd": "windows_lock_used", "source": source}, separators=(",", ":")) + "\n"
-        self._write_command(payload)
+        return self._write_command(payload)
 
-    def _write_command(self, payload: str) -> None:
-        threading.Thread(target=self._sync_write_command, args=(payload,), daemon=True).start()
+    def _write_command(self, payload: str) -> bool:
+        """Write a command to the daemon's pipe and report whether it
+        actually reached the pipe. The blocking Win32 I/O still runs on a
+        background thread (WaitNamedPipeW alone can take up to 250ms,
+        which would visibly stall the UI thread) but this now waits
+        briefly for the real outcome instead of assuming success —
+        callers that show UI feedback based on this return value need
+        that feedback to be honest, especially when the daemon isn't
+        actually running to receive the command."""
+        result: dict[str, bool] = {"ok": False}
+        done = threading.Event()
 
-    def _sync_write_command(self, payload: str) -> None:
+        def _run() -> None:
+            try:
+                result["ok"] = self._sync_write_command(payload)
+            except Exception:
+                log.debug("Command pipe write raised", exc_info=True)
+            finally:
+                done.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+        # Slightly above the pipe's own 250ms connect timeout so a slow-
+        # but-working pipe isn't misreported as failed.
+        done.wait(timeout=0.4)
+        return result["ok"]
+
+    def _sync_write_command(self, payload: str) -> bool:
         GENERIC_WRITE = 0x40000000
         OPEN_EXISTING = 3
         INVALID = 18446744073709551615
@@ -167,7 +189,7 @@ class CommandWriter:
         )
         if handle in (-1, 0, INVALID):
             log.debug("Command pipe unavailable")
-            return
+            return False
         try:
             data = payload.encode("utf-8")
             written = ctypes.wintypes.DWORD(0)
@@ -180,6 +202,7 @@ class CommandWriter:
             )
             if not ok:
                 log.debug("Command pipe write failed")
+            return bool(ok)
         finally:
             k32.CloseHandle(handle)
 

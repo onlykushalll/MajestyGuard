@@ -968,7 +968,7 @@ class MajestyGuardDaemon:
         score   = result.recognition_score
         liveness_ok = result.liveness_score >= LIVENESS_THRESHOLD
 
-        if score >= RECOGNITION_THRESHOLD and liveness_ok:
+        if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
             log.info("STATE: SCANNING -> ACTIVE (score=%.3f, liveness=%.3f)",
                      score, result.liveness_score)
             self._finish_idle_check_owner(
@@ -1097,7 +1097,7 @@ class MajestyGuardDaemon:
         elif score < RECOGNITION_THRESHOLD:
             FaceState.clear()
 
-        if score >= ACTIVE_RECOGNITION_THRESHOLD and liveness_ok:
+        if score >= ACTIVE_RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
             self._stranger_frames = 0
             self._active_reacquire_grace_frames = 0
             self._decay_owner_continuity_grace()
@@ -1220,7 +1220,7 @@ class MajestyGuardDaemon:
         )
 
         if liveness_mode == "fast":
-            if score >= RECOGNITION_THRESHOLD and liveness_ok:
+            if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
                 self._soft_lock_fast_pass_frames += 1
                 if self._soft_lock_fast_pass_frames >= BURST_FAST_CONFIRM_FRAMES:
                     self._clear_soft_lock(
@@ -1232,7 +1232,7 @@ class MajestyGuardDaemon:
                 self._soft_lock_fast_pass_frames = 0
             return
 
-        if score >= RECOGNITION_THRESHOLD and liveness_ok:
+        if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
             self._clear_soft_lock(
                 confidence=self._presence_confidence(result),
                 liveness=result.liveness_score,
@@ -1450,10 +1450,14 @@ class MajestyGuardDaemon:
     def _is_scanning_fast_owner_candidate(self, result, liveness_ok: bool) -> bool:
         if getattr(self, "state", None) != State.SCANNING or not liveness_ok:
             return False
+        if getattr(result, "replay_suspected", False):
+            return False
         return self._is_fast_owner_candidate(result) or self._is_quick_owner_candidate(result)
 
     def _is_soft_lock_fast_owner_candidate(self, result, liveness_ok: bool) -> bool:
         if getattr(self, "state", None) not in (State.SOFT_LOCK, State.SOCIAL_LOCK) or not liveness_ok:
+            return False
+        if getattr(result, "replay_suspected", False):
             return False
         return self._is_fast_owner_candidate(result) or self._is_quick_owner_candidate(result)
 

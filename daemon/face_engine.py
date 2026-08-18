@@ -74,6 +74,7 @@ class FrameResult:
     predicted_iou: float = 0.0         # IoU with Kalman-predicted owner bbox
     smoothed_recognition_score: float = 0.0  # Quality-weighted temporal identity score
     presence_confidence: float = 0.0   # Bounded UI/presence confidence, never unlock evidence by itself
+    replay_suspected: bool = False     # True if a replay/duplicate-frame gate fired this tracking session
 
 
 class _OwnerBoxKalman:
@@ -654,6 +655,10 @@ class FaceEngine:
             predicted_iou=selection_meta["predicted_iou"],
             smoothed_recognition_score=smoothed_score,
             presence_confidence=presence_confidence,
+            replay_suspected=(
+                self._liveness.replay_flagged_this_session()
+                if hasattr(self._liveness, "replay_flagged_this_session") else False
+            ),
         )
 
     # ─────────────────────────────────────────────────────────────────

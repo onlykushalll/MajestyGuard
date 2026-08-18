@@ -76,6 +76,12 @@ class LivenessDetector:
         # Anti-replay: frame fingerprint history
         self._frame_hashes: deque[bytes] = deque(maxlen=300)
         self._duplicate_frame_count = 0
+        # Set once a replay/duplicate-frame gate fires; stays set for the
+        # rest of this tracking session so a brief non-duplicate stretch
+        # (e.g. mid-playback of a long, non-looping video replay) can't
+        # quietly erase the evidence before a fast-path consensus check
+        # gets a chance to see it. Cleared only by reset_session().
+        self._replay_flagged_this_session = False
 
         # Depth estimation: landmark geometry history
         self._landmark_ratios: deque[list[float]] = deque(maxlen=20)
@@ -118,12 +124,25 @@ class LivenessDetector:
         self._face_center_history.clear()
         self._frame_hashes.clear()
         self._duplicate_frame_count = 0
+        self._replay_flagged_this_session = False
         self._landmark_ratios.clear()
         self._hist_history.clear()
         self._onnx_score_history.clear()
         if self._rppg is not None:
             self._rppg.reset()
         self._onnx_consecutive_failures = 0  # E-2: proper field reset
+
+    def replay_flagged_this_session(self) -> bool:
+        """True once any per-frame replay/duplicate-frame gate (in either
+        score_fast or score_full) has fired during the current tracking
+        session. Cleared by reset_session(). Callers should treat this as
+        disqualifying for any fast-path/shortcut unlock decision even if
+        the current individual frame looks clean on its own — a real spoof
+        rarely produces duplicate frames on every frame, only
+        intermittently (e.g. at a video loop boundary), so a single clean
+        frame is not reliable evidence that the earlier detection was a
+        false alarm."""
+        return self._replay_flagged_this_session
 
     def close(self) -> None:
         """Release optional detector resources. Non-blocking — never hangs."""
@@ -225,6 +244,7 @@ class LivenessDetector:
         replay_penalty = self._replay_detection(roi)
         if replay_penalty < 0.3:
             logger.warning("Replay attack detected during fast liveness")
+            self._replay_flagged_this_session = True
             return 0.1
 
         lbp_score = self._lbp_texture_score(roi)
@@ -303,6 +323,7 @@ class LivenessDetector:
         replay_penalty = self._replay_detection(roi)
         if replay_penalty < 0.3:
             logger.warning("Replay attack detected (duplicate frames)")
+            self._replay_flagged_this_session = True
             return 0.1
 
         # Layer 1: LBP texture

@@ -220,7 +220,13 @@ def main() -> None:
     def _request_verification(source: str) -> None:
         if widget is None:
             return
-        request_verification_with_feedback(command_writer, shield, widget, source)
+        if not request_verification_with_feedback(command_writer, shield, widget, source):
+            log.warning(
+                "Verify-now request from %r did not reach the daemon (pipe unavailable) "
+                "- no UI feedback was shown, since showing 'verifying' here would be "
+                "false. If this repeats, the daemon is likely not running.",
+                source,
+            )
 
     shield = None if disable_soft_lock_overlay else SoftLockOverlay(
         on_verify_requested=_request_verification,

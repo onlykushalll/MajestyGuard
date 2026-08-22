@@ -21,6 +21,18 @@ class PolicyCheck:
 
 
 @dataclass(frozen=True)
+class PolicyWarning:
+    """A real, evidence-based observation that does not affect
+    PolicyAudit.ok. Used when the "right" value is a genuine product/
+    security trade-off (e.g. spoof resistance vs. false-reject rate)
+    rather than a fixed invariant this script should enforce
+    unilaterally - still surfaced on every run so it cannot be silently
+    forgotten between sessions or agents."""
+    name: str
+    message: str
+
+
+@dataclass(frozen=True)
 class PolicyAudit:
     lock_enabled: bool
     whcdf_ipc_enabled: bool
@@ -30,6 +42,7 @@ class PolicyAudit:
     max_seconds: float
     thresholds: dict[str, float]
     checks: list[PolicyCheck]
+    warnings: list[PolicyWarning]
 
     @property
     def ok(self) -> bool:
@@ -324,6 +337,30 @@ def audit_policy(
         ),
     ]
 
+    warnings: list[PolicyWarning] = []
+    if thresholds["scanning_quick_owner_min_liveness"] < thresholds["burst_fast_liveness_threshold"]:
+        warnings.append(PolicyWarning(
+            name="scanning_quick_owner_liveness_below_burst_fast_standard",
+            message=(
+                "scanning_quick_owner_min_liveness (%.2f) uses the same "
+                "rPPG/depth-skipping fast liveness scorer as the soft-lock "
+                "burst-fast path, but is not held to burst_fast_liveness_"
+                "threshold (%.2f) - the standard this codebase already "
+                "applies to that same scorer elsewhere (see "
+                "burst_fast_threshold_stricter_than_full). This asymmetry "
+                "sat behind the 2026-08-16 video-replay finding, fixed "
+                "separately via a session-scoped replay-taint gate "
+                "(cc60a7b) rather than a threshold change. Not auto-failed "
+                "here because raising this threshold is a real product "
+                "trade-off (spoof resistance vs. false-reject rate), not a "
+                "fixed invariant this script should enforce unilaterally - "
+                "flagging so it is not silently forgotten."
+            ) % (
+                thresholds["scanning_quick_owner_min_liveness"],
+                thresholds["burst_fast_liveness_threshold"],
+            ),
+        ))
+
     return PolicyAudit(
         lock_enabled=lock_enabled,
         whcdf_ipc_enabled=whcdf_ipc_enabled,
@@ -333,6 +370,7 @@ def audit_policy(
         max_seconds=max_seconds,
         thresholds=thresholds,
         checks=checks,
+        warnings=warnings,
     )
 
 
@@ -366,6 +404,8 @@ def main() -> int:
         for check in audit.checks:
             status = "PASS" if check.ok else "FAIL"
             print(f"  {status} {check.name}: {check.message}")
+        for warning in audit.warnings:
+            print(f"  WARN {warning.name}: {warning.message}")
     return 0 if audit.ok else 1
 
 

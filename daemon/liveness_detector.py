@@ -76,12 +76,29 @@ class LivenessDetector:
         # Anti-replay: frame fingerprint history
         self._frame_hashes: deque[bytes] = deque(maxlen=300)
         self._duplicate_frame_count = 0
-        # Set once a replay/duplicate-frame gate fires; stays set for the
-        # rest of this tracking session so a brief non-duplicate stretch
-        # (e.g. mid-playback of a long, non-looping video replay) can't
-        # quietly erase the evidence before a fast-path consensus check
-        # gets a chance to see it. Cleared only by reset_session().
-        self._replay_flagged_this_session = False
+        # Set to the timestamp of the most recent replay/duplicate-frame
+        # gate firing; None means "never flagged" or "decayed since". This
+        # deliberately does NOT clear on reset_temporal_buffers() (used by
+        # the soft-lock verify-retry path, clickable by anyone physically
+        # at the device with no authentication) or on the SCANNING/ACTIVE
+        # absence-triggered reset_liveness() calls (stepping briefly out of
+        # frame and back in) - a real face essentially never trips the
+        # duplicate-frame gate, so persisting this costs a legitimate user
+        # nothing while denying an attacker a free reset via either path.
+        # It DOES decay after MG_REPLAY_TAINT_DECAY_SECONDS of no further
+        # detections, since there is no live-path caller of the full
+        # reset_session() at all - without a decay, one false-positive
+        # (e.g. someone sitting very still long enough to accumulate
+        # near-duplicate frames) would permanently lock the daemon's
+        # fast/primary unlock paths until a manual restart. The decay
+        # window is long relative to any plausible retry cadence (clicking
+        # Verify Now, or stepping out and back in, every few seconds gets
+        # nowhere close to resetting it) but short relative to "this
+        # daemon process might run for days".
+        self._replay_flagged_at: Optional[float] = None
+        self._replay_taint_decay_seconds = float(
+            os.environ.get("MG_REPLAY_TAINT_DECAY_SECONDS", "300")
+        )
 
         # Depth estimation: landmark geometry history
         self._landmark_ratios: deque[list[float]] = deque(maxlen=20)
@@ -116,7 +133,7 @@ class LivenessDetector:
         face-center tracking, landmark ratios, histogram/ONNX history,
         rPPG) for a fresh deliberate verification attempt -- but
         deliberately does NOT touch anti-replay evidence (_frame_hashes,
-        _duplicate_frame_count, _replay_flagged_this_session).
+        _duplicate_frame_count, _replay_flagged_at).
 
         Use this instead of reset_session() anywhere a retry can be
         triggered without authentication beyond physical presence at the
@@ -159,7 +176,7 @@ class LivenessDetector:
         self._face_center_history.clear()
         self._frame_hashes.clear()
         self._duplicate_frame_count = 0
-        self._replay_flagged_this_session = False
+        self._replay_flagged_at = None
         self._landmark_ratios.clear()
         self._hist_history.clear()
         self._onnx_score_history.clear()
@@ -168,16 +185,23 @@ class LivenessDetector:
         self._onnx_consecutive_failures = 0  # E-2: proper field reset
 
     def replay_flagged_this_session(self) -> bool:
-        """True once any per-frame replay/duplicate-frame gate (in either
-        score_fast or score_full) has fired during the current tracking
-        session. Cleared by reset_session(). Callers should treat this as
-        disqualifying for any fast-path/shortcut unlock decision even if
-        the current individual frame looks clean on its own — a real spoof
-        rarely produces duplicate frames on every frame, only
-        intermittently (e.g. at a video loop boundary), so a single clean
-        frame is not reliable evidence that the earlier detection was a
-        false alarm."""
-        return self._replay_flagged_this_session
+        """True if a replay/duplicate-frame gate (in either score_fast or
+        score_full) has fired recently enough to still be disqualifying.
+        Persists across reset_temporal_buffers() and the SCANNING/ACTIVE
+        absence-triggered reset_liveness() calls (see the comment on
+        _replay_flagged_at in __init__ for why), decays after
+        MG_REPLAY_TAINT_DECAY_SECONDS with no further detections, and is
+        fully cleared by reset_session(). Callers should treat a True here
+        as disqualifying for any fast-path/shortcut unlock decision even
+        if the current individual frame looks clean on its own — a real
+        spoof rarely produces duplicate frames on every frame, only
+        intermittently (e.g. at a video loop boundary), so one clean frame
+        is not reliable evidence the earlier detection was a false alarm."""
+        if self._replay_flagged_at is None:
+            return False
+        if (time.monotonic() - self._replay_flagged_at) > self._replay_taint_decay_seconds:
+            return False
+        return True
 
     def close(self) -> None:
         """Release optional detector resources. Non-blocking — never hangs."""
@@ -279,7 +303,7 @@ class LivenessDetector:
         replay_penalty = self._replay_detection(roi)
         if replay_penalty < 0.3:
             logger.warning("Replay attack detected during fast liveness")
-            self._replay_flagged_this_session = True
+            self._replay_flagged_at = time.monotonic()
             return 0.1
 
         lbp_score = self._lbp_texture_score(roi)
@@ -358,7 +382,7 @@ class LivenessDetector:
         replay_penalty = self._replay_detection(roi)
         if replay_penalty < 0.3:
             logger.warning("Replay attack detected (duplicate frames)")
-            self._replay_flagged_this_session = True
+            self._replay_flagged_at = time.monotonic()
             return 0.1
 
         # Layer 1: LBP texture

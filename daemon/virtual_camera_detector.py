@@ -98,55 +98,57 @@ class VirtualCameraDetector:
         """
         Returns True if the selected camera appears to be a virtual/software device.
         Call this before starting face recognition. Block if True.
+
+        Always returns a freshly-verified result once the cache TTL has
+        elapsed. An earlier version returned the stale cached value
+        immediately while refreshing in the background once the 30s TTL
+        expired, meaning a camera source that changed right after a
+        refresh could keep reading as "physical" for up to the entire TTL
+        window. This function runs on every frame (~15/sec), so
+        re-verifying synchronously once per TTL interval costs one brief
+        blocking check roughly every 30 seconds, not one per call -- there
+        was no real reason to trade that security margin for a
+        background-refresh pattern.
         """
         now = time.monotonic()
         with self._lock:
             cached = self._cache.get(camera_index)
-            if cached is not None:
-                # If cache is expired but we aren't already updating it in background, trigger async update.
-                if (now - cached[0]) >= self._cache_ttl:
-                    if camera_index not in self._updating:
-                        self._updating.add(camera_index)
-                        threading.Thread(
-                            target=self._async_update,
-                            args=(camera_index,),
-                            name=f"mg-vcam-refresh-{camera_index}",
-                            daemon=True,
-                        ).start()
+            if cached is not None and (now - cached[0]) < self._cache_ttl:
                 return cached[1]
 
-            # If not cached at all, we must block on the very first frame to remain secure.
-            if camera_index not in self._updating:
-                self._updating.add(camera_index)
-                try:
-                    result = self._detect(camera_index)
-                    self._cache[camera_index] = (time.monotonic(), result)
-                    if result:
-                        logger.warning("SECURITY: Virtual camera detected at index %d — blocking", camera_index)
-                    else:
-                        logger.debug("Camera at index %d appears to be physical hardware", camera_index)
-                finally:
-                    self._updating.discard(camera_index)
-                return self._cache[camera_index][1]
-            else:
+            if camera_index in self._updating:
                 logger.warning(
                     "Camera identity refresh still in progress for index %d; blocking until verified",
                     camera_index,
                 )
                 return True
 
-    def _async_update(self, camera_index: int) -> None:
+            self._updating.add(camera_index)
+
+        # Detection runs outside the lock -- the underlying subprocess calls
+        # can take a few seconds combined, and there's no reason to block a
+        # concurrent check for a *different* camera_index on this one's I/O.
+        # The per-index _updating guard above still prevents duplicate
+        # concurrent work for the *same* index.
         try:
             result = self._detect(camera_index)
-            with self._lock:
-                self._cache[camera_index] = (time.monotonic(), result)
-                if result:
-                    logger.warning("SECURITY: Virtual camera detected at index %d — blocking", camera_index)
         except Exception as e:
-            logger.debug("Async virtual camera check failed: %s", e)
+            logger.warning(
+                "Virtual camera detection raised for index %d (%s) — blocking, fail-safe", camera_index, e
+            )
+            result = True
         finally:
             with self._lock:
                 self._updating.discard(camera_index)
+
+        with self._lock:
+            self._cache[camera_index] = (time.monotonic(), result)
+
+        if result:
+            logger.warning("SECURITY: Virtual camera detected at index %d — blocking", camera_index)
+        else:
+            logger.debug("Camera at index %d appears to be physical hardware", camera_index)
+        return result
 
     def invalidate_cache(self):
         """Force re-check on next call."""

@@ -34,14 +34,29 @@ class CHROMrPPGDetector:
     def __init__(self):
         self._rgb_buf: deque[tuple[float, float, float]] = deque(maxlen=self.WINDOW_FRAMES)
         self._score: float = 0.5
+        self._snr: float = 0.0
 
     def reset(self) -> None:
         self._rgb_buf.clear()
         self._score = 0.5
+        self._snr = 0.0
 
     @property
     def score(self) -> float:
         return self._score
+
+    @property
+    def snr(self) -> float:
+        """Raw signal-to-noise ratio from the last successful CHROM
+        computation (0.0 if none has run yet this session). score is
+        this clipped/normalized into 0-1, which loses the distinction
+        between 'no periodic signal at all' (SNR near 1.0, characteristic
+        of a flat screen with zero real pulse) and 'a genuinely noisy but
+        plausibly real reading' (SNR a bit below the clip floor). Exposed
+        separately so a caller can weight a confidently-low reading
+        differently from a merely-inconclusive one, without changing the
+        existing score/has_signal contract."""
+        return self._snr
 
     @property
     def has_signal(self) -> bool:
@@ -102,6 +117,7 @@ class CHROMrPPGDetector:
             return 0.5
 
         snr = float(np.max(fft[mask])) / (float(np.mean(fft[mask])) + 1e-9)
+        self._snr = snr
         score = float(np.clip((snr - 1.3) / (3.5 - 1.3), 0.0, 1.0))
         logger.debug("rPPG SNR=%.2f -> %.3f", snr, score)
         return score

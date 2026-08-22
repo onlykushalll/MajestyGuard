@@ -99,6 +99,18 @@ class LivenessDetector:
         self._replay_taint_decay_seconds = float(
             os.environ.get("MG_REPLAY_TAINT_DECAY_SECONDS", "300")
         )
+        # SNR below this is treated as a confidently-flat CHROM spectrum
+        # (no periodic pulse signal at all, not just a noisy real one) and
+        # gets weighted far more heavily than a merely-inconclusive
+        # reading. The existing score-clip floor is 1.3 (below which the
+        # normalized score already hits 0.0); this sits meaningfully
+        # below that specifically to target near-theoretical-floor
+        # readings, not just "weak". Chosen conservatively without live
+        # camera validation - worth field-checking against real sessions
+        # rather than trusted blindly.
+        self._rppg_confident_no_pulse_snr = float(
+            os.environ.get("MG_RPPG_CONFIDENT_NO_PULSE_SNR", "1.15")
+        )
 
         # Depth estimation: landmark geometry history
         self._landmark_ratios: deque[list[float]] = deque(maxlen=20)
@@ -462,10 +474,20 @@ class LivenessDetector:
                 combined = combined * 0.88 + midas_score * 0.12   # boost real
 
         if self._rppg.has_signal:
-            # rPPG + attention are supplementary. They can lightly penalize a
-            # face with no physiological/attention signal, but a noisy rPPG
-            # estimate must not drag down otherwise strong real-face evidence.
-            if rppg_score >= 0.60 or attention_score >= 0.75:
+            if self._rppg.snr < self._rppg_confident_no_pulse_snr:
+                # Confidently flat CHROM spectrum, not merely a noisy
+                # reading -- genuinely no periodic signal in the pulse
+                # band. This is exactly what a flat screen produces (no
+                # blood flow to modulate), so it's weighted far more than
+                # the soft blend below, which exists specifically to
+                # protect a noisy-but-real reading from being penalized,
+                # not a confidently-absent one.
+                combined = combined * 0.70 + rppg_score * 0.30
+            # rPPG + attention are supplementary otherwise. They can
+            # lightly penalize a face with no physiological/attention
+            # signal, but a merely noisy rPPG estimate must not drag down
+            # otherwise strong real-face evidence.
+            elif rppg_score >= 0.60 or attention_score >= 0.75:
                 combined = min(
                     0.98,
                     combined

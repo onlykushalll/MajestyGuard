@@ -1236,8 +1236,15 @@ class FaceEngine:
         self._liveness.reset_session()
 
     def reset_liveness(self) -> None:
-        """Reset liveness detector state only. Call between enrollment angle captures."""
-        self._liveness.reset_session()
+        """Reset temporal liveness scoring buffers for a fresh deliberate
+        verification attempt. Currently only called by the soft-lock
+        "Verify Now" burst-retry path, not enrollment (enrollment calls
+        LivenessDetector.reset_session() directly) -- the previous
+        docstring here claiming otherwise was stale. Deliberately
+        preserves anti-replay evidence rather than doing a full
+        reset_session(): see LivenessDetector.reset_temporal_buffers()
+        for why that distinction matters for this specific caller."""
+        self._liveness.reset_temporal_buffers()
     def read_frame(self) -> Optional[np.ndarray]:
         return self._read_frame()
 

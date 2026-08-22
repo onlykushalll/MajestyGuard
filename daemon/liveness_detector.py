@@ -111,6 +111,41 @@ class LivenessDetector:
         self._onnx_consecutive_failures: int = 0
         self._load_antispoof_model(model_dir)
 
+    def reset_temporal_buffers(self) -> None:
+        """Reset temporal scoring buffers (score smoothing, blink tracking,
+        face-center tracking, landmark ratios, histogram/ONNX history,
+        rPPG) for a fresh deliberate verification attempt -- but
+        deliberately does NOT touch anti-replay evidence (_frame_hashes,
+        _duplicate_frame_count, _replay_flagged_this_session).
+
+        Use this instead of reset_session() anywhere a retry can be
+        triggered without authentication beyond physical presence at the
+        device (e.g. the soft-lock "Verify Now" burst check) -- clearing
+        anti-replay evidence there would hand an attacker a clean slate on
+        demand: hold up a replay, get caught, click Verify Now, try again
+        with the duplicate-frame history wiped. A legitimate face never
+        produces near-duplicate frames in the first place, so this buys a
+        real retry nothing and costs an attacker's retry everything.
+        reset_session() remains correct for genuinely new sessions
+        (enrollment angle changes, a fresh SCANNING approach) where
+        starting over completely is the actual intent."""
+        self._score_history.clear()
+        self._frame_index = 0
+        self._last_smoothed_score = 0.0
+        self._last_smoothed_score_time = 0.0
+        self._eye_brightness_history.clear()
+        self._blink_count = 0
+        self._blink_cooldown = 0
+        self._last_blink_frame = 0
+        self._in_blink = False
+        self._face_center_history.clear()
+        self._landmark_ratios.clear()
+        self._hist_history.clear()
+        self._onnx_score_history.clear()
+        if self._rppg is not None:
+            self._rppg.reset()
+        self._onnx_consecutive_failures = 0
+
     def reset_session(self) -> None:
         self._score_history.clear()
         self._frame_index = 0

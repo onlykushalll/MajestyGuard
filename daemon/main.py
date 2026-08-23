@@ -23,6 +23,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import io
 
 _DAEMON_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _DAEMON_DIR.parent
@@ -366,21 +367,6 @@ class MajestyGuardDaemon:
     def stop(self) -> None:
         self._stop.set()
 
-    def _load_cv_engine(self) -> None:
-        log.info("Loading FaceEngine from %s", INSIGHTFACE_MODEL_DIR)
-        self.face_eng = FaceEngine(
-            model_dir=str(INSIGHTFACE_MODEL_DIR),
-            camera_idx=CAMERA_INDEX,
-            recognition_threshold=RECOGNITION_THRESHOLD,
-            liveness_threshold=LIVENESS_THRESHOLD,
-            open_camera=False,
-            liveness_model_dir=str(_MODELS_DIR),
-        )
-        if not self.face_eng.initialize():
-            raise RuntimeError("FaceEngine failed to initialize")
-        self._load_enrolled_embeddings()
-        log.info("FaceEngine loaded")
-
     def _warmup_inference(self) -> None:
         if self.face_eng is None:
             return
@@ -391,45 +377,140 @@ class MajestyGuardDaemon:
         except Exception as exc:
             log.warning("Warmup inference failed (non-fatal): %s", exc)
 
-    def _load_enrolled_embeddings(self) -> None:
-        engine = self._require_face_engine()
+    def _load_cv_engine(self) -> None:
+        log.info("Loading FaceEngine from %s", INSIGHTFACE_MODEL_DIR)
+        self.face_eng = FaceEngine(
+            model_dir=str(INSIGHTFACE_MODEL_DIR),
+            camera_idx=CAMERA_INDEX,
+            recognition_threshold=RECOGNITION_THRESHOLD,
+            liveness_threshold=LIVENESS_THRESHOLD,
+            open_camera=False,
+            liveness_model_dir=str(_MODELS_DIR),
+        )
+        # Reading + decrypting the embeddings file doesn't depend on the
+        # engine being initialized -- only registering the result into it
+        # does. Model loading dominates cold start (~4s vs low tens of ms
+        # for this file), so this mainly keeps the new decrypt step from
+        # adding pure extra sequential latency after an already-slow load,
+        # rather than meaningfully shrinking cold start by itself.
+        embeddings_result: dict = {}
+        embeddings_thread = threading.Thread(
+            target=self._read_enrolled_embeddings_from_disk,
+            args=(embeddings_result,),
+            name="mg-embeddings-load",
+            daemon=True,
+        )
+        embeddings_thread.start()
 
-        # ── V2 numpy file (preferred — same pipeline as v2 engine) ───────────
+        if not self.face_eng.initialize():
+            raise RuntimeError("FaceEngine failed to initialize")
+
+        embeddings_thread.join(timeout=10)
+        if embeddings_thread.is_alive():
+            log.warning("Embeddings load thread did not finish in time; proceeding without enrolled embeddings")
+        else:
+            self._register_enrolled_embeddings(embeddings_result)
+        log.info("FaceEngine loaded")
+
+    def _load_enrolled_embeddings(self) -> None:
+        """Synchronous convenience wrapper composing the two pieces below:
+        same behavior and error messages as before the parallel-loading
+        split. _load_cv_engine does not call this - it runs
+        _read_enrolled_embeddings_from_disk in parallel with
+        FaceEngine.initialize() instead, then _register_enrolled_embeddings
+        afterward. This wrapper exists for direct/synchronous callers
+        (tests, and any future one-off use) that want the old single-call
+        interface without needing to know about the threaded split."""
+        result: dict = {}
+        self._read_enrolled_embeddings_from_disk(result)
+        self._register_enrolled_embeddings(result)
+
+    def _read_enrolled_embeddings_from_disk(self, out: dict) -> None:
+        """Runs on a background thread, in parallel with FaceEngine.initialize().
+        Pure disk I/O + parsing only -- must not touch self.face_eng, since it
+        may not be initialized yet while this runs. Populates `out` with a
+        result dict for _register_enrolled_embeddings to act on afterward."""
         v2_path = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard" / "embeddings_v2.npy"
         if v2_path.exists():
             try:
-                data = np.load(str(v2_path))
+                raw = v2_path.read_bytes()
+                try:
+                    import win32crypt
+                    decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
+                    data = np.load(io.BytesIO(decrypted))
+                except Exception:
+                    # Not a DPAPI blob (or decrypt unavailable) -- fall back
+                    # to the legacy plaintext format so an existing,
+                    # already-enrolled install keeps working unchanged.
+                    # New enrollments (enroll_v2.py) write encrypted; this
+                    # fallback exists for files enrolled before that change.
+                    data = np.load(io.BytesIO(raw))
+                out["kind"] = "v2"
+                out["data"] = data
             except Exception as e:
-                raise RuntimeError(f"Failed to load v2 embeddings from {v2_path}: {e}") from e
-            try:
-                accepted_count = engine.load_enrolled_embeddings(data.tolist())
-            except Exception as e:
-                raise RuntimeError(f"Failed to load v2 embeddings from {v2_path}: {e}") from e
-            if accepted_count <= 0:
-                raise RuntimeError(f"No valid v2 enrolled embeddings loaded from {v2_path}")
-            log.info("Loaded %d valid v2 embeddings from %s", accepted_count, v2_path)
+                out["kind"] = "error"
+                out["exc"] = RuntimeError(f"Failed to load v2 embeddings from {v2_path}: {e}")
             return
 
-        # ── Legacy DPAPI path (v1 C# enrollment) ─────────────────────────────
         if not BIOMETRIC_PATH.exists():
-            log.warning("No biometric found — run: python daemon/enroll_v2.py")
+            out["kind"] = "none"
             return
         if not DPAPI_HELPER_PATH.exists():
+            out["kind"] = "none_dpapi_missing"
+            return
+        try:
+            proc = subprocess.run(
+                [str(DPAPI_HELPER_PATH), str(BIOMETRIC_PATH)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                shell=False,
+            )
+            if proc.returncode != 0:
+                out["kind"] = "v1_failed"
+                out["returncode"] = proc.returncode
+                out["stderr"] = proc.stderr.strip()
+                return
+            out["kind"] = "v1"
+            out["data"] = json.loads(proc.stdout)
+        except Exception as e:
+            out["kind"] = "error"
+            out["exc"] = e
+
+    def _register_enrolled_embeddings(self, result: dict) -> None:
+        """Runs on the main thread after FaceEngine.initialize() completes
+        and the background read has joined. Same log messages and error
+        behavior as the previous single-threaded implementation, just fed
+        from a result dict instead of computing inline."""
+        engine = self._require_face_engine()
+        kind = result.get("kind")
+
+        if kind == "v2":
+            data = result["data"]
+            accepted_count = engine.load_enrolled_embeddings(data.tolist())
+            if accepted_count <= 0:
+                raise RuntimeError(f"No valid v2 enrolled embeddings loaded")
+            log.info("Loaded %d valid v2 embeddings", accepted_count)
+            return
+
+        if kind == "v1":
+            embeddings = result["data"]
+            engine.load_enrolled_embeddings(embeddings)
+            log.warning("Loaded %d LEGACY v1 embeddings — recognition may fail. Run enroll_v2.py.", len(embeddings))
+            return
+
+        if kind == "none":
+            log.warning("No biometric found — run: python daemon/enroll_v2.py")
+            return
+        if kind == "none_dpapi_missing":
             log.warning("DPAPI helper not found: %s", DPAPI_HELPER_PATH)
             return
-        proc = subprocess.run(
-            [str(DPAPI_HELPER_PATH), str(BIOMETRIC_PATH)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            shell=False,
-        )
-        if proc.returncode != 0:
-            log.warning("Embedding load failed (%d): %s", proc.returncode, proc.stderr.strip())
+        if kind == "v1_failed":
+            log.warning("Embedding load failed (%d): %s", result.get("returncode"), result.get("stderr"))
             return
-        embeddings = json.loads(proc.stdout)
-        engine.load_enrolled_embeddings(embeddings)
-        log.warning("Loaded %d LEGACY v1 embeddings — recognition may fail. Run enroll_v2.py.", len(embeddings))
+        if kind == "error":
+            raise result["exc"]
+        log.warning("No embeddings result produced (unexpected state: %r)", kind)
 
     def _open_camera(
         self,

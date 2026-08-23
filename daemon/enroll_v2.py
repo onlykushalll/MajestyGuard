@@ -16,6 +16,7 @@ Tips:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -665,7 +666,24 @@ def main() -> int:
     backups = _backup_existing_artifacts()
     for backup in backups:
         print(f"Backed up previous artifact to {backup}")
-    np.save(str(OUT_FILE), arr)
+    buf = io.BytesIO()
+    np.save(buf, arr)
+    try:
+        import win32crypt
+        encrypted = win32crypt.CryptProtectData(
+            buf.getvalue(), "MajestyGuard biometric embeddings", None, None, None, 0
+        )
+        OUT_FILE.write_bytes(encrypted)
+        print(f"Wrote DPAPI-encrypted embeddings to {OUT_FILE}")
+    except Exception as e:
+        # Fail open to plaintext rather than losing the enrollment entirely
+        # (this is the same file the daemon falls back to reading as
+        # plaintext if decryption fails, so it stays loadable either way).
+        # An enrollment session is expensive to redo; that outweighs
+        # writing this one file unencrypted on a machine where DPAPI is
+        # for some reason unavailable.
+        print(f"WARNING: DPAPI encryption failed ({e}); writing plaintext instead")
+        np.save(str(OUT_FILE), arr)
     _write_metadata(
         profile=args.profile,
         angles=angles,

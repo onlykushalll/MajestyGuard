@@ -30,7 +30,7 @@ import json
 import logging
 import threading
 import time
-from typing import Mapping, Optional
+from typing import Callable, Mapping, Optional
 
 import pywintypes   # type: ignore
 import win32file    # type: ignore
@@ -87,13 +87,42 @@ class IPCServer:
     Thread-safe: call broadcast_state() from any thread.
     """
 
-    def __init__(self):
+    def __init__(self, expected_client_pid: Optional[Callable[[], Optional[int]]] = None):
         self._state: dict = {"state": "idle"}
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._client_handle = None
         self._has_new_state = threading.Event()
+        self._expected_client_pid = expected_client_pid
+
+    def _is_expected_client(self, client_pid: int) -> bool:
+        """Same PID-authentication logic as CMDServer: rejects any client
+        that isn't the owned UI process or a direct child of it. Previously
+        this pipe accepted any connection that cleared the SDDL ACL (any
+        process running as the same Windows user) - unlike CMDServer, which
+        already had this check. Broadcasts live recognition/liveness scores
+        and state transitions, which a same-user process could otherwise
+        watch in real time as feedback while attempting a physical spoof."""
+        if client_pid <= 0 or self._expected_client_pid is None:
+            return False
+        try:
+            expected_pid = self._expected_client_pid()
+        except Exception:
+            log.exception("IPCServer failed to resolve owned UI PID")
+            return False
+        if not expected_pid:
+            return False
+        if client_pid == expected_pid:
+            return True
+        try:
+            import psutil
+            proc = psutil.Process(client_pid)
+            if proc.ppid() == expected_pid:
+                return True
+        except Exception:
+            pass
+        return False
 
     # ------------------------------------------------------------------
     # Public API (called from daemon main loop)
@@ -184,6 +213,16 @@ class IPCServer:
 
                 if self._stop.is_set():
                     break
+
+                if self._expected_client_pid is not None:
+                    try:
+                        client_pid = int(win32pipe.GetNamedPipeClientProcessId(handle))
+                    except (TypeError, ValueError, pywintypes.error):
+                        log.warning("IPCServer rejected client with unknown PID")
+                        continue
+                    if not self._is_expected_client(client_pid):
+                        log.warning("IPCServer rejected unowned client PID %d", client_pid)
+                        continue
 
                 with self._lock:
                     self._client_handle = handle

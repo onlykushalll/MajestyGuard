@@ -239,7 +239,7 @@ class MajestyGuardDaemon:
         self.motion = MotionFilter()
         self.presence = PresenceDetector()
         self.face_eng: Optional[FaceEngine] = None
-        self.ipc = IPCServer()
+        self.ipc = IPCServer(expected_client_pid=self._owned_overlay_pid)
         self.service_ipc: Optional[ServiceIPCServer] = None
         self.command_ipc: Optional[CMDServer] = None
         self.session_monitor = SessionMonitor(self._queue_session_event)

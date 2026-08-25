@@ -310,6 +310,29 @@ class IslandWidget(QWidget):
 
     def _begin_exit_sequence(self, active_state: IslandState, *, show_welcome: bool) -> None:
         """Confirm a verification, optionally welcoming a returned owner."""
+        # _deferred_lock_state can go stale: the verifying_lock->stranger
+        # redirect sets it, but if the shared min-duration _defer_timer
+        # later gets rebound to a different target before "stranger" ever
+        # actually applies and shakes, the only code path that normally
+        # clears it (shake completing) never runs. Left alone it would
+        # get wrongly applied on some later, unrelated stranger shake.
+        # Reaching a genuine verified state supersedes any pending reason.
+        self._deferred_lock_state = None
+        # The min-duration _defer_timer can also be left armed and pointed
+        # at a stale target: "active" is handled via this early-return path
+        # BEFORE the redirect/defer logic ever runs, so an earlier deferred
+        # redirect (e.g. to a "stranger" shake) never gets canceled here.
+        # If left running, it fires for real later and calls
+        # apply_state(stranger) -- which, since _in_exit_sequence is about
+        # to become True, hits the very first check in apply_state and
+        # aborts this exit/welcome sequence to show the stale shake
+        # instead. Must be stopped whenever we commit to this path.
+        if hasattr(self, "_defer_timer") and self._defer_timer is not None:
+            self._defer_timer.stop()
+            try:
+                self._defer_timer.timeout.disconnect()
+            except Exception:
+                pass
         self._in_exit_sequence = True
         self._show_welcome_after_verification = show_welcome
         self._pill_opacity = 1.0

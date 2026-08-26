@@ -251,6 +251,17 @@ class IslandWidget(QWidget):
         self._anim_flash_active = False
         self._anim_pulse_active = False
         self._anim_dot_scan_active = False
+        if self._anim_shake_active:
+            # A third path _deferred_lock_state can go stale through:
+            # this unconditional per-state reset silences an in-flight
+            # shake whenever it's interrupted by something that is
+            # neither "active" (handled earlier, via its own early
+            # return) nor one of the lock-family states the dedicated
+            # shake-interrupt check above defers for instead of
+            # cancelling. Without this, a target deferred for THIS shake
+            # would survive its own shake ending here and sit orphaned
+            # until some later, unrelated shake wrongly consumed it.
+            self._deferred_lock_state = None
         self._anim_shake_active = False
         self._shake_offset = 0.0
         self._alpha = 1.0

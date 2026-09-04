@@ -394,8 +394,8 @@ def test_soft_lock_fast_owner_consensus_clears_overlay_below_strict_peak(monkeyp
     FaceState.clear()
     face_engine = FakeFaceEngine(
         [
-            _result(score=0.73, smooth=0.72, liveness=0.76, quality=0.86, height=0.48, center=0.12, presence=0.73),
-            _result(score=0.74, smooth=0.73, liveness=0.77, quality=0.87, height=0.50, center=0.13, presence=0.74),
+            _result(score=0.73, smooth=0.72, liveness=0.86, quality=0.86, height=0.48, center=0.12, presence=0.73),
+            _result(score=0.74, smooth=0.73, liveness=0.87, quality=0.87, height=0.50, center=0.13, presence=0.74),
         ]
     )
     daemon = _bare_daemon(State.SOFT_LOCK, face_engine)
@@ -420,7 +420,7 @@ def test_soft_lock_quick_owner_consensus_clears_overlay_with_strong_track(monkey
             _result(
                 score=0.707,
                 smooth=0.716,
-                liveness=0.750,
+                liveness=0.83,
                 quality=0.80,
                 height=0.37,
                 center=0.24,
@@ -431,7 +431,7 @@ def test_soft_lock_quick_owner_consensus_clears_overlay_with_strong_track(monkey
             _result(
                 score=0.700,
                 smooth=0.706,
-                liveness=0.774,
+                liveness=0.85,
                 quality=0.80,
                 height=0.37,
                 center=0.24,

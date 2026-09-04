@@ -146,9 +146,23 @@ SCANNING_FAST_OWNER_CONFIRM_FRAMES = _env_int("MG_SCANNING_FAST_OWNER_CONFIRM_FR
 SCANNING_FAST_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_FAST_OWNER_MIN_QUALITY", 0.78)
 SCANNING_FAST_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_FAST_OWNER_MIN_FACE_HEIGHT", 0.38)
 SCANNING_FAST_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_FAST_OWNER_MAX_CENTER_OFFSET", 0.26)
+# _is_fast_owner_candidate previously had no dedicated liveness floor at
+# all - it relied only on the caller's generic liveness_ok gate
+# (LIVENESS_THRESHOLD, 0.70), same as the primary/full path, despite using
+# the same rPPG/depth-skipping fast scorer as the soft-lock burst path,
+# which already requires 0.82 for exactly that reason
+# (BURST_FAST_LIVENESS_THRESHOLD, burst_fast_threshold_stricter_than_full
+# in mg_policy_audit.py). This was the actual gap behind the 2026-08-16
+# live-tested video-replay bypass: a fast-scored 0.756 cleared 0.70
+# comfortably. Matches the burst path's existing, already-justified
+# standard rather than inventing a new number.
+SCANNING_FAST_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_FAST_OWNER_MIN_LIVENESS", 0.82)
 SCANNING_QUICK_OWNER_SCORE = _env_float("MG_SCANNING_QUICK_OWNER_SCORE", 0.70)
 SCANNING_QUICK_OWNER_PRESENCE = _env_float("MG_SCANNING_QUICK_OWNER_PRESENCE", 0.70)
-SCANNING_QUICK_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.74)
+# Raised from 0.74 to match BURST_FAST_LIVENESS_THRESHOLD (0.82) for the
+# same reason as SCANNING_FAST_OWNER_MIN_LIVENESS above - this path uses
+# the identical rPPG/depth-skipping fast scorer.
+SCANNING_QUICK_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.82)
 SCANNING_QUICK_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_QUICK_OWNER_MIN_QUALITY", 0.80)
 SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT", 0.36)
 SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET", 0.25)
@@ -1548,6 +1562,7 @@ class MajestyGuardDaemon:
         return (
             result.recognition_score >= SCANNING_FAST_OWNER_SCORE
             and self._presence_confidence(result) >= SCANNING_FAST_OWNER_PRESENCE
+            and result.liveness_score >= SCANNING_FAST_OWNER_MIN_LIVENESS
             and result.frame_quality >= SCANNING_FAST_OWNER_MIN_QUALITY
             and result.face_height_frac >= SCANNING_FAST_OWNER_MIN_FACE_HEIGHT
             and result.face_center_offset <= SCANNING_FAST_OWNER_MAX_CENTER_OFFSET

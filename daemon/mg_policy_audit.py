@@ -114,7 +114,7 @@ def audit_policy(
         "scanning_fast_owner_max_center_offset": _env_float(env, "MG_SCANNING_FAST_OWNER_MAX_CENTER_OFFSET", 0.26),
         "scanning_quick_owner_score": _env_float(env, "MG_SCANNING_QUICK_OWNER_SCORE", 0.70),
         "scanning_quick_owner_presence": _env_float(env, "MG_SCANNING_QUICK_OWNER_PRESENCE", 0.70),
-        "scanning_quick_owner_min_liveness": _env_float(env, "MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.74),
+        "scanning_quick_owner_min_liveness": _env_float(env, "MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.82),
         "scanning_quick_owner_min_quality": _env_float(env, "MG_SCANNING_QUICK_OWNER_MIN_QUALITY", 0.80),
         "scanning_quick_owner_min_face_height": _env_float(env, "MG_SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT", 0.36),
         "scanning_quick_owner_max_center_offset": _env_float(env, "MG_SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET", 0.25),

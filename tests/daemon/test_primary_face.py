@@ -660,7 +660,7 @@ def test_scanning_fast_owner_consensus_enters_active_below_strict_peak():
     first_owner_like = _result(
         score=0.73,
         smooth=0.72,
-        liveness=0.76,
+        liveness=0.86,
         quality=0.86,
         height=0.48,
         center=0.12,
@@ -669,7 +669,7 @@ def test_scanning_fast_owner_consensus_enters_active_below_strict_peak():
     second_owner_like = _result(
         score=0.74,
         smooth=0.73,
-        liveness=0.77,
+        liveness=0.87,
         quality=0.87,
         height=0.50,
         center=0.13,
@@ -689,13 +689,54 @@ def test_scanning_fast_owner_consensus_enters_active_below_strict_peak():
     FaceState.clear()
 
 
+def test_scanning_fast_and_quick_owner_reject_liveness_in_previously_accepted_gap():
+    """The actual 2026-08-16 live-tested bypass reached ACTIVE via this
+    exact consensus path with a fast-scored liveness of 0.756 - comfortably
+    above the old 0.70/0.74 floors, comfortably below the corrected 0.82
+    (matching BURST_FAST_LIVENESS_THRESHOLD, the standard this codebase
+    already applies elsewhere for the same rPPG/depth-skipping scorer).
+    This proves that specific gap is now closed for both the fast and
+    quick paths, not just that the old passing tests still pass with
+    bumped-up numbers."""
+    FaceState.clear()
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    fast_path_frames = [
+        _result(score=0.73, smooth=0.72, liveness=0.756, quality=0.86, height=0.48, center=0.12, presence=0.73),
+        _result(score=0.74, smooth=0.73, liveness=0.756, quality=0.87, height=0.50, center=0.13, presence=0.74),
+    ]
+    face_engine = FakeFaceEngine(fast_path_frames)
+    daemon = _daemon_for_tick_tests(State.SCANNING, face_engine)
+    daemon._tick_scanning(frame, 1)
+    daemon._tick_scanning(frame, 2)
+    assert daemon.state == State.SCANNING, "0.756 liveness must not clear the fast-owner path anymore"
+
+    FaceState.clear()
+    quick_path_frames = [
+        _result(
+            score=0.707, smooth=0.716, liveness=0.756, quality=0.80, height=0.37, center=0.24,
+            presence=0.716, selection_reason="sticky_iou", sticky_iou=0.97,
+        ),
+        _result(
+            score=0.700, smooth=0.706, liveness=0.774, quality=0.80, height=0.37, center=0.24,
+            presence=0.706, selection_reason="kalman_iou", sticky_iou=0.92, predicted_iou=0.93,
+        ),
+    ]
+    face_engine2 = FakeFaceEngine(quick_path_frames)
+    daemon2 = _daemon_for_tick_tests(State.SCANNING, face_engine2)
+    daemon2._tick_scanning(frame, 1)
+    daemon2._tick_scanning(frame, 2)
+    assert daemon2.state == State.SCANNING, "0.756/0.774 liveness must not clear the quick-owner path anymore"
+    FaceState.clear()
+
+
 def test_scanning_quick_owner_consensus_uses_stronger_liveness_quality_and_track():
     FaceState.clear()
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     first_owner_like = _result(
         score=0.707,
         smooth=0.716,
-        liveness=0.750,
+        liveness=0.83,
         quality=0.80,
         height=0.37,
         center=0.24,
@@ -706,7 +747,7 @@ def test_scanning_quick_owner_consensus_uses_stronger_liveness_quality_and_track
     second_owner_like = _result(
         score=0.700,
         smooth=0.706,
-        liveness=0.774,
+        liveness=0.85,
         quality=0.80,
         height=0.37,
         center=0.24,

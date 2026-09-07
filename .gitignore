@@ -62,3 +62,8 @@ implementation_plan.md
 .codex/
 MajestyGuard.CVEngine/
 logs/
+
+
+# AI & Session residue
+*.handoff.md
+*SESSION_HANDOFF*

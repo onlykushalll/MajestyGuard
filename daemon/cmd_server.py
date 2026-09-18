@@ -69,20 +69,28 @@ class CMDServer:
         pipe_name: str = CMD_PIPE_NAME,
         *,
         expected_client_pid: Optional[Callable[[], Optional[int]]] = None,
+        additional_trusted_pid: Optional[Callable[[], Optional[int]]] = None,
     ):
         self.pipe_name = pipe_name
         self._on_command = on_command
         self._expected_client_pid = expected_client_pid
+        # Second, independent trusted-client resolver (e.g. a verified
+        # tray/companion-app PID). Checked in addition to, not instead of,
+        # expected_client_pid - the daemon's own spawned overlay and a
+        # separately-launched supervisor app both need to be able to
+        # authenticate at the same time, not just whichever one happens to
+        # be currently running.
+        self._additional_trusted_pid = additional_trusted_pid
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
-    def _is_expected_client(self, client_pid: int) -> bool:
-        if client_pid <= 0 or self._expected_client_pid is None:
+    def _matches_trusted_pid(self, client_pid: int, resolver: Optional[Callable[[], Optional[int]]]) -> bool:
+        if resolver is None:
             return False
         try:
-            expected_pid = self._expected_client_pid()
+            expected_pid = resolver()
         except Exception:
-            log.exception("CMDServer failed to resolve owned UI PID")
+            log.exception("CMDServer failed to resolve a trusted client PID")
             return False
         if not expected_pid:
             return False
@@ -95,6 +103,15 @@ class CMDServer:
                 return True
         except Exception:
             pass
+        return False
+
+    def _is_expected_client(self, client_pid: int) -> bool:
+        if client_pid <= 0:
+            return False
+        if self._matches_trusted_pid(client_pid, self._expected_client_pid):
+            return True
+        if self._matches_trusted_pid(client_pid, self._additional_trusted_pid):
+            return True
         return False
 
 

@@ -5,3 +5,7 @@
 # files themselves live in the tree.
 pythonpath = ["daemon", "ui"]
 testpaths = ["tests"]
+addopts = '-m "not legacy_service"'
+markers = [
+    "legacy_service: tests for the retired service/Credential Provider packaging path; requires generated legacy artifacts",
+]

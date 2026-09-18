@@ -2,6 +2,11 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
+
+pytestmark = pytest.mark.legacy_service
+
 
 ROOT = Path(__file__).resolve().parents[2]
 UNINSTALLERS = [

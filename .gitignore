@@ -12,6 +12,7 @@ models/
 
 # Build output
 build/
+dist/
 obj/
 bin/
 

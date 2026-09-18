@@ -24,13 +24,13 @@ from dataclasses import dataclass
 from typing import Optional
 import cv2
 
-# InsightFace — install: pip install insightface onnxruntime-directml
+# InsightFace — install: pip install insightface onnxruntime
 try:
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
 except ImportError:
     INSIGHTFACE_AVAILABLE = False
-    logging.warning("InsightFace not installed. Run: pip install insightface onnxruntime-directml")
+    logging.warning("InsightFace not installed. Run: pip install insightface onnxruntime")
 
 from liveness_detector import LivenessDetector
 from virtual_camera_detector import is_virtual_camera

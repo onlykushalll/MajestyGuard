@@ -4,11 +4,16 @@
 PyQt6>=6.9.0
 
 # Core CV and daemon
-insightface>=0.7.3
-onnxruntime-directml>=1.17.0
-opencv-python>=4.9.0
-numpy>=1.26.0
-mediapipe>=0.10.14
-scipy>=1.11.0
+insightface==0.7.3
+# Keep the native CV stack on this mutually compatible CPU-first matrix.
+# DirectML failed native initialization here, while newer OpenCV/Numpy and
+# protobuf releases conflict with the supported MediaPipe wheel.
+onnxruntime==1.18.1
+numpy==1.26.4
+protobuf==3.20.3
+onnx==1.17.0
+opencv-contrib-python==4.10.0.84
+mediapipe==0.10.9
+scipy==1.17.1
 pywin32>=306
 Pillow>=10.2.0

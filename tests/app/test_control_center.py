@@ -3,8 +3,10 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QApplication
 
+import app.control_center as control_center_module
 from app.control_center import ControlCenter
 from app.runtime import RuntimeStatus
 
@@ -108,4 +110,32 @@ def test_control_center_saves_bounded_idle_timeout_for_next_start(qapp, tmp_path
 
     assert supervisor.idle_timeout == 180
     assert "next start" in view.timeout_note_text().lower()
+    view.close()
+
+
+def test_control_center_opens_only_the_local_diagnostics_directory(qapp, tmp_path, monkeypatch):
+    supervisor = FakeSupervisor(RuntimeStatus.STOPPED)
+    diagnostics_path = tmp_path / "diagnostics"
+    supervisor.open_log_directory = lambda: diagnostics_path
+    opened = []
+    monkeypatch.setattr(
+        control_center_module.QDesktopServices,
+        "openUrl",
+        lambda url: opened.append(url) or True,
+    )
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    view.open_diagnostics()
+
+    assert opened == [QUrl.fromLocalFile(str(diagnostics_path))]
+    view.close()
+
+
+def test_control_center_reenrollment_action_uses_guarded_supervisor(qapp, tmp_path):
+    supervisor = FakeSupervisor(RuntimeStatus.STOPPED)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    view.start_reenrollment()
+
+    assert supervisor.enrollment_calls == 1
     view.close()

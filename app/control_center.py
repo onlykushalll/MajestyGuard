@@ -4,8 +4,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Protocol
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QAction, QDesktopServices
 from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
@@ -29,6 +29,8 @@ class SupervisorProtocol(Protocol):
     def start(self) -> bool: ...
     def stop(self) -> None: ...
     def enrollment_present(self) -> bool: ...
+    def start_enrollment(self) -> bool: ...
+    def open_log_directory(self) -> Path: ...
     def pause(self) -> None: ...
     def resume(self) -> bool: ...
     def set_idle_timeout(self, seconds: int) -> bool: ...
@@ -157,6 +159,14 @@ class ControlCenter(QMainWindow):
         show_action = QAction("Open Control Center", self)
         show_action.triggered.connect(self.show_center)
         menu.addAction(show_action)
+
+        reenroll_action = QAction("Re-enroll face", self)
+        reenroll_action.triggered.connect(self.start_reenrollment)
+        menu.addAction(reenroll_action)
+
+        diagnostics_action = QAction("Open diagnostics", self)
+        diagnostics_action.triggered.connect(self.open_diagnostics)
+        menu.addAction(diagnostics_action)
         menu.addSeparator()
 
         quit_action = QAction("Quit MajestyGuard", self)
@@ -213,6 +223,16 @@ class ControlCenter(QMainWindow):
             self._timeout_note.setText("Saved. Changes apply on the next start.")
         else:
             self._timeout_note.setText("That timeout is outside the permitted range.")
+
+    def start_reenrollment(self) -> None:
+        if self._supervisor.start_enrollment():
+            self._timeout_note.setText("Enrollment opened in a separate window.")
+        else:
+            self._timeout_note.setText("Enrollment is already running or unavailable.")
+
+    def open_diagnostics(self) -> None:
+        directory = self._supervisor.open_log_directory()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _run_primary_action(self) -> None:
         if not self._supervisor.enrollment_present():

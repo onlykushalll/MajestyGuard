@@ -145,6 +145,9 @@ class ControlCenter(QMainWindow):
     def primary_action_text(self) -> str:
         return self._primary_button.text()
 
+    def enrollment_present(self) -> bool:
+        return self._supervisor.enrollment_present()
+
     def refresh(self) -> None:
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()

@@ -15,6 +15,7 @@ class FakeSupervisor:
         self._enrollment_present = enrollment_present
         self.start_calls = 0
         self.stop_calls = 0
+        self.enrollment_calls = 0
 
     def status(self):
         return self._status
@@ -30,6 +31,10 @@ class FakeSupervisor:
 
     def enrollment_present(self):
         return self._enrollment_present
+
+    def start_enrollment(self):
+        self.enrollment_calls += 1
+        return True
 
 
 @pytest.fixture
@@ -64,4 +69,6 @@ def test_control_center_guides_missing_enrollment_to_enrollment_action(qapp, tmp
     view = ControlCenter(supervisor, tmp_path / "settings.json")
 
     assert view.primary_action_text() == "Enroll face"
+    view._run_primary_action()
+    assert supervisor.enrollment_calls == 1
     view.close()

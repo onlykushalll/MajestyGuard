@@ -90,6 +90,40 @@ class Supervisor:
         except subprocess.TimeoutExpired:
             process.kill()
 
+    def start_enrollment(self) -> bool:
+        """Launch the existing guided enrollment tool at most once at a time."""
+        if self._enrollment_process is not None and self._enrollment_process.poll() is None:
+            return False
+
+        entrypoint = self._root / "daemon" / "enroll_v2.py"
+        if not entrypoint.is_file():
+            return False
+
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "MG_ENABLE_LOCK": "0",
+                "MG_ENABLE_WHCDF_IPC": "0",
+                "MG_ENABLE_SERVICE_IPC": "0",
+                "PYTHONUNBUFFERED": "1",
+            }
+        )
+        try:
+            self._enrollment_process = self._spawn_enrollment(
+                [str(self._python), str(entrypoint)],
+                environment,
+            )
+        except OSError:
+            self._enrollment_process = None
+            return False
+        return True
+
+    def open_log_directory(self) -> Path:
+        """Return the local diagnostic directory without exposing biometric data."""
+        path = self._local_app_data / "MajestyGuard"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     def _spawn(self, command: Sequence[str], environment: dict[str, str]) -> subprocess.Popen:
         return subprocess.Popen(
             list(command),
@@ -98,4 +132,12 @@ class Supervisor:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+    def _spawn_enrollment(self, command: Sequence[str], environment: dict[str, str]) -> subprocess.Popen:
+        return subprocess.Popen(
+            list(command),
+            cwd=str(self._root),
+            env=environment,
+            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         )

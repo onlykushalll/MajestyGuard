@@ -84,3 +84,42 @@ def test_supervisor_stops_its_owned_daemon(tmp_path):
 
     assert process.terminated is True
     assert supervisor.status() is RuntimeStatus.STOPPED
+
+
+def test_start_enrollment_refuses_a_second_concurrent_enrollment(tmp_path, monkeypatch):
+    enrollment_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enrollment_entry.parent.mkdir()
+    enrollment_entry.write_text("# test entrypoint", encoding="utf-8")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    supervisor._enrollment_process = FakeProcess()
+
+    assert supervisor.start_enrollment() is False
+
+
+def test_start_enrollment_uses_existing_guided_script(tmp_path, monkeypatch):
+    launched = {}
+    enrollment_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enrollment_entry.parent.mkdir()
+    enrollment_entry.write_text("# test entrypoint", encoding="utf-8")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn_enrollment",
+        lambda command, env: launched.update(command=command, env=env) or FakeProcess(),
+    )
+
+    assert supervisor.start_enrollment() is True
+    assert launched["command"] == ["python.exe", str(enrollment_entry)]
+    assert launched["env"]["MG_ENABLE_LOCK"] == "0"
+
+
+def test_open_log_directory_returns_current_user_runtime_path(tmp_path):
+    local_app_data = tmp_path / "local"
+    supervisor = Supervisor(
+        tmp_path,
+        Path("python.exe"),
+        tmp_path / "settings.json",
+        local_app_data=local_app_data,
+    )
+
+    assert supervisor.open_log_directory() == local_app_data / "MajestyGuard"

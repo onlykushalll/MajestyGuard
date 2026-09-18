@@ -38,6 +38,10 @@ class FakeSupervisor:
         self._status = RuntimeStatus.RUNNING
         return True
 
+    def set_idle_timeout(self, seconds):
+        self.idle_timeout = seconds
+        return True
+
     def enrollment_present(self):
         return self._enrollment_present
 
@@ -92,4 +96,16 @@ def test_control_center_resume_action_recovers_a_paused_supervisor(qapp, tmp_pat
 
     assert supervisor.start_calls == 1
     assert view.status_text() == "Protection running"
+    view.close()
+
+
+def test_control_center_saves_bounded_idle_timeout_for_next_start(qapp, tmp_path):
+    supervisor = FakeSupervisor(RuntimeStatus.STOPPED)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+    view._timeout_input.setValue(180)
+
+    view.save_idle_timeout()
+
+    assert supervisor.idle_timeout == 180
+    assert "next start" in view.timeout_note_text().lower()
     view.close()

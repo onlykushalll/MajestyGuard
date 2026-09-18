@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
+    QSpinBox,
     QStyle,
     QSystemTrayIcon,
     QVBoxLayout,
@@ -30,6 +31,7 @@ class SupervisorProtocol(Protocol):
     def enrollment_present(self) -> bool: ...
     def pause(self) -> None: ...
     def resume(self) -> bool: ...
+    def set_idle_timeout(self, seconds: int) -> bool: ...
 
 
 _STATUS_COPY = {
@@ -117,6 +119,27 @@ class ControlCenter(QMainWindow):
         self._primary_button.clicked.connect(self._run_primary_action)
         layout.addWidget(self._primary_button)
 
+        layout.addSpacing(18)
+        timeout_row = QHBoxLayout()
+        timeout_row.setSpacing(10)
+        timeout_label = QLabel("Lock after", root)
+        timeout_label.setObjectName("detail")
+        timeout_row.addWidget(timeout_label)
+        self._timeout_input = QSpinBox(root)
+        self._timeout_input.setRange(15, 1800)
+        self._timeout_input.setSuffix(" seconds")
+        self._timeout_input.setValue(self._current_idle_timeout())
+        timeout_row.addWidget(self._timeout_input)
+        timeout_row.addStretch(1)
+        self._save_timeout_button = QPushButton("Save", root)
+        self._save_timeout_button.clicked.connect(self.save_idle_timeout)
+        timeout_row.addWidget(self._save_timeout_button)
+        layout.addLayout(timeout_row)
+        self._timeout_note = QLabel("Changes apply on the next start.", root)
+        self._timeout_note.setObjectName("detail")
+        self._timeout_note.setContentsMargins(0, 6, 0, 0)
+        layout.addWidget(self._timeout_note)
+
         self._hint_label = QLabel("Windows sign-in remains protected by Windows.", root)
         self._hint_label.setObjectName("detail")
         self._hint_label.setContentsMargins(0, 12, 0, 0)
@@ -151,6 +174,17 @@ class ControlCenter(QMainWindow):
     def enrollment_present(self) -> bool:
         return self._supervisor.enrollment_present()
 
+    def timeout_note_text(self) -> str:
+        return self._timeout_note.text()
+
+    def _current_idle_timeout(self) -> int:
+        try:
+            from app.config import load_settings
+
+            return load_settings(self._settings_path).idle_timeout_seconds
+        except OSError:
+            return 60
+
     def refresh(self) -> None:
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
@@ -172,6 +206,13 @@ class ControlCenter(QMainWindow):
     def start_protection(self) -> None:
         self._supervisor.start()
         self.refresh()
+
+    def save_idle_timeout(self) -> None:
+        seconds = self._timeout_input.value()
+        if self._supervisor.set_idle_timeout(seconds):
+            self._timeout_note.setText("Saved. Changes apply on the next start.")
+        else:
+            self._timeout_note.setText("That timeout is outside the permitted range.")
 
     def _run_primary_action(self) -> None:
         if not self._supervisor.enrollment_present():

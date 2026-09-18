@@ -293,7 +293,6 @@ class MajestyGuardDaemon:
         self.command_ipc = CMDServer(
             self._queue_ui_command,
             expected_client_pid=self._owned_overlay_pid,
-            additional_trusted_pid=self._verified_tray_pid,
         )
         self.command_ipc.start()
         if self.state == State.SOFT_LOCK:
@@ -926,31 +925,6 @@ class MajestyGuardDaemon:
             proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
             proc.kill()
-
-    def _verified_tray_pid(self) -> Optional[int]:
-        """Reads %LOCALAPPDATA%\\MajestyGuard\\tray.pid (written by the
-        tray/companion app on its own startup) and returns the PID only
-        after verifying, via psutil, that it actually belongs to a
-        running process whose command line references the installed
-        tray script. An unverified PID file would let any same-user
-        process self-register as a trusted command-pipe client, since
-        LOCALAPPDATA is writable by anything running as this user -
-        verify, don't just trust what's on disk."""
-        pid_path = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard" / "tray.pid"
-        try:
-            raw = pid_path.read_text(encoding="utf-8").strip()
-            pid = int(raw)
-        except (OSError, ValueError):
-            return None
-        try:
-            import psutil
-            proc = psutil.Process(pid)
-            cmdline = " ".join(proc.cmdline()).lower()
-        except Exception:
-            return None
-        if "mg_tray.py" not in cmdline and "mg_tray.exe" not in cmdline:
-            return None
-        return pid
 
     def _start_monitor_watchdog(self) -> None:
         """Start background thread that relaunches the monitor if it dies while locked."""

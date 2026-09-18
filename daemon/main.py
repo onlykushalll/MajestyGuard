@@ -901,8 +901,10 @@ class MajestyGuardDaemon:
             return
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
+        packaged_ui = Path(env.get("MG_UI_EXECUTABLE", ""))
+        command = [str(packaged_ui)] if packaged_ui.is_file() else [sys.executable, str(ui_path)]
         self._overlay_proc = subprocess.Popen(
-            [sys.executable, str(ui_path)],
+            command,
             cwd=str(_ROOT_DIR),
             env=env,
             stdout=subprocess.DEVNULL,

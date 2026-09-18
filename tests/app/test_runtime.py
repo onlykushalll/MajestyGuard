@@ -167,3 +167,26 @@ def test_set_idle_timeout_persists_policy_bounded_value(tmp_path):
 
     assert supervisor.set_idle_timeout(180) is True
     assert load_settings(settings_path) == RuntimeSettings(idle_timeout_seconds=180, paused=False)
+
+
+def test_supervisor_uses_packaged_daemon_and_ui_when_both_are_available(tmp_path, monkeypatch):
+    launched = {}
+    daemon_executable = tmp_path / "MajestyGuardDaemon.exe"
+    ui_executable = tmp_path / "MajestyGuardUI.exe"
+    daemon_executable.write_bytes(b"daemon")
+    ui_executable.write_bytes(b"ui")
+    supervisor = Supervisor(
+        tmp_path,
+        Path("python.exe"),
+        tmp_path / "settings.json",
+        daemon_executable=daemon_executable,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn",
+        lambda command, env: launched.update(command=command, env=env) or FakeProcess(),
+    )
+
+    assert supervisor.start() is True
+    assert launched["command"] == [str(daemon_executable)]
+    assert launched["env"]["MG_UI_EXECUTABLE"] == str(ui_executable)

@@ -34,6 +34,7 @@ class Supervisor:
         settings_path: Path,
         *,
         local_app_data: Optional[Path] = None,
+        daemon_executable: Optional[Path] = None,
     ) -> None:
         self._root = Path(root)
         self._python = Path(python_executable)
@@ -41,6 +42,7 @@ class Supervisor:
         self._local_app_data = Path(local_app_data) if local_app_data else Path(
             os.environ.get("LOCALAPPDATA", "C:/tmp")
         )
+        self._daemon_executable = Path(daemon_executable) if daemon_executable else None
         self._process: Optional[subprocess.Popen] = None
         self._enrollment_process: Optional[subprocess.Popen] = None
 
@@ -57,8 +59,13 @@ class Supervisor:
         if self.status() in (RuntimeStatus.STARTING, RuntimeStatus.RUNNING):
             return False
 
-        entrypoint = self._root / "daemon" / "main.py"
-        if not entrypoint.is_file():
+        source_entrypoint = self._root / "daemon" / "main.py"
+        daemon_command: list[str]
+        if self._daemon_executable is not None and self._daemon_executable.is_file():
+            daemon_command = [str(self._daemon_executable)]
+        elif source_entrypoint.is_file():
+            daemon_command = [str(self._python), str(source_entrypoint)]
+        else:
             return False
 
         settings = load_settings(self._settings_path)
@@ -79,8 +86,11 @@ class Supervisor:
                 "PYTHONUNBUFFERED": "1",
             }
         )
+        packaged_ui = self._root / "MajestyGuardUI.exe"
+        if packaged_ui.is_file():
+            environment["MG_UI_EXECUTABLE"] = str(packaged_ui)
         try:
-            self._process = self._spawn([str(self._python), str(entrypoint)], environment)
+            self._process = self._spawn(daemon_command, environment)
         except OSError:
             self._process = None
             return False

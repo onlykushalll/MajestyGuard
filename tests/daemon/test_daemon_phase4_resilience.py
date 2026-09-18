@@ -173,3 +173,23 @@ def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
     daemon.start()
 
     assert events[:3] == ["pipe", "ui", "command"]
+
+
+def test_launch_ui_prefers_explicit_packaged_ui_executable(monkeypatch, tmp_path):
+    daemon = _bare_daemon()
+    daemon._overlay_proc = None
+    packaged_ui = tmp_path / "MajestyGuardUI.exe"
+    packaged_ui.write_bytes(b"ui")
+    started = {}
+
+    monkeypatch.setattr(daemon_main, "_ROOT_DIR", tmp_path)
+    monkeypatch.setenv("MG_UI_EXECUTABLE", str(packaged_ui))
+    monkeypatch.setattr(
+        daemon_main.subprocess,
+        "Popen",
+        lambda command, **kwargs: started.update(command=command, kwargs=kwargs) or type("Process", (), {"poll": lambda self: None})(),
+    )
+
+    daemon._launch_ui()
+
+    assert started["command"] == [str(packaged_ui)]

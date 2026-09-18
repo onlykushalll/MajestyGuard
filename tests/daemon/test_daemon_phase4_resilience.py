@@ -1,5 +1,6 @@
 import logging
 import threading
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -144,3 +145,31 @@ def test_daemon_logging_uses_rotating_file_handler():
         handler.__class__.__name__ == "RotatingFileHandler"
         for handler in root_handlers
     )
+
+
+def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
+    daemon = MajestyGuardDaemon()
+    events = []
+
+    daemon._write_daemon_pid = lambda: None
+    daemon.ipc = MagicMock()
+    daemon.ipc.start.side_effect = lambda: events.append("pipe")
+    daemon.session_monitor = MagicMock()
+    daemon._start_overlay_watchdog = lambda: None
+    daemon._load_cv_engine = lambda: None
+    daemon._warmup_inference = lambda: None
+    daemon._should_open_camera_on_start = lambda: False
+    daemon._run_loop = lambda: None
+    daemon._shutdown = lambda: None
+    daemon._launch_ui = lambda: events.append("ui")
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(
+        daemon_main,
+        "CMDServer",
+        lambda *_args, **_kwargs: type("FakeCommandServer", (), {"start": lambda self: events.append("command")})(),
+    )
+
+    daemon.start()
+
+    assert events[:3] == ["pipe", "ui", "command"]

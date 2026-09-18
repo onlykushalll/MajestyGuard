@@ -290,6 +290,10 @@ class MajestyGuardDaemon:
         self._write_daemon_pid()
 
         self.ipc.start()
+        # The daemon owns the only UI process permitted to consume state and
+        # submit commands. Starting it here covers ordinary daily-use startup,
+        # not just the special idle-check and locked watchdog paths.
+        self._launch_ui()
         self.command_ipc = CMDServer(
             self._queue_ui_command,
             expected_client_pid=self._owned_overlay_pid,

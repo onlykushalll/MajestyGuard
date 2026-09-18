@@ -28,12 +28,15 @@ class SupervisorProtocol(Protocol):
     def start(self) -> bool: ...
     def stop(self) -> None: ...
     def enrollment_present(self) -> bool: ...
+    def pause(self) -> None: ...
+    def resume(self) -> bool: ...
 
 
 _STATUS_COPY = {
     RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "#7f8b9c"),
     RuntimeStatus.STARTING: ("Starting protection", "Starting", "#237bff"),
     RuntimeStatus.RUNNING: ("Protection running", "Pause protection", "#16a36a"),
+    RuntimeStatus.PAUSED: ("Protection paused", "Resume protection", "#7f8b9c"),
     RuntimeStatus.DEGRADED: ("Protection degraded", "Restart protection", "#c06a00"),
 }
 
@@ -178,7 +181,9 @@ class ControlCenter(QMainWindow):
             self.refresh()
             return
         if self._supervisor.status() is RuntimeStatus.RUNNING:
-            self._supervisor.stop()
+            self._supervisor.pause()
+        elif self._supervisor.status() is RuntimeStatus.PAUSED:
+            self._supervisor.resume()
         else:
             self.start_protection()
         self.refresh()

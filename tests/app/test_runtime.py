@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.config import RuntimeSettings, load_settings, save_settings
 from app.runtime import RuntimeStatus, Supervisor
 
 
@@ -123,3 +124,46 @@ def test_open_log_directory_returns_current_user_runtime_path(tmp_path):
     )
 
     assert supervisor.open_log_directory() == local_app_data / "MajestyGuard"
+
+
+def test_pause_stops_owned_daemon_and_persists_paused_state(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    supervisor = Supervisor(tmp_path, Path("python.exe"), settings_path)
+    process = FakeProcess()
+    supervisor._process = process
+
+    supervisor.pause()
+
+    assert process.terminated is True
+    assert supervisor.status() is RuntimeStatus.PAUSED
+    assert load_settings(settings_path) == RuntimeSettings(idle_timeout_seconds=60, paused=True)
+
+
+def test_resume_clears_paused_state_before_starting(tmp_path, monkeypatch):
+    settings_path = tmp_path / "settings.json"
+    save_settings(settings_path, RuntimeSettings(idle_timeout_seconds=120, paused=True))
+    entrypoint = tmp_path / "daemon" / "main.py"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text("# test entrypoint", encoding="utf-8")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), settings_path)
+    monkeypatch.setattr(supervisor, "_spawn", lambda *_args: FakeProcess())
+
+    assert supervisor.resume() is True
+    assert supervisor.status() is RuntimeStatus.RUNNING
+    assert load_settings(settings_path) == RuntimeSettings(idle_timeout_seconds=120, paused=False)
+
+
+def test_set_idle_timeout_rejects_out_of_policy_value(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    supervisor = Supervisor(tmp_path, Path("python.exe"), settings_path)
+
+    assert supervisor.set_idle_timeout(1) is False
+    assert load_settings(settings_path) == RuntimeSettings()
+
+
+def test_set_idle_timeout_persists_policy_bounded_value(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    supervisor = Supervisor(tmp_path, Path("python.exe"), settings_path)
+
+    assert supervisor.set_idle_timeout(180) is True
+    assert load_settings(settings_path) == RuntimeSettings(idle_timeout_seconds=180, paused=False)

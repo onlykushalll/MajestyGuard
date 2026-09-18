@@ -7,13 +7,20 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional, Sequence
 
-from app.config import load_settings
+from app.config import (
+    MAX_IDLE_TIMEOUT_SECONDS,
+    MIN_IDLE_TIMEOUT_SECONDS,
+    RuntimeSettings,
+    load_settings,
+    save_settings,
+)
 
 
 class RuntimeStatus(Enum):
     STOPPED = "stopped"
     STARTING = "starting"
     RUNNING = "running"
+    PAUSED = "paused"
     DEGRADED = "degraded"
 
 
@@ -39,7 +46,7 @@ class Supervisor:
 
     def status(self) -> RuntimeStatus:
         if self._process is None:
-            return RuntimeStatus.STOPPED
+            return RuntimeStatus.PAUSED if load_settings(self._settings_path).paused else RuntimeStatus.STOPPED
         return RuntimeStatus.RUNNING if self._process.poll() is None else RuntimeStatus.DEGRADED
 
     def enrollment_present(self) -> bool:
@@ -89,6 +96,34 @@ class Supervisor:
             process.wait(timeout=max(0.1, float(timeout_seconds)))
         except subprocess.TimeoutExpired:
             process.kill()
+
+    def pause(self) -> None:
+        settings = load_settings(self._settings_path)
+        save_settings(
+            self._settings_path,
+            RuntimeSettings(idle_timeout_seconds=settings.idle_timeout_seconds, paused=True),
+        )
+        self.stop()
+
+    def resume(self) -> bool:
+        settings = load_settings(self._settings_path)
+        save_settings(
+            self._settings_path,
+            RuntimeSettings(idle_timeout_seconds=settings.idle_timeout_seconds, paused=False),
+        )
+        return self.start()
+
+    def set_idle_timeout(self, seconds: int) -> bool:
+        if not isinstance(seconds, int) or isinstance(seconds, bool):
+            return False
+        if not MIN_IDLE_TIMEOUT_SECONDS <= seconds <= MAX_IDLE_TIMEOUT_SECONDS:
+            return False
+        settings = load_settings(self._settings_path)
+        save_settings(
+            self._settings_path,
+            RuntimeSettings(idle_timeout_seconds=seconds, paused=settings.paused),
+        )
+        return True
 
     def start_enrollment(self) -> bool:
         """Launch the existing guided enrollment tool at most once at a time."""

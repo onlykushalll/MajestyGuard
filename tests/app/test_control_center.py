@@ -29,6 +29,15 @@ class FakeSupervisor:
         self.stop_calls += 1
         self._status = RuntimeStatus.STOPPED
 
+    def pause(self):
+        self.stop_calls += 1
+        self._status = RuntimeStatus.PAUSED
+
+    def resume(self):
+        self.start_calls += 1
+        self._status = RuntimeStatus.RUNNING
+        return True
+
     def enrollment_present(self):
         return self._enrollment_present
 
@@ -71,4 +80,16 @@ def test_control_center_guides_missing_enrollment_to_enrollment_action(qapp, tmp
     assert view.primary_action_text() == "Enroll face"
     view._run_primary_action()
     assert supervisor.enrollment_calls == 1
+    view.close()
+
+
+def test_control_center_resume_action_recovers_a_paused_supervisor(qapp, tmp_path):
+    supervisor = FakeSupervisor(RuntimeStatus.PAUSED)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    assert view.primary_action_text() == "Resume protection"
+    view._run_primary_action()
+
+    assert supervisor.start_calls == 1
+    assert view.status_text() == "Protection running"
     view.close()

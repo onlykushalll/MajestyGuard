@@ -190,3 +190,23 @@ def test_supervisor_uses_packaged_daemon_and_ui_when_both_are_available(tmp_path
     assert supervisor.start() is True
     assert launched["command"] == [str(daemon_executable)]
     assert launched["env"]["MG_UI_EXECUTABLE"] == str(ui_executable)
+
+
+def test_supervisor_uses_packaged_sibling_folder_layout(tmp_path, monkeypatch):
+    launched = {}
+    daemon_executable = tmp_path / "MajestyGuardDaemon" / "MajestyGuardDaemon.exe"
+    ui_executable = tmp_path / "MajestyGuardUI" / "MajestyGuardUI.exe"
+    daemon_executable.parent.mkdir()
+    ui_executable.parent.mkdir()
+    daemon_executable.write_bytes(b"daemon")
+    ui_executable.write_bytes(b"ui")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn",
+        lambda command, env: launched.update(command=command, env=env) or FakeProcess(),
+    )
+
+    assert supervisor.start() is True
+    assert launched["command"] == [str(daemon_executable)]
+    assert launched["env"]["MG_UI_EXECUTABLE"] == str(ui_executable)

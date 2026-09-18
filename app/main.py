@@ -24,9 +24,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def default_paths(root: Path | None = None) -> tuple[Path, Path]:
-    application_root = Path(root) if root is not None else Path(__file__).resolve().parents[1]
+    if root is not None:
+        application_root = Path(root)
+    elif getattr(sys, "frozen", False):
+        application_root = Path(sys.executable).resolve().parent
+    else:
+        application_root = Path(__file__).resolve().parents[1]
     local_app_data = Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
     return application_root, local_app_data / "MajestyGuard" / "settings.json"
+
+
+def default_daemon_executable(root: Path) -> Path | None:
+    """Find the daemon beside a frozen Control Center, if present."""
+    candidates = (
+        root / "MajestyGuardDaemon.exe",
+        root / "MajestyGuardDaemon" / "MajestyGuardDaemon.exe",
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -36,7 +50,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     app.setApplicationName("MajestyGuard")
     app.setQuitOnLastWindowClosed(False)
 
-    supervisor = Supervisor(root, Path(sys.executable), settings_path)
+    supervisor = Supervisor(
+        root,
+        Path(sys.executable),
+        settings_path,
+        daemon_executable=default_daemon_executable(root),
+    )
     center = ControlCenter(supervisor, settings_path)
     center.show_tray()
 

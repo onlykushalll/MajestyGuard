@@ -61,8 +61,9 @@ class Supervisor:
 
         source_entrypoint = self._root / "daemon" / "main.py"
         daemon_command: list[str]
-        if self._daemon_executable is not None and self._daemon_executable.is_file():
-            daemon_command = [str(self._daemon_executable)]
+        packaged_daemon = self._packaged_daemon_executable()
+        if packaged_daemon is not None:
+            daemon_command = [str(packaged_daemon)]
         elif source_entrypoint.is_file():
             daemon_command = [str(self._python), str(source_entrypoint)]
         else:
@@ -86,8 +87,8 @@ class Supervisor:
                 "PYTHONUNBUFFERED": "1",
             }
         )
-        packaged_ui = self._root / "MajestyGuardUI.exe"
-        if packaged_ui.is_file():
+        packaged_ui = self._packaged_ui_executable()
+        if packaged_ui is not None:
             environment["MG_UI_EXECUTABLE"] = str(packaged_ui)
         try:
             self._process = self._spawn(daemon_command, environment)
@@ -186,3 +187,18 @@ class Supervisor:
             env=environment,
             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
         )
+
+    def _packaged_daemon_executable(self) -> Optional[Path]:
+        candidates = (
+            self._daemon_executable,
+            self._root / "MajestyGuardDaemon.exe",
+            self._root / "MajestyGuardDaemon" / "MajestyGuardDaemon.exe",
+        )
+        return next((candidate for candidate in candidates if candidate is not None and candidate.is_file()), None)
+
+    def _packaged_ui_executable(self) -> Optional[Path]:
+        candidates = (
+            self._root / "MajestyGuardUI.exe",
+            self._root / "MajestyGuardUI" / "MajestyGuardUI.exe",
+        )
+        return next((candidate for candidate in candidates if candidate.is_file()), None)

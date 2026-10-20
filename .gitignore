@@ -67,3 +67,8 @@ logs/
 # AI & Session residue
 *.handoff.md
 *SESSION_HANDOFF*
+# Secrets / key material (FIX-1, AUD-E repo hygiene)
+*.pfx
+*.key
+*.pem
+*.env

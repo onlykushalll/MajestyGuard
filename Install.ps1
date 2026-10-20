@@ -77,14 +77,31 @@ function Test-CvPython311 {
 }
 
 function Resolve-CvPythonPath {
+    # SECURITY (MG-C-01/MG-E-01): candidate ORDER matters. This installer runs
+    # elevated, and the interpreter chosen here is executed as Administrator
+    # (pip install, model download), embedded in the LocalSystem service config
+    # (CvPythonPath) and used for the outbound firewall rule. User-writable dev
+    # trees such as C:\tmp must therefore be a LAST resort, never the first
+    # choice. Preference order:
+    #   1. venv bundled with the staged install (Program Files / ProgramData)
+    #   2. system-wide Python 3.11 installs and the all-users py.exe launcher
+    #   3. an interpreter discoverable on PATH (warned)
+    #   4. legacy user-writable dev venvs (C:\tmp\... or the repo checkout),
+    #      kept for existing dev machines but loudly warned
     $knownGoodVenv = "C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"
 
     $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $repoVenv = Join-Path $repoRoot "src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"
+
+    # Admin-writable locations first: the staged install root, ProgramData,
+    # then fixed machine-wide Python locations (never per-user installs).
     $candidates = @(
-        $knownGoodVenv,
-        (Join-Path $repoRoot "src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"),
+        (Join-Path $INSTALL_DIR "CVEngine\.venv\Scripts\python.exe"),
         (Join-Path $PROGRAMDATA_CV_DIR ".venv\Scripts\python.exe"),
-        (Join-Path $INSTALL_DIR "CVEngine\.venv\Scripts\python.exe")
+        "$env:ProgramFiles\Python311\python.exe",
+        "${env:ProgramFiles(x86)}\Python311\python.exe",
+        "$env:SystemDrive\Python311\python.exe",
+        "$env:WINDIR\py.exe"
     )
 
     foreach ($candidate in ($candidates | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)) {
@@ -93,7 +110,28 @@ function Resolve-CvPythonPath {
         }
     }
 
-    throw "No Python 3.11 CV venv found. Expected: $knownGoodVenv"
+    # PATH lookup via Get-Command (applications only, never the current dir).
+    foreach ($commandName in @("python", "python3", "py")) {
+        foreach ($pathCommand in @(Get-Command -Name $commandName -CommandType Application -ErrorAction SilentlyContinue)) {
+            if ($pathCommand.Source -and (Test-CvPython311 -Path $pathCommand.Source)) {
+                Write-Warning "CV Python resolved from PATH ('$($pathCommand.Source)'). Verify this is a machine-wide, admin-writable Python 3.11 install, not a user-writable shim (MG-C-01)."
+                return [string]$pathCommand.Source
+            }
+        }
+    }
+
+    # Last resort: legacy user-writable dev venvs. Kept so existing dev machines
+    # keep working, but flagged loudly: anyone who can write to these trees can
+    # execute code as the LocalSystem service via CvPythonPath (MG-C-01/MG-E-01).
+    foreach ($candidate in (@($knownGoodVenv, $repoVenv) | Select-Object -Unique)) {
+        if (Test-CvPython311 -Path $candidate) {
+            Write-Warning "SECURITY (MG-C-01): using legacy user-writable dev venv '$candidate'."
+            Write-Warning "Any local process that can write to that tree can run code as the LocalSystem service. Prefer a venv staged under '$INSTALL_DIR' or '$PROGRAMDATA_CV_DIR'."
+            return [string]$candidate
+        }
+    }
+
+    throw "No Python 3.11 interpreter found. Expected a bundled venv under the install root or ProgramData, a system-wide Python 3.11 install, or the legacy dev venv at $knownGoodVenv"
 }
 
 function Copy-DirectoryContentsFiltered {
@@ -353,7 +391,15 @@ function Get-DevSigningCertificate {
         $cert = New-SelfSignedCertificate @certParams
     }
 
-    foreach ($store in @("Root", "TrustedPublisher")) {
+    # SECURITY (MG-C-06/MG-E-03): a self-signed code-signing certificate must
+    # NEVER be installed into LocalMachine\Root. Root is the machine-wide
+    # trust-anchor store: every binary signed with this cert's private key
+    # becomes chain-trusted for all local validation, which turns a dev key
+    # into a machine-wide trust-widening primitive (and the legacy
+    # mg_cert.pfx/password pair in the archive demonstrates key reuse).
+    # TrustedPublisher alone is the correct store for dev Authenticode
+    # publisher trust, so it is the only store provisioned here.
+    foreach ($store in @("TrustedPublisher")) {
         Add-CertificateToLocalMachineStore -Certificate $cert -StoreName $store
     }
 
@@ -380,14 +426,26 @@ function Enable-DevCodeSigning {
         if ($sig.Status -eq "Valid") {
             continue
         }
+        # MG-C-06: with the dev cert trusted only via TrustedPublisher (no
+        # LocalMachine Root anchor), previously dev-signed binaries report
+        # NotTrusted; skip re-signing files already signed by this dev cert.
+        if ($null -ne $sig.SignerCertificate -and $sig.SignerCertificate.Thumbprint -eq $cert.Thumbprint) {
+            continue
+        }
 
         $signed = Set-AuthenticodeSignature -FilePath $binary.FullName -Certificate $cert -HashAlgorithm SHA256
-        if ($signed.Status -ne "Valid") {
+        # MG-C-06: WinVerifyTrust no longer reports "Valid" for these
+        # signatures because the dev cert intentionally does not chain to
+        # LocalMachine Root. Validate that the signature was applied with the
+        # dev certificate itself (publisher identity) instead of requiring
+        # Root-chained trust.
+        if ($null -eq $signed.SignerCertificate -or $signed.SignerCertificate.Thumbprint -ne $cert.Thumbprint) {
             throw "Signing failed for $($binary.FullName): $($signed.Status) $($signed.StatusMessage)"
         }
     }
 
     Write-Host "    MajestyGuard user-mode binaries signed with local dev certificate" -ForegroundColor Gray
+    Write-Host "    Dev certificate trusted via LocalMachine\TrustedPublisher only (never Root)" -ForegroundColor Gray
 }
 
 function Stop-InstalledMajestyGuardRuntime {
@@ -599,8 +657,25 @@ Write-Host "[6/13] Checking code signing setup..." -ForegroundColor Yellow
 if (-not (Test-Path $INSTALL_DIR)) {
     Write-Host "    Skipped. Install directory not present." -ForegroundColor DarkGray
 } else {
+    # MG-C-06: dev-signed binaries no longer chain to LocalMachine Root, so
+    # WinVerifyTrust reports them as NotTrusted even though they carry our dev
+    # certificate. Count a binary as signed when its signer certificate is one
+    # of the MajestyGuard dev certs currently trusted in LocalMachine
+    # TrustedPublisher, in addition to fully chain-validated signatures.
+    $devCertThumbprints = @(
+        Get-ChildItem -Path "Cert:\LocalMachine\TrustedPublisher" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Subject -in @("CN=MajestyGuard Dev", "CN=MajestyGuard", "CN=MajestyGuardDev") } |
+            ForEach-Object { $_.Thumbprint }
+    )
     $unsigned = @(Get-MajestyGuardBinaries | Where-Object {
-        (Get-AuthenticodeSignature -FilePath $_.FullName).Status -ne "Valid"
+        $sig = Get-AuthenticodeSignature -FilePath $_.FullName
+        if ($sig.Status -eq "Valid") {
+            return $false
+        }
+        if ($null -ne $sig.SignerCertificate -and $devCertThumbprints -contains $sig.SignerCertificate.Thumbprint) {
+            return $false
+        }
+        return $true
     })
     if ($unsigned.Count -eq 0) {
         Write-Host "    MajestyGuard binaries are signed" -ForegroundColor Green

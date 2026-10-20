@@ -2,8 +2,15 @@
 # MajestyGuard — Developer Self-Signing & Authenticode Setup
 # ==============================================================================
 # Generates a trusted local Code Signing Certificate for MajestyGuard, installs
-# it into the LocalMachine Root & TrustedPublisher certificate stores, and signs
+# it into the LocalMachine TrustedPublisher certificate store ONLY, and signs
 # all compiled executables (.exe) and dynamic libraries (.dll).
+#
+# SECURITY (MG-C-06/MG-E-03): the certificate is deliberately NOT provisioned
+# into LocalMachine\Root or TrustedPeople. Root is the machine-wide trust
+# anchor store: a self-signed CodeSigning cert there makes every binary signed
+# with its private key chain-trusted for ALL local validation, which turns a
+# dev key into a machine-wide trust-widening primitive. TrustedPublisher is
+# the correct (and sufficient) store for dev Authenticode publisher trust.
 #
 # Requires: Administrator privileges
 #
@@ -15,8 +22,9 @@
 # personal, low-volume app), or (b) it's signed with a certificate from a
 # CA that participates in the Microsoft Trusted Root Program -- a
 # centrally-curated list Microsoft maintains. Installing a self-signed
-# cert into this machine's own LocalMachine\Root store (what this script
-# does) does not add it to that program; these are different things
+# cert into this machine's own LocalMachine\Root store (which this script
+# no longer does -- TrustedPublisher only, see the MG-C-06 hardening above)
+# would not add it to that program; these are different things
 # despite the similar name. Microsoft's own FAQ states there is currently
 # no supported way to bypass SAC for an individual app short of a real
 # Trusted-Root-Program-chained signature (see docs/signing -- SignPath.io
@@ -69,9 +77,13 @@ if ($existingCert) {
 }
 
 # ── 3. Install Certificate in Local Machine Trust Stores ──────────────────────
-Write-Host "[2/3] Registering certificate in Trusted Root & Trusted Publisher stores..." -ForegroundColor Yellow
+Write-Host "[2/3] Registering certificate in the Trusted Publisher store..." -ForegroundColor Yellow
 
-$storesToProvision = @("Root", "TrustedPublisher", "TrustedPeople")
+# SECURITY (MG-C-06/MG-E-03): provision TrustedPublisher ONLY. A self-signed
+# code-signing certificate must never be placed in LocalMachine\Root (that
+# makes everything signed with its key machine-wide chain-trusted), and
+# TrustedPeople is not needed for Authenticode publisher trust.
+$storesToProvision = @("TrustedPublisher")
 foreach ($storeName in $storesToProvision) {
     $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "LocalMachine")
     try {
@@ -130,9 +142,11 @@ Write-Host "`nSigning Results Summary:" -ForegroundColor Cyan
 $results | Format-Table -AutoSize
 
 Write-Host "`n[SUCCESS] MajestyGuard Developer Self-Signing Completed!" -ForegroundColor Green
-Write-Host "Binaries are now properly Authenticode-signed with a certificate this" -ForegroundColor Green
-Write-Host "machine locally trusts, which reduces generic 'unknown publisher'" -ForegroundColor Green
-Write-Host "SmartScreen friction here." -ForegroundColor Green
+Write-Host "Binaries are now properly Authenticode-signed with the MajestyGuard" -ForegroundColor Green
+Write-Host "dev certificate, trusted for publisher identity via LocalMachine" -ForegroundColor Green
+Write-Host "TrustedPublisher. Signature status may report 'NotTrusted' because the" -ForegroundColor Yellow
+Write-Host "self-signed dev cert is intentionally NOT a machine Root trust anchor" -ForegroundColor Yellow
+Write-Host "(MG-C-06 hardening); that is expected and not a signing failure." -ForegroundColor Yellow
 Write-Host "This does NOT unblock Smart App Control -- SAC requires a certificate" -ForegroundColor Yellow
 Write-Host "from Microsoft's Trusted Root Program specifically, which a locally" -ForegroundColor Yellow
 Write-Host "self-signed cert does not chain to. See the header comment above." -ForegroundColor Yellow

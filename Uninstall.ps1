@@ -113,16 +113,48 @@ if ($RestoreScreensaver) {
 }
 
 Write-Host "Removing development code signing certificates..." -ForegroundColor Yellow
-if ($PSCmdlet.ShouldProcess("CN=MajestyGuard Dev", "Remove self-signed code signing certificate from Root, TrustedPublisher, and My stores")) {
-    $subject = "CN=MajestyGuard Dev"
-    foreach ($storeName in @("My", "Root", "TrustedPublisher")) {
-        $certs = Get-ChildItem -Path "Cert:\LocalMachine\$storeName" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }
-        foreach ($c in $certs) {
-            Remove-Item -Path $c.PSPath -Force -ErrorAction SilentlyContinue
+# MG-E-03: three MajestyGuard self-signed code-signing subjects exist, one per
+# installer: Install.ps1 ("CN=MajestyGuard Dev"), setup/sign_dev_binaries.ps1
+# ("CN=MajestyGuardDev") and setup/setup_whcdf.ps1 ("CN=MajestyGuard"). Remove
+# ALL THREE subjects from every LocalMachine store any installer wrote
+# (My, Root, TrustedPublisher, TrustedPeople) so no MajestyGuard trust anchor
+# outlives the product. Idempotent: absent subjects/stores are skipped.
+if ($PSCmdlet.ShouldProcess("MajestyGuard dev certificates", "Remove self-signed code signing certificates (CN=MajestyGuard Dev, CN=MajestyGuard, CN=MajestyGuardDev) from My, Root, TrustedPublisher, and TrustedPeople stores")) {
+    foreach ($subject in @("CN=MajestyGuard Dev", "CN=MajestyGuard", "CN=MajestyGuardDev")) {
+        foreach ($storeName in @("My", "Root", "TrustedPublisher", "TrustedPeople")) {
+            $certs = Get-ChildItem -Path "Cert:\LocalMachine\$storeName" -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $subject }
+            foreach ($c in $certs) {
+                Remove-Item -Path $c.PSPath -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
 Write-Host "    Development certificates removed" -ForegroundColor Gray
+
+Write-Host "Reverting WHCDF / Developer Mode machine policy keys..." -ForegroundColor Yellow
+# MG-E-04: setup/setup_whcdf.ps1 enables Developer Mode
+# (AllowDevelopmentWithoutDevLicense), MSIX sideloading (AllowAllTrustedApps)
+# and AllowSecondaryAuthenticationFactor. These exact machine-wide policy
+# values are reverted here (values only; the shared Windows keys themselves
+# are left in place) so uninstalling does not leave the OS weakened.
+if ($PSCmdlet.ShouldProcess("HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock", "Remove AllowDevelopmentWithoutDevLicense and AllowAllTrustedApps values")) {
+    $appModelUnlockKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"
+    Remove-ItemProperty -Path $appModelUnlockKey -Name "AllowDevelopmentWithoutDevLicense" -ErrorAction SilentlyContinue
+    Remove-ItemProperty -Path $appModelUnlockKey -Name "AllowAllTrustedApps" -ErrorAction SilentlyContinue
+}
+if ($PSCmdlet.ShouldProcess("HKLM:\SOFTWARE\Policies\Microsoft\Windows\System", "Remove AllowSecondaryAuthenticationFactor value")) {
+    Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\System" -Name "AllowSecondaryAuthenticationFactor" -ErrorAction SilentlyContinue
+}
+Write-Host "    WHCDF / Developer Mode policy keys reverted" -ForegroundColor Gray
+
+Write-Host "Removing machine-scope mutual auth key..." -ForegroundColor Yellow
+# MG-C-10/MG-E-08: setup/setup_whcdf.ps1 (-AllowInsecureEnvKey) and the legacy
+# archive/legacy-cleanup/.../mg_genkey.ps1 write MAJESTYGUARD_MUTUAL_AUTH_KEY at
+# Machine scope, where every local process can read it. Clear it on uninstall.
+if ($PSCmdlet.ShouldProcess("MAJESTYGUARD_MUTUAL_AUTH_KEY", "Remove Machine-scope environment variable")) {
+    [Environment]::SetEnvironmentVariable('MAJESTYGUARD_MUTUAL_AUTH_KEY', $null, 'Machine')
+}
+Write-Host "    Machine-scope mutual auth key removed" -ForegroundColor Gray
 
 Write-Host "[7/7] Removing installed files..." -ForegroundColor Yellow
 if ($PSCmdlet.ShouldProcess($INSTALL_DIR, "Remove installed MajestyGuard files")) {

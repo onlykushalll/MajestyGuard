@@ -32,10 +32,52 @@ logging.basicConfig(
 )
 logger = logging.getLogger("MajestyGuard.CVServer")
 
-# ── Configuration from environment variables (set by Worker.cs) ──────
+# -- Configuration from environment variables (set by Worker.cs) ------
 PIPE_NAME   = os.environ.get("MG_CV_PIPE",    "MajestyGuard_CV")
 MODEL_DIR   = os.environ.get("MG_MODEL_DIR",  os.path.join(os.path.dirname(__file__), "models"))
 CAMERA_IDX  = int(os.environ.get("MG_CAMERA_IDX", "0"))
+
+# -- Expected client PID (MG-D-16), passed by the spawning parent ------
+# The C# Worker (the process that spawns this server and owns the
+# MajestyGuard_CV named pipe) passes --expected-client-pid <pid> naming
+# the only process allowed at the other end of the pipe. This process is
+# the pipe CLIENT, so the gate verifies the pipe SERVER (the only peer
+# that can send load_embeddings / enroll / set_fps commands) is exactly
+# the trusted parent. Named to mirror daemon/ipc_server.py's
+# _is_expected_client PID-gate pattern.
+
+
+def _parse_expected_client_pid(argv=None):
+    """Extract --expected-client-pid <int> (or --expected-client-pid=<int>)
+    from the command line. Returns the PID, or None when absent/invalid."""
+    args = list(sys.argv if argv is None else argv)
+    for i, arg in enumerate(args):
+        value = None
+        if arg == "--expected-client-pid" and i + 1 < len(args):
+            value = args[i + 1]
+        elif arg.startswith("--expected-client-pid="):
+            value = arg.split("=", 1)[1]
+        if value is None:
+            continue
+        try:
+            pid = int(value)
+        except ValueError:
+            logger.warning("--expected-client-pid value %r is not an integer - ignoring it", value)
+            return None
+        if pid <= 0:
+            logger.warning("--expected-client-pid value %d is not a valid PID - ignoring it", pid)
+            return None
+        return pid
+    return None
+
+
+EXPECTED_CLIENT_PID = _parse_expected_client_pid()
+if EXPECTED_CLIENT_PID is None:
+    logger.warning(
+        "--expected-client-pid was not provided: the CV command pipe peer cannot be "
+        "verified. Connections will be REJECTED (fail-closed) unless "
+        "MG_ALLOW_ANY_CV_CLIENT=1 is set explicitly as a development escape hatch."
+    )
 
 
 class CVServer:
@@ -52,13 +94,16 @@ class CVServer:
         self._paused = False
         self._camera_ready = False
         self._heartbeat_thread = None
+        # MG-D-16: True only while the current pipe connection has passed
+        # _verify_pipe_peer; reset whenever the pipe breaks.
+        self._peer_pid_verified = False
 
         # Commands received from Service
         self._pending_commands: list[dict] = []
 
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
     # STARTUP
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
 
     def start(self):
         logger.info("CV Server starting")
@@ -81,10 +126,10 @@ class CVServer:
 
         self._main_loop()
 
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
     # PIPE CONNECTION
     # Reconnects automatically if Service restarts
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
 
     def _connect_pipe(self):
         pipe_path = f"\\\\.\\pipe\\{PIPE_NAME}"
@@ -105,6 +150,21 @@ class CVServer:
                     0,
                     None,
                 )
+
+                # MG-D-16: verify the process at the other end of the pipe
+                # before trusting any command from it. Fail closed: close
+                # the unverified connection and keep retrying - no commands
+                # are read and nothing is sent over an unverified pipe.
+                if not self._verify_pipe_peer():
+                    try:
+                        win32file.CloseHandle(self._pipe)
+                    except pywintypes.error:
+                        pass
+                    self._pipe = None
+                    self._peer_pid_verified = False
+                    time.sleep(2.0)
+                    continue
+
                 logger.info("Connected to Service pipe")
 
                 # Start reader thread for incoming commands
@@ -120,6 +180,60 @@ class CVServer:
                 wait_s = min(0.2 * (2 ** attempts), 5.0)
                 logger.warning("Pipe connect failed (%d): %s. Retry in %.1fs", attempts, e, wait_s)
                 time.sleep(wait_s)
+
+    def _verify_pipe_peer(self) -> bool:
+        """MG-D-16: expected-client-PID gate for the CV command pipe.
+
+        The spawning parent (C# Worker) passes --expected-client-pid <pid>
+        naming the only process allowed to own the other end of the pipe.
+        This process is the pipe CLIENT, so the peer to verify is the pipe
+        SERVER, resolved via GetNamedPipeServerProcessId - an attacker who
+        squats the pipe name before the real service starts would fail this
+        check. Without the argument we fail closed unless
+        MG_ALLOW_ANY_CV_CLIENT=1 is set (development escape hatch)."""
+        if os.environ.get("MG_ALLOW_ANY_CV_CLIENT", "0") == "1":
+            if EXPECTED_CLIENT_PID is None:
+                logger.warning(
+                    "MG_ALLOW_ANY_CV_CLIENT=1 with no --expected-client-pid: "
+                    "accepting ANY CV pipe peer (development escape hatch)"
+                )
+            self._peer_pid_verified = True
+            return True
+        if EXPECTED_CLIENT_PID is None:
+            logger.critical(
+                "CV pipe peer NOT verified: --expected-client-pid was not passed by the "
+                "spawning parent and MG_ALLOW_ANY_CV_CLIENT is not set. Rejecting the "
+                "connection (fail-closed); load_embeddings/enroll and every other "
+                "command from an unverified peer are ignored."
+            )
+            return False
+        try:
+            server_pid = int(win32pipe.GetNamedPipeServerProcessId(self._pipe))
+        except (AttributeError, TypeError, ValueError, pywintypes.error) as e:
+            logger.critical(
+                "CV pipe server PID could not be resolved (%s) - rejecting connection (fail-closed)",
+                e,
+            )
+            return False
+        if server_pid != EXPECTED_CLIENT_PID:
+            logger.critical(
+                "CV pipe server PID %d does not match expected peer PID %d - rejecting "
+                "connection (fail-closed). Possible pipe squatting on %s.",
+                server_pid,
+                EXPECTED_CLIENT_PID,
+                PIPE_NAME,
+            )
+            return False
+        self._peer_pid_verified = True
+        logger.info("CV pipe peer verified: pipe server PID %d", server_pid)
+        return True
+
+    def _pipe_peer_verified(self) -> bool:
+        """True only while the current pipe connection has passed
+        _verify_pipe_peer (or the development escape hatch is active)."""
+        if os.environ.get("MG_ALLOW_ANY_CV_CLIENT", "0") == "1":
+            return True
+        return self._peer_pid_verified
 
     def _read_commands_loop(self):
         """Background thread: reads commands from Service."""
@@ -137,8 +251,9 @@ class CVServer:
 
             except pywintypes.error as e:
                 if e.winerror == 109:  # ERROR_BROKEN_PIPE
-                    logger.warning("Pipe disconnected — reconnecting")
+                    logger.warning("Pipe disconnected - reconnecting")
                     self._pipe = None
+                    self._peer_pid_verified = False
                     self._begin_reconnect()
                     return
                 logger.error("Pipe read error: %s", e)
@@ -152,6 +267,15 @@ class CVServer:
           {"cmd": "enroll", "angle": "Front"}
           {"cmd": "shutdown"}
         """
+        # MG-D-16: every command on this pipe - especially load_embeddings
+        # (in-memory gallery substitution) and enroll - is gated on a
+        # verified pipe peer.
+        if not self._pipe_peer_verified():
+            logger.warning(
+                "Ignoring command %r from unverified CV pipe peer",
+                cmd.get("cmd"),
+            )
+            return
         cmd_type = cmd.get("cmd")
 
         if cmd_type == "set_fps":
@@ -182,12 +306,12 @@ class CVServer:
             self._send(result)
 
         elif cmd_type == "pause":
-            logger.info("Pause command received — suspending detection loop")
+            logger.info("Pause command received - suspending detection loop")
             with self._lock:
                 self._paused = True
 
         elif cmd_type == "resume":
-            logger.info("Resume command received — resuming detection loop")
+            logger.info("Resume command received - resuming detection loop")
             with self._lock:
                 self._paused = False
 
@@ -195,9 +319,9 @@ class CVServer:
             logger.info("Shutdown command received")
             self._running = False
 
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
     # MAIN DETECTION LOOP
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
 
     def _main_loop(self):
         logger.info("Detection loop starting")
@@ -250,7 +374,7 @@ class CVServer:
             if sleep_time > 0:
                 time.sleep(sleep_time)
             else:
-                # Running slower than target FPS — log if significantly behind
+                # Running slower than target FPS - log if significantly behind
                 if abs(sleep_time) > 0.05:
                     logger.debug(
                         "Frame processing too slow: %.0fms (target %.0fms)",
@@ -272,9 +396,9 @@ class CVServer:
             inference_ms=(time.perf_counter() - start_time) * 1000,
         )
 
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
     # PIPE WRITE
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
 
     def _send_result(self, result: FrameResult):
         msg = {
@@ -321,8 +445,9 @@ class CVServer:
             win32file.WriteFile(self._pipe, line.encode("utf-8"))
         except pywintypes.error as e:
             if e.winerror == 109:  # ERROR_BROKEN_PIPE
-                logger.warning("Pipe write failed: broken pipe — reconnecting")
+                logger.warning("Pipe write failed: broken pipe - reconnecting")
                 self._pipe = None
+                self._peer_pid_verified = False
                 self._begin_reconnect()
                 return
             logger.error("Pipe write failed: %s", e)
@@ -342,16 +467,16 @@ class CVServer:
 
         threading.Thread(target=reconnect, daemon=True, name="PipeReconnect").start()
 
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
     # ANTI-DEBUG / ANTI-TAMPER
-    # ─────────────────────────────────────────────────────────────────
+    # -----------------------------------------------------------------
 
     @staticmethod
     def _check_debugger():
         try:
             kernel32 = ctypes.windll.kernel32
             if kernel32.IsDebuggerPresent():
-                logger.critical("Debugger detected — refusing to start")
+                logger.critical("Debugger detected - refusing to start")
                 sys.exit(99)
         except Exception:
             pass

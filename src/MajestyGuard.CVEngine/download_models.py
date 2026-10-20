@@ -114,26 +114,70 @@ def download_insightface_model(model_dir: str) -> bool:
         return False
 
 
+def _existing_file_matches_hash(dest_path: str, expected_sha256: str, description: str) -> bool:
+    """MG-D-05: verify an ALREADY-PRESENT model file against the pinned
+    expected SHA-256. The previous behavior accepted any existing file
+    without checking, so a tampered/poisoned model was confirmed as
+    "already present" and never re-verified."""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(dest_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+    except OSError as e:
+        logger.error("  Cannot read existing %s: %s", description, e)
+        return False
+    actual_sha256 = sha256_hash.hexdigest().lower()
+    if actual_sha256 != expected_sha256.lower():
+        logger.error("  Verification FAILED for existing %s", dest_path)
+        logger.error("  Expected: %s", expected_sha256)
+        logger.error("  Actual:   %s", actual_sha256)
+        return False
+    return True
+
+
 def download_antispoof_model(model_dir: str) -> bool:
-    """Download MiniFASNetV2 ONNX anti-spoof model."""
+    """Download MiniFASNetV2 ONNX anti-spoof model.
+
+    MG-D-05: an existing file is ALWAYS verified against the pinned expected
+    hash (never blindly accepted); a mismatched file is deleted and
+    re-downloaded."""
     info = MODELS["antispoof_minifasv2"]
     dest = os.path.join(model_dir, info["filename"])
 
     if os.path.exists(dest):
-        logger.info("  Anti-spoof model already present: %s", dest)
-        return True
+        if _existing_file_matches_hash(dest, info["sha256"], info["description"]):
+            logger.info("  Anti-spoof model already present and verified: %s", dest)
+            return True
+        logger.warning("  Existing anti-spoof model failed hash verification - replacing it")
+        try:
+            os.remove(dest)
+        except OSError as e:
+            logger.error("  Cannot remove tampered file %s: %s", dest, e)
+            return False
 
     return download_file(info["url"], dest, info["description"], info["sha256"])
 
 
 def download_midas_model(model_dir: str) -> bool:
-    """Download MiDaS ONNX depth model."""
+    """Download MiDaS ONNX depth model.
+
+    MG-D-05: an existing file is ALWAYS verified against the pinned expected
+    hash (never blindly accepted); a mismatched file is deleted and
+    re-downloaded."""
     info = MODELS["midas_v21_small"]
     dest = os.path.join(model_dir, info["filename"])
 
     if os.path.exists(dest):
-        logger.info("  MiDaS depth model already present: %s", dest)
-        return True
+        if _existing_file_matches_hash(dest, info["sha256"], info["description"]):
+            logger.info("  MiDaS depth model already present and verified: %s", dest)
+            return True
+        logger.warning("  Existing MiDaS model failed hash verification - replacing it")
+        try:
+            os.remove(dest)
+        except OSError as e:
+            logger.error("  Cannot remove tampered file %s: %s", dest, e)
+            return False
 
     return download_file(info["url"], dest, info["description"], info["sha256"])
 

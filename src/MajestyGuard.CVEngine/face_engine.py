@@ -19,6 +19,8 @@ import os
 import time
 import logging
 import subprocess
+import hashlib
+import json
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
@@ -36,6 +38,103 @@ from liveness_detector import LivenessDetector
 from virtual_camera_detector import is_virtual_camera
 
 logger = logging.getLogger("MajestyGuard.CVEngine")
+
+
+# ── MG-D-05: TOFU (trust-on-first-use) model-integrity verification ──────
+# No ONNX model is loaded without its SHA-256 matching the pinned manifest
+# at %LOCALAPPDATA%\MajestyGuard\model_hashes.json. First sighting pins the
+# hash (log "pinned model hash (TOFU)"); a later mismatch REFUSES the load
+# (CRITICAL log with both hashes) unless MG_ALLOW_UNPINNED_MODELS=1.
+# Limitation: a same-user attacker with write access to both the model file
+# and the manifest can re-pin, but a silent model swap is now impossible
+# without a traceable CRITICAL log event plus manifest deletion.
+
+_TOFU_VERIFIED: set = set()
+
+
+def _model_hashes_manifest_path() -> str:
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return os.path.join(base, "MajestyGuard", "model_hashes.json")
+
+
+def _verify_model_tofu(model_path: str) -> bool:
+    """True if model_path's SHA-256 matches its pinned (or newly pinned)
+    manifest entry; False (refuse to load) on mismatch or read error."""
+    key = os.path.normcase(os.path.abspath(model_path))
+    if key in _TOFU_VERIFIED:
+        return True
+    try:
+        digest = hashlib.sha256()
+        with open(model_path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        actual = digest.hexdigest()
+    except OSError as exc:
+        logger.critical(
+            "Model integrity check failed to read %s: %s - refusing to load",
+            model_path,
+            exc,
+        )
+        return False
+    if os.environ.get("MG_ALLOW_UNPINNED_MODELS", "0") == "1":
+        logger.warning(
+            "MG_ALLOW_UNPINNED_MODELS=1: skipping TOFU pin check for %s",
+            model_path,
+        )
+        _TOFU_VERIFIED.add(key)
+        return True
+    manifest_path = _model_hashes_manifest_path()
+    manifest = {}
+    try:
+        with open(manifest_path, "r", encoding="utf-8") as fh:
+            loaded = json.load(fh)
+        if isinstance(loaded, dict):
+            manifest = loaded
+    except (OSError, ValueError):
+        manifest = {}
+    pinned = manifest.get(key)
+    if pinned is None:
+        manifest[key] = actual
+        try:
+            os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+            with open(manifest_path, "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2, sort_keys=True)
+            logger.info("pinned model hash (TOFU): %s -> %s", model_path, actual)
+        except OSError as exc:
+            logger.warning(
+                "Failed to persist model hash manifest %s: %s", manifest_path, exc
+            )
+        _TOFU_VERIFIED.add(key)
+        return True
+    if pinned == actual:
+        _TOFU_VERIFIED.add(key)
+        return True
+    logger.critical(
+        "MODEL INTEGRITY FAILURE: %s sha256=%s does not match pinned hash=%s "
+        "- refusing to load. If this is an intentional model upgrade, delete "
+        "the entry in %s (or temporarily set MG_ALLOW_UNPINNED_MODELS=1) and "
+        "let it re-pin.",
+        model_path,
+        actual,
+        pinned,
+        manifest_path,
+    )
+    return False
+
+
+def _verify_model_pack_tofu(model_dir: str) -> bool:
+    """TOFU-verify every *.onnx under model_dir (recursively) - the
+    insightface buffalo_l pack (det_10g.onnx / w600k_r50.onnx / ...) and any
+    anti-spoof/MiDaS models placed in the same directory."""
+    if not model_dir or not os.path.isdir(model_dir):
+        return True  # nothing to verify yet; loader behaves as before
+    for dirpath, _dirnames, filenames in os.walk(model_dir):
+        for filename in sorted(filenames):
+            if not filename.lower().endswith(".onnx"):
+                continue
+            if not _verify_model_tofu(os.path.join(dirpath, filename)):
+                return False
+    return True
 
 
 @dataclass
@@ -101,6 +200,16 @@ class FaceEngine:
         try:
             logger.info("Loading InsightFace buffalo_l model from: %s", self.model_dir)
 
+            # MG-D-05: TOFU-verify every ONNX file in the model directory
+            # BEFORE InsightFace loads any of them. A swapped model file is
+            # refused fail-closed.
+            if not _verify_model_pack_tofu(self.model_dir):
+                logger.error(
+                    "Model pack TOFU verification failed for %s - refusing to initialize",
+                    self.model_dir,
+                )
+                return False
+
             # providers: DirectML for GPU, fall back to CPU
             # CODEX: Test DirectML provider on target hardware.
             # If unstable, default to CPUExecutionProvider.
@@ -113,6 +222,16 @@ class FaceEngine:
             )
             # Start in low-RAM idle mode. Service raises this to 320x320 only while verifying.
             self._app.prepare(ctx_id=0, det_size=self._det_size)
+
+            # MG-D-05: pin (TOFU) any models InsightFace just auto-downloaded
+            # on a first run (the pre-check above saw an empty directory).
+            # Files verified moments ago are skipped via the in-process cache.
+            if not _verify_model_pack_tofu(self.model_dir):
+                logger.error(
+                    "Model pack TOFU verification failed for %s - refusing to initialize",
+                    self.model_dir,
+                )
+                return False
 
             logger.info("InsightFace loaded successfully")
 
@@ -490,6 +609,18 @@ class FaceEngine:
         if not os.path.exists(model_path):
             logger.info("AdaFace model not found — using ArcFace (buffalo_l). "
                         "Drop adaface_r100.onnx in models/ to enable.")
+            return
+        # MG-D-05: AdaFace is an optional drop-in file that activates
+        # automatically - exactly the silent-substitution backdoor an
+        # attacker would use. TOFU-verify before loading; on mismatch refuse
+        # THIS model and keep the pinned ArcFace path.
+        if not _verify_model_tofu(model_path):
+            logger.critical(
+                "AdaFace model %s failed the TOFU integrity check - refusing "
+                "to load it; using ArcFace (buffalo_l) instead",
+                model_path,
+            )
+            self._adaface_session = None
             return
         try:
             import onnxruntime as ort

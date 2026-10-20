@@ -86,10 +86,24 @@ def test_score_full_calls_temporal_rppg_and_attention(monkeypatch):
     detector = _detector(monkeypatch)
     frame = np.full((160, 160, 3), 128, dtype=np.uint8)
 
+    # MG-D-01: during warm-up (the first _MIN_FRAMES_FOR_PASS - 1 scored
+    # frames) the smoothed score is capped at 0.65 -- below the 0.70
+    # full-path liveness gate -- so per-frame-only evidence (e.g. a replay
+    # that scores well on the single-frame layers) can never pass liveness
+    # before temporal evidence exists.
+    warmup = [
+        detector.score_full(frame, _face())
+        for _ in range(detector._MIN_FRAMES_FOR_PASS - 1)
+    ]
+    assert warmup
+    assert all(score <= 0.65 + 1e-9 for score in warmup)
+
+    # Once frame_index >= _MIN_FRAMES_FOR_PASS the sliding-window aggregate
+    # takes over and the mocked high-scoring layers must clear the gate.
     score = detector.score_full(frame, _face())
 
     assert score >= 0.70
-    assert detector._rppg.calls == 1
+    assert detector._rppg.calls == detector._MIN_FRAMES_FOR_PASS
 
 
 def test_score_alias_uses_full_path(monkeypatch):

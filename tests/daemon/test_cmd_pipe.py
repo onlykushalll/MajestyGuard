@@ -36,11 +36,40 @@ def test_cmd_server_start_is_idempotent_with_existing_live_thread():
     assert server._thread.is_alive()
 
 
-def test_cmd_server_accepts_only_expected_ui_pid():
+def test_cmd_server_accepts_only_expected_ui_pid(monkeypatch):
     server = CMDServer(lambda *_: None, expected_client_pid=lambda: 4242)
+
+    # MG-B-07: a matching owned PID must additionally pass the PID-stability
+    # (TOCTOU reuse) check before the pipe command is accepted. The check
+    # itself inspects the live OS process, so it is patched here; its
+    # fail-closed behavior is covered by the two tests below.
+    monkeypatch.setattr(
+        CMDServer, "_client_pid_is_stable", staticmethod(lambda pid: True)
+    )
 
     assert server._is_expected_client(4242) is True
     assert server._is_expected_client(4243) is False
+
+
+def test_cmd_server_rejects_matching_pid_that_fails_stability_check(monkeypatch):
+    server = CMDServer(lambda *_: None, expected_client_pid=lambda: 4242)
+
+    # PID matches the owned UI, but the stability check says the identity
+    # changed (PID reuse between handshake and accept) -> reject.
+    monkeypatch.setattr(
+        CMDServer, "_client_pid_is_stable", staticmethod(lambda pid: False)
+    )
+
+    assert server._is_expected_client(4242) is False
+
+
+def test_cmd_server_fails_closed_when_stability_check_cannot_run():
+    server = CMDServer(lambda *_: None, expected_client_pid=lambda: 4242)
+
+    # No patching: the real stability check runs against PID 4242, which
+    # does not exist in the test process table. psutil lookup must fail
+    # closed (reject) rather than accept an unverifiable client.
+    assert server._is_expected_client(4242) is False
 
 
 def test_cmd_server_fails_closed_without_owned_ui_pid():

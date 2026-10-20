@@ -35,11 +35,13 @@ class MockCompletedProcess:
         self.stderr = stderr
 
 # Helper to configure mock subprocess responses
-def get_mock_run(wmic_output="", ps_mf_output="", ps_hw_output="", ps_name_output=""):
+def get_mock_run(wmic_output="", ps_mf_output="", ps_hw_output="", ps_name_output="", pnputil_output=""):
     def mock_run(args, **kwargs):
         cmd = args[0]
-        if cmd == "wmic":
-            return MockCompletedProcess(0, wmic_output)
+        if cmd == "pnputil" or cmd.endswith("pnputil.exe"):
+            return MockCompletedProcess(0 if pnputil_output else 1, pnputil_output)
+        elif cmd == "wmic":
+            return MockCompletedProcess(0 if wmic_output else 1, wmic_output)
         elif cmd == "powershell":
             ps_cmd = args[-1]
             if "VideoCapture" in ps_cmd and "ConvertTo-Json" in ps_cmd:
@@ -159,6 +161,47 @@ def test_virtual_camera_detector_physical_happy_path(monkeypatch):
 
     # Should return False (not virtual)
     assert detector._detect(0) is False
+
+def test_virtual_camera_detector_verifies_physical_via_pnputil_when_wmic_and_ps_are_dead(monkeypatch):
+    """MG-D-06 live fix: on current Win11 (wmic removed, WinRT/PS broken in
+    detached contexts) the pnputil enumeration alone must provide enough
+    positive physical evidence to clear the camera — while still going
+    through the name blocklist and CLSID cross-reference."""
+    detector = VirtualCameraDetector()
+
+    pnputil_out = (
+        "Microsoft PnP Utility\n\n"
+        "Instance ID:                USB\\VID_0C45&PID_6730&MI_00\\6&de2538b&0&0000\n"
+        "Device Description:         Integrated Webcam\n"
+        "Class Name:                 Camera\n"
+        "Status:                     Started\n"
+    )
+    # wmic and every PowerShell path fail (empty outputs -> returncode 1)
+    monkeypatch.setattr(subprocess, "run", get_mock_run(pnputil_output=pnputil_out))
+
+    assert detector._get_camera_name(0) == "Integrated Webcam"
+    assert detector._detect(0) is False
+
+
+def test_virtual_camera_detector_blocks_root_device_via_pnputil(monkeypatch):
+    """A ROOT\\ enumerated device listed by pnputil must stay blocked —
+    pnputil as an evidence source must not weaken the virtual-camera
+    verdicts."""
+    detector = VirtualCameraDetector()
+
+    pnputil_out = (
+        "Microsoft PnP Utility\n\n"
+        "Instance ID:                ROOT\\OBSVIRTUALCAMERA\\0000\n"
+        "Device Description:         OBS Virtual Camera\n"
+        "Class Name:                 Camera\n"
+        "Status:                     Started\n"
+    )
+    monkeypatch.setattr(subprocess, "run", get_mock_run(pnputil_output=pnputil_out))
+
+    # Blocked by name blocklist (and would also be by ROOT\ hardware prefix)
+    assert detector._get_camera_name(0) == "OBS Virtual Camera"
+    assert detector._detect(0) is True
+
 
 def test_public_api_wrappers(monkeypatch):
     # Test public entry points is_virtual_camera and invalidate_camera_cache

@@ -1,6 +1,8 @@
 # Models (too large for GitHub)
 models/
 **/models/
+!src/MajestyGuard.Core/Models/
+!src/MajestyGuard.Core/Models/AppConfig.cs
 *.onnx
 *.npy
 *.npz
@@ -10,6 +12,7 @@ models/
 
 # Build output
 build/
+dist/
 obj/
 bin/
 

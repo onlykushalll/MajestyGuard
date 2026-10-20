@@ -341,6 +341,10 @@ class MajestyGuardDaemon:
         self._write_daemon_pid()
 
         self.ipc.start()
+        # The daemon owns the only UI process permitted to consume state and
+        # submit commands. Starting it here covers ordinary daily-use startup,
+        # not just the special idle-check and locked watchdog paths.
+        self._launch_ui()
         self.command_ipc = CMDServer(
             self._queue_ui_command,
             expected_client_pid=self._owned_overlay_pid,
@@ -1038,8 +1042,10 @@ class MajestyGuardDaemon:
             return
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
+        packaged_ui = Path(env.get("MG_UI_EXECUTABLE", ""))
+        command = [str(packaged_ui)] if packaged_ui.is_file() else [sys.executable, str(ui_path)]
         self._overlay_proc = subprocess.Popen(
-            [sys.executable, str(ui_path)],
+            command,
             cwd=str(_ROOT_DIR),
             env=env,
             stdout=subprocess.DEVNULL,

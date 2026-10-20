@@ -1,5 +1,6 @@
 import logging
 import threading
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -144,3 +145,51 @@ def test_daemon_logging_uses_rotating_file_handler():
         handler.__class__.__name__ == "RotatingFileHandler"
         for handler in root_handlers
     )
+
+
+def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
+    daemon = MajestyGuardDaemon()
+    events = []
+
+    daemon._write_daemon_pid = lambda: None
+    daemon.ipc = MagicMock()
+    daemon.ipc.start.side_effect = lambda: events.append("pipe")
+    daemon.session_monitor = MagicMock()
+    daemon._start_overlay_watchdog = lambda: None
+    daemon._load_cv_engine = lambda: None
+    daemon._warmup_inference = lambda: None
+    daemon._should_open_camera_on_start = lambda: False
+    daemon._run_loop = lambda: None
+    daemon._shutdown = lambda: None
+    daemon._launch_ui = lambda: events.append("ui")
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(
+        daemon_main,
+        "CMDServer",
+        lambda *_args, **_kwargs: type("FakeCommandServer", (), {"start": lambda self: events.append("command")})(),
+    )
+
+    daemon.start()
+
+    assert events[:3] == ["pipe", "ui", "command"]
+
+
+def test_launch_ui_prefers_explicit_packaged_ui_executable(monkeypatch, tmp_path):
+    daemon = _bare_daemon()
+    daemon._overlay_proc = None
+    packaged_ui = tmp_path / "MajestyGuardUI.exe"
+    packaged_ui.write_bytes(b"ui")
+    started = {}
+
+    monkeypatch.setattr(daemon_main, "_ROOT_DIR", tmp_path)
+    monkeypatch.setenv("MG_UI_EXECUTABLE", str(packaged_ui))
+    monkeypatch.setattr(
+        daemon_main.subprocess,
+        "Popen",
+        lambda command, **kwargs: started.update(command=command, kwargs=kwargs) or type("Process", (), {"poll": lambda self: None})(),
+    )
+
+    daemon._launch_ui()
+
+    assert started["command"] == [str(packaged_ui)]

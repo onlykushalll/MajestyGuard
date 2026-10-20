@@ -1,0 +1,25 @@
+# MajestyGuard Runtime Constraints & Dependency Chain Documentation
+#
+# HARD INSTALL RULE:
+# insightface 0.7.3 hard-imports albumentations (insightface/mask_renderer.py:4),
+# and albumentations depends on albucore. Both albumentations and albucore default
+# to requesting opencv-python-headless if installed with standard pip dependency resolution.
+# Installing opencv-python or opencv-python-headless alongside opencv-contrib-python
+# causes dual-cv2 DLL conflict and runtime corruption (AttributeError: module 'cv2' has no attribute 'CV_8U').
+#
+# Installation Procedure for Fresh Venv:
+# 1. Install opencv-contrib-python==4.10.0.84 first.
+# 2. Install pinned dependencies from requirements.txt using:
+#    pip install --no-deps albucore==0.0.24 albumentations==2.0.8 insightface==0.7.3
+# 3. Install remaining requirements from requirements.txt.
+#
+# Pinned packages:
+opencv-contrib-python==4.10.0.84
+albucore==0.0.24
+albumentations==2.0.8
+insightface==0.7.3
+numpy==1.26.4
+onnx==1.17.0
+onnxruntime==1.18.1
+mediapipe==0.10.9
+PyQt6==6.9.0

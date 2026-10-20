@@ -1,0 +1,2 @@
+# Pinned separately from runtime requirements so release builds are reproducible.
+pyinstaller==6.11.1

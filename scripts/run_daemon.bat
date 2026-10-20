@@ -1,6 +1,10 @@
 @echo off
 REM run_daemon.bat - MajestyGuard v2 Python Daemon
-SET "VENV=C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"
+IF EXIST "C:\tmp\mg-venv-clean\Scripts\python.exe" (
+    SET "VENV=C:\tmp\mg-venv-clean\Scripts\python.exe"
+) ELSE (
+    SET "VENV=C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"
+)
 SET "DAEMON=%~dp0..\daemon\main.py"
 SET "POLICY_AUDIT=%~dp0..\daemon\mg_policy_audit.py"
 

@@ -225,3 +225,31 @@ def test_public_api_wrappers(monkeypatch):
     monkeypatch.setattr(VirtualCameraDetector, "invalidate_cache", mock_invalidate_cache)
     invalidate_camera_cache()
     assert cache_cleared
+
+
+def test_virtual_camera_detector_re_evaluates_synchronously_when_ttl_expires(monkeypatch):
+    detector = VirtualCameraDetector()
+    current_time = 100.0
+    detect_return = False
+
+    def mock_time():
+        return current_time
+
+    def mock_detect(camera_index):
+        return detect_return
+
+    monkeypatch.setattr(time, "monotonic", mock_time)
+    monkeypatch.setattr(detector, "_detect", mock_detect)
+
+    # Initial call at t=100.0: physical camera
+    assert detector.is_virtual(0) is False
+
+    # Still within TTL (< 30s): returns cached False even if detect_return changed
+    current_time = 120.0
+    detect_return = True
+    assert detector.is_virtual(0) is False
+
+    # TTL expired (t=131.0 > 100.0 + 30.0): re-evaluates synchronously and returns True
+    current_time = 131.0
+    assert detector.is_virtual(0) is True
+

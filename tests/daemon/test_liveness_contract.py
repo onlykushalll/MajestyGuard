@@ -105,3 +105,66 @@ def test_liveness_stale_cached_score_fails_closed_instead_of_persisting():
     score = detector.score(low_quality_frame, FakeFace([20, 20, 24, 24]))
 
     assert score == 0.0, "stale cached liveness score must fail closed, not persist"
+
+
+def test_replay_taint_persists_across_reset_temporal_buffers_and_clears_on_reset_session():
+    detector = LivenessDetector.__new__(LivenessDetector)
+    detector._score_history = deque(maxlen=LivenessDetector._WINDOW)
+    detector._frame_index = 0
+    detector._last_smoothed_score = 0.0
+    detector._last_smoothed_score_time = 0.0
+    detector._eye_brightness_history = deque(maxlen=30)
+    detector._blink_count = 0
+    detector._blink_cooldown = 0
+    detector._last_blink_frame = 0
+    detector._in_blink = False
+    detector._face_center_history = deque(maxlen=30)
+    detector._frame_hashes = deque(maxlen=300)
+    detector._duplicate_frame_count = 0
+    detector._replay_flagged_at = None
+    detector._replay_taint_decay_seconds = 300.0
+    detector._landmark_ratios = deque(maxlen=30)
+    detector._hist_history = deque(maxlen=15)
+    detector._onnx_score_history = deque(maxlen=5)
+    detector._depth_liveness = None
+    detector._rppg = None
+    detector._attention = None
+    detector._onnx_consecutive_failures = 0
+
+    roi = np.zeros((128, 128, 3), dtype=np.uint8)
+    # Feed identical frames to trigger duplicate frame detection
+    penalty = 1.0
+    for _ in range(7):
+        penalty = detector._replay_detection(roi)
+
+    assert penalty < 0.3
+    detector._replay_flagged_at = time.monotonic()
+
+    assert detector.replay_flagged_this_session() is True
+    assert len(detector._frame_hashes) > 0
+    assert detector._duplicate_frame_count > 0
+
+    # Calling reset_temporal_buffers must preserve replay taint and frame hashes
+    detector.reset_temporal_buffers()
+    assert detector.replay_flagged_this_session() is True
+    assert len(detector._frame_hashes) > 0
+    assert detector._duplicate_frame_count > 0
+
+    # Calling reset_session must clear replay taint and frame hashes
+    detector.reset_session()
+    assert detector.replay_flagged_this_session() is False
+    assert len(detector._frame_hashes) == 0
+    assert detector._duplicate_frame_count == 0
+
+
+def test_replay_taint_decays_after_configured_window(monkeypatch):
+    detector = LivenessDetector.__new__(LivenessDetector)
+    detector._replay_flagged_at = 100.0
+    detector._replay_taint_decay_seconds = 300.0
+
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0 + detector._replay_taint_decay_seconds - 1.0)
+    assert detector.replay_flagged_this_session() is True
+
+    monkeypatch.setattr(time, "monotonic", lambda: 100.0 + detector._replay_taint_decay_seconds + 1.0)
+    assert detector.replay_flagged_this_session() is False
+

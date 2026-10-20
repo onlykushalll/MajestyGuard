@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 
@@ -21,3 +22,21 @@ def test_legacy_service_artifact_tests_are_explicitly_opt_in():
     for relative_path in LEGACY_SERVICE_TESTS:
         text = (ROOT / relative_path).read_text(encoding="utf-8")
         assert "pytestmark = pytest.mark.legacy_service" in text
+
+
+def test_daemon_modules_do_not_import_pyqt():
+    """Assert daemon modules never import PyQt or PySide, preserving process isolation."""
+    daemon_dir = ROOT / "daemon"
+    for py_file in daemon_dir.glob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert not alias.name.startswith(("PyQt", "PySide")), (
+                        f"Daemon file {py_file.name} directly imports Qt module {alias.name}"
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    assert not node.module.startswith(("PyQt", "PySide")), (
+                        f"Daemon file {py_file.name} imports from Qt module {node.module}"
+                    )

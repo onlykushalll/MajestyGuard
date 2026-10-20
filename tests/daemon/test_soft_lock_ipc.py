@@ -38,3 +38,39 @@ def test_cmd_payload_does_not_authorize_by_itself():
     assert payload == {"cmd": "verify_requested", "source": "island"}
     assert "confidence" not in payload
     assert "liveness" not in payload
+
+
+def test_ipc_server_accepts_only_expected_ui_pid_and_direct_child(monkeypatch):
+    server = IPCServer(expected_client_pid=lambda: 4242)
+    monkeypatch.setattr(
+        IPCServer, "_client_pid_is_stable", staticmethod(lambda pid: True)
+    )
+
+    class MockProc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def ppid(self):
+            return 4242 if self.pid == 4243 else 9999
+
+    import psutil
+    monkeypatch.setattr(psutil, "Process", MockProc)
+
+    assert server._is_expected_client(4242) is True
+    assert server._is_expected_client(4243) is True
+    assert server._is_expected_client(5000) is False
+    assert server._is_expected_client(-1) is False
+
+
+def test_ipc_server_rejects_matching_pid_when_stability_check_fails(monkeypatch):
+    server = IPCServer(expected_client_pid=lambda: 4242)
+    monkeypatch.setattr(
+        IPCServer, "_client_pid_is_stable", staticmethod(lambda pid: False)
+    )
+
+    assert server._is_expected_client(4242) is False
+
+
+def test_ipc_server_fails_closed_when_stability_check_errors():
+    server = IPCServer(expected_client_pid=lambda: 999999)
+    assert server._is_expected_client(999999) is False

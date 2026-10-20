@@ -7,6 +7,7 @@ cardiac signal in the 0.67-4 Hz band; photos and masks should not.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any
 
@@ -25,19 +26,29 @@ logger = logging.getLogger("MajestyGuard.rPPG")
 class CHROMrPPGDetector:
     MIN_FRAMES = 45
     WINDOW_FRAMES = 90
-    # NOTE: hardcoded to 15.0 FPS. If camera captures at a different rate (e.g. 30 FPS),
-    # the bandpass filter and frequency analysis will experience frequency scaling.
+    # Legacy fallback sample rate (MG-D-08): used only while fewer than
+    # two frame timestamps exist (first call). The frequency math now
+    # derives the effective FPS from per-frame time.monotonic() samples
+    # over the analysis window (see _effective_fps), clamped to
+    # [FPS_MIN, FPS_MAX], so a camera negotiated at e.g. 30 FPS no longer
+    # gets its heart-rate band analyzed with 15 FPS scaling.
     FPS = 15.0
+    FPS_MIN = 5.0
+    FPS_MAX = 60.0
     FREQ_LO = 0.67
     FREQ_HI = 4.00
 
     def __init__(self):
         self._rgb_buf: deque[tuple[float, float, float]] = deque(maxlen=self.WINDOW_FRAMES)
+        # MG-D-08: per-frame monotonic timestamps, appended 1:1 with
+        # _rgb_buf so the effective sample rate can be measured.
+        self._ts_buf: deque[float] = deque(maxlen=self.WINDOW_FRAMES)
         self._score: float = 0.5
         self._snr: float = 0.0
 
     def reset(self) -> None:
         self._rgb_buf.clear()
+        self._ts_buf.clear()
         self._score = 0.5
         self._snr = 0.0
 
@@ -77,6 +88,7 @@ class CHROMrPPGDetector:
         if red < 15 or green < 15:
             return self._score
 
+        self._ts_buf.append(time.monotonic())
         self._rgb_buf.append((red, green, blue))
         if not self.has_signal:
             return 0.5
@@ -84,11 +96,31 @@ class CHROMrPPGDetector:
         self._score = self._chrom()
         return self._score
 
+    def _effective_fps(self) -> float:
+        """Measured sample rate over the current analysis window (MG-D-08).
+
+        Derived from the per-frame monotonic timestamps; falls back to the
+        legacy 15.0 constant when fewer than two timestamps exist (first
+        call / legacy callers that fill _rgb_buf directly), and clamped to
+        [FPS_MIN, FPS_MAX] so a broken span cannot push the bandpass or
+        FFT bins out of a sane range."""
+        if len(self._ts_buf) < 2:
+            return self.FPS
+        span = self._ts_buf[-1] - self._ts_buf[0]
+        if span <= 0.0:
+            return self.FPS
+        fps = (len(self._ts_buf) - 1) / span
+        return float(min(max(fps, self.FPS_MIN), self.FPS_MAX))
+
     def _chrom(self) -> float:
         frames = np.array(self._rgb_buf, dtype=np.float64)
         red = frames[:, 0]
         green = frames[:, 1]
         blue = frames[:, 2]
+
+        # MG-D-08: use the measured effective sample rate, not the hardcoded
+        # 15 FPS constant, for the bandpass and FFT frequency math.
+        fps = self._effective_fps()
 
         red_norm = red / (np.mean(red) + 1e-9)
         green_norm = green / (np.mean(green) + 1e-9)
@@ -97,7 +129,7 @@ class CHROMrPPGDetector:
         y_signal = 1.5 * red_norm + green_norm - 1.5 * blue_norm
         chrom_signal = x_signal - (np.std(x_signal) + 1e-9) / (np.std(y_signal) + 1e-9) * y_signal
 
-        nyquist = self.FPS / 2.0
+        nyquist = fps / 2.0
         try:
             b, a = scipy_signal.butter(
                 4,
@@ -111,7 +143,7 @@ class CHROMrPPGDetector:
 
         sample_count = len(chrom_signal)
         fft = np.abs(np.fft.rfft(chrom_signal, n=sample_count * 2))
-        freqs = np.fft.rfftfreq(sample_count * 2, d=1.0 / self.FPS)
+        freqs = np.fft.rfftfreq(sample_count * 2, d=1.0 / fps)
         mask = (freqs >= self.FREQ_LO) & (freqs <= self.FREQ_HI)
         if mask.sum() < 2:
             return 0.5

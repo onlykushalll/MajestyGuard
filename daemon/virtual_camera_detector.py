@@ -15,6 +15,9 @@
 #     Physical cameras have USB VID/PID in their hardware ID.
 #     Virtual cameras have ROOT\ or SWD\ as the enumerator.
 #     Source: SetupDiGetClassDevs(GUID_DEVCLASS_CAMERA) → SPDRP_HARDWAREID
+#     (MG-D-06 live fix: pnputil /enum-devices is the primary evidence
+#      source — native binary, works where wmic is removed and where
+#      PowerShell cannot run; the instance ID bus prefix is equivalent.)
 #
 #   Method 3 — Known CLSID blocklist (instant)
 #     OBS, ManyCam, XSplit, DroidCam register under known CLSID GUIDs.
@@ -190,6 +193,24 @@ class VirtualCameraDetector:
                 logger.warning("Camera hardware ID not from physical bus: %s", hw_id)
                 return True
 
+        # Fail-closed (MG-D-06 second-opinion fix): if BOTH deep identity
+        # checks came back unknown (MF source None AND no hardware ID --
+        # e.g. wmic removed, PowerShell constrained), we have zero positive
+        # physical evidence for the camera feeding the verification path.
+        # Previously this defaulted to "physical" (fail-open). Treat the
+        # camera as virtual/unverified and block instead. If either check
+        # produced positive physical evidence (mf_result is True, or a
+        # hardware ID with a physical bus prefix), behavior is unchanged.
+        if mf_result is None and not hw_id:
+            logger.warning(
+                "Camera identity UNVERIFIED: %r at index %d produced no MF hardware-source "
+                "or SetupAPI hardware-ID evidence (wmic/PowerShell unavailable?) — "
+                "treating as virtual/unverified (fail-closed)",
+                camera_name or "<unknown name>",
+                camera_index,
+            )
+            return True
+
         return False
 
     def _check_clsid_blocklist(self, camera_name: Optional[str] = None) -> bool:
@@ -261,12 +282,96 @@ class VirtualCameraDetector:
             logger.debug("MF hardware source check failed: %s", e)
         return None
 
+    def _pnputil_command(self) -> list:
+        """Absolute pnputil.exe path (bare PATH lookups can fail inside
+        detached/hidden processes whose environment is minimal)."""
+        candidate = os.path.join(
+            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "pnputil.exe"
+        )
+        if os.path.exists(candidate):
+            return [candidate]
+        return ["pnputil"]
+
+    def _enumerate_pnputil_cameras(self):
+        """Enumerate camera-class devices via pnputil (native, no PS/wmic).
+
+        MG-D-06 live fix (2026-09-20): wmic is removed on current Win11 and
+        the WinRT PowerShell call fails in PS 5.1 without WinRT type
+        loading, which left BOTH deep identity checks returning None and
+        the fail-closed path blocking every camera — including physical
+        ones. pnputil is a native binary that works in any process
+        context, and one call yields BOTH the device description and its
+        instance ID (whose bus prefix carries the same physical/virtual
+        semantics as a SetupAPI hardware ID).
+
+        Returns a list of (description, instance_id) tuples, preferring
+        devices whose Status is Started. Returns [] on any failure so
+        callers fall through to the wmic/PowerShell paths.
+        """
+        try:
+            result = subprocess.run(
+                self._pnputil_command() + ["/enum-devices", "/class", "Camera"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+            started: list = []
+            valid: list = []
+            current: dict = {}
+            for line in result.stdout.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    if current:
+                        valid.append(current)
+                        current = {}
+                    continue
+                if ":" not in stripped:
+                    continue
+                key, _, value = stripped.partition(":")
+                key = key.strip().lower()
+                value = value.strip()
+                if key == "instance id":
+                    current["instance"] = value
+                elif key == "device description":
+                    current["desc"] = value
+                elif key == "status":
+                    current["status"] = value.lower()
+            if current:
+                valid.append(current)
+            for device in valid:
+                desc = device.get("desc")
+                instance = device.get("instance")
+                if not desc or not instance:
+                    continue
+                if device.get("status") == "started":
+                    started.append((desc, instance))
+            # Prefer Started devices when any exist
+            if started:
+                return started
+            return [
+                (d.get("desc"), d.get("instance"))
+                for d in valid
+                if d.get("desc") and d.get("instance")
+            ]
+        except Exception as e:
+            logger.debug("pnputil camera enumeration failed: %s", e)
+            return []
+
     def _get_camera_name(self, camera_index: int) -> Optional[str]:
         """
         Get the friendly name of the camera at the given index.
         Uses wmic as the primary source (fast, no PS startup overhead).
         Falls back to PowerShell DeviceInformation if wmic fails.
         """
+        # Primary (MG-D-06 live fix): pnputil — see _enumerate_pnputil_cameras.
+        entries = self._enumerate_pnputil_cameras()
+        if entries:
+            names = [desc for desc, _instance in entries]
+            if camera_index < len(names):
+                return names[camera_index]
+            if names:
+                return names[0]  # best guess if index is off
+
         # Primary: wmic — fast, ~100ms, no PS startup cost
         try:
             result = subprocess.run(
@@ -315,6 +420,16 @@ class VirtualCameraDetector:
         """
         if not camera_name:
             return None
+
+        # Primary (MG-D-06 live fix): pnputil instance ID — the bus prefix
+        # (USB\, PCI\ vs ROOT\, SW\) carries the same physical/virtual
+        # semantics as a SetupAPI hardware ID, without depending on wmic
+        # or a working PowerShell context. See _enumerate_pnputil_cameras.
+        cam_lower = camera_name.lower()
+        for desc, instance in self._enumerate_pnputil_cameras():
+            desc_lower = desc.lower()
+            if cam_lower in desc_lower or desc_lower in cam_lower:
+                return instance
 
         try:
             # Query PnP entities matching camera class

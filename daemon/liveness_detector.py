@@ -501,7 +501,14 @@ class LivenessDetector:
 
         # Require minimum frames before allowing high scores
         if self._frame_index < self._MIN_FRAMES_FOR_PASS:
-            smoothed = min(float(np.mean(self._score_history)), 0.75)
+            # MG-D-01: warm-up cap lowered 0.75 -> 0.65 so the first
+            # _MIN_FRAMES_FOR_PASS frames can never clear the 0.70
+            # full-path liveness gate. Before temporal evidence
+            # exists (blink/movement/depth/histogram/rPPG all neutral), a
+            # replay scoring ~0.75 on per-frame layers alone could pass;
+            # capping below the gate forces real temporal evidence before
+            # any unlock decision.
+            smoothed = min(float(np.mean(self._score_history)), 0.65)
         else:
             # Use a sliding window of the last 30 frames (2 seconds at 15 FPS).
             # Aggregate with 10th percentile instead of global min():

@@ -137,15 +137,18 @@ ACTIVE_REACQUIRE_GRACE_FRAMES = _env_int("MG_ACTIVE_REACQUIRE_GRACE_FRAMES", 8, 
 # ACTIVE: 8 consecutive unrecognized frames → social lock (tolerates brief quality drops)
 STRANGER_CONFIRM_FRAMES_SCANNING = 3
 STRANGER_CONFIRM_FRAMES_ACTIVE   = 8
-RECOGNITION_THRESHOLD = _env_float("MG_RECOGNITION_THRESHOLD", 0.78)
+# MG-B-09/A-11: env-tunable security thresholds now carry hard floors
+# (and ceilings where raising weakens) via _env_float bounds; defaults
+# are unchanged, only out-of-bounds env values are rejected.
+RECOGNITION_THRESHOLD = _env_float("MG_RECOGNITION_THRESHOLD", 0.78, 0.70, 1.0)
 # Fast owner path: combine two strong live owner-like frames instead of waiting
 # for one perfect peak frame. This improves UX without lowering stranger gates.
-SCANNING_FAST_OWNER_SCORE = _env_float("MG_SCANNING_FAST_OWNER_SCORE", 0.72)
-SCANNING_FAST_OWNER_PRESENCE = _env_float("MG_SCANNING_FAST_OWNER_PRESENCE", 0.72)
+SCANNING_FAST_OWNER_SCORE = _env_float("MG_SCANNING_FAST_OWNER_SCORE", 0.72, 0.70, 1.0)
+SCANNING_FAST_OWNER_PRESENCE = _env_float("MG_SCANNING_FAST_OWNER_PRESENCE", 0.72, 0.55, 1.0)
 SCANNING_FAST_OWNER_CONFIRM_FRAMES = _env_int("MG_SCANNING_FAST_OWNER_CONFIRM_FRAMES", 2, 1)
-SCANNING_FAST_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_FAST_OWNER_MIN_QUALITY", 0.78)
-SCANNING_FAST_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_FAST_OWNER_MIN_FACE_HEIGHT", 0.38)
-SCANNING_FAST_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_FAST_OWNER_MAX_CENTER_OFFSET", 0.26)
+SCANNING_FAST_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_FAST_OWNER_MIN_QUALITY", 0.78, 0.55, 1.0)
+SCANNING_FAST_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_FAST_OWNER_MIN_FACE_HEIGHT", 0.38, 0.24, 1.0)
+SCANNING_FAST_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_FAST_OWNER_MAX_CENTER_OFFSET", 0.26, 0.0, 0.42)
 # _is_fast_owner_candidate previously had no dedicated liveness floor at
 # all - it relied only on the caller's generic liveness_ok gate
 # (LIVENESS_THRESHOLD, 0.70), same as the primary/full path, despite using
@@ -156,40 +159,54 @@ SCANNING_FAST_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_FAST_OWNER_MAX_C
 # live-tested video-replay bypass: a fast-scored 0.756 cleared 0.70
 # comfortably. Matches the burst path's existing, already-justified
 # standard rather than inventing a new number.
-SCANNING_FAST_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_FAST_OWNER_MIN_LIVENESS", 0.82)
-SCANNING_QUICK_OWNER_SCORE = _env_float("MG_SCANNING_QUICK_OWNER_SCORE", 0.70)
-SCANNING_QUICK_OWNER_PRESENCE = _env_float("MG_SCANNING_QUICK_OWNER_PRESENCE", 0.70)
+SCANNING_FAST_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_FAST_OWNER_MIN_LIVENESS", 0.82, 0.70, 1.0)
+SCANNING_QUICK_OWNER_SCORE = _env_float("MG_SCANNING_QUICK_OWNER_SCORE", 0.70, 0.70, 1.0)
+SCANNING_QUICK_OWNER_PRESENCE = _env_float("MG_SCANNING_QUICK_OWNER_PRESENCE", 0.70, 0.55, 1.0)
 # Raised from 0.74 to match BURST_FAST_LIVENESS_THRESHOLD (0.82) for the
 # same reason as SCANNING_FAST_OWNER_MIN_LIVENESS above - this path uses
 # the identical rPPG/depth-skipping fast scorer.
-SCANNING_QUICK_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.82)
-SCANNING_QUICK_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_QUICK_OWNER_MIN_QUALITY", 0.80)
-SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT", 0.36)
-SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET", 0.25)
-SCANNING_QUICK_OWNER_MIN_TRACK_IOU = _env_float("MG_SCANNING_QUICK_OWNER_MIN_TRACK_IOU", 0.75)
+SCANNING_QUICK_OWNER_MIN_LIVENESS = _env_float("MG_SCANNING_QUICK_OWNER_MIN_LIVENESS", 0.82, 0.70, 1.0)
+SCANNING_QUICK_OWNER_MIN_QUALITY = _env_float("MG_SCANNING_QUICK_OWNER_MIN_QUALITY", 0.80, 0.55, 1.0)
+SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT = _env_float("MG_SCANNING_QUICK_OWNER_MIN_FACE_HEIGHT", 0.36, 0.24, 1.0)
+SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET = _env_float("MG_SCANNING_QUICK_OWNER_MAX_CENTER_OFFSET", 0.25, 0.0, 0.42)
+SCANNING_QUICK_OWNER_MIN_TRACK_IOU = _env_float("MG_SCANNING_QUICK_OWNER_MIN_TRACK_IOU", 0.75, 0.20, 1.0)
 # After a high-confidence match moves us to ACTIVE, tolerate normal webcam angle
 # drift without lowering the initial unlock-grade threshold.
-ACTIVE_RECOGNITION_THRESHOLD = _env_float("MG_ACTIVE_RECOGNITION_THRESHOLD", 0.65)
-STRANGER_SCORE_THRESHOLD = _env_float("MG_STRANGER_SCORE_THRESHOLD", 0.55)
-STRANGER_MIN_FACE_HEIGHT = _env_float("MG_STRANGER_MIN_FACE_HEIGHT", 0.24)
-STRANGER_MAX_CENTER_OFFSET = _env_float("MG_STRANGER_MAX_CENTER_OFFSET", 0.42)
-STRANGER_MIN_FRAME_QUALITY = _env_float("MG_STRANGER_MIN_FRAME_QUALITY", 0.42)
-STRANGER_MAX_SMOOTHED_SCORE = _env_float("MG_STRANGER_MAX_SMOOTHED_SCORE", 0.58)
+ACTIVE_RECOGNITION_THRESHOLD = _env_float("MG_ACTIVE_RECOGNITION_THRESHOLD", 0.65, 0.55, 1.0)
+STRANGER_SCORE_THRESHOLD = _env_float("MG_STRANGER_SCORE_THRESHOLD", 0.55, 0.50, 1.0)
+STRANGER_MIN_FACE_HEIGHT = _env_float("MG_STRANGER_MIN_FACE_HEIGHT", 0.24, 0.0, 0.40)
+STRANGER_MAX_CENTER_OFFSET = _env_float("MG_STRANGER_MAX_CENTER_OFFSET", 0.42, 0.40, 1.0)
+STRANGER_MIN_FRAME_QUALITY = _env_float("MG_STRANGER_MIN_FRAME_QUALITY", 0.42, 0.0, 0.55)
+STRANGER_MAX_SMOOTHED_SCORE = _env_float("MG_STRANGER_MAX_SMOOTHED_SCORE", 0.58, 0.50, 1.0)
 SCANNING_OWNER_AMBIGUITY_GRACE_FRAMES = _env_int("MG_SCANNING_OWNER_AMBIGUITY_GRACE_FRAMES", 15, 0)
-SCANNING_OWNER_AMBIGUITY_MIN_SCORE = _env_float("MG_SCANNING_OWNER_AMBIGUITY_MIN_SCORE", 0.50)
-SCANNING_OWNER_AMBIGUITY_PRESENCE = _env_float("MG_SCANNING_OWNER_AMBIGUITY_PRESENCE", 0.65)
-ACTIVE_CONTINUITY_SMOOTH_THRESHOLD = _env_float("MG_ACTIVE_CONTINUITY_SMOOTH_THRESHOLD", 0.60)
+SCANNING_OWNER_AMBIGUITY_MIN_SCORE = _env_float("MG_SCANNING_OWNER_AMBIGUITY_MIN_SCORE", 0.50, 0.50, 1.0)
+SCANNING_OWNER_AMBIGUITY_PRESENCE = _env_float("MG_SCANNING_OWNER_AMBIGUITY_PRESENCE", 0.65, 0.55, 1.0)
+ACTIVE_CONTINUITY_SMOOTH_THRESHOLD = _env_float("MG_ACTIVE_CONTINUITY_SMOOTH_THRESHOLD", 0.60, 0.55, 1.0)
 ACTIVE_CONTINUITY_GRACE_FRAMES = _env_int("MG_ACTIVE_CONTINUITY_GRACE_FRAMES", 5, 0)
-ACTIVE_CONTINUITY_TRACK_MIN_SCORE = _env_float("MG_ACTIVE_CONTINUITY_TRACK_MIN_SCORE", 0.35)
-# Liveness threshold: 0.70 is the calibrated value for RGB-only webcam hardware.
-# The 12-layer stack is designed for 0.82 with IR depth, but on monocular RGB:
-#   - MiDaS depth returns 0.40-0.72 (uncertain range, now skip-blended)
-#   - rPPG blending now additive not substitutive
-#   - Per-frame combined for a real face: ~0.78-0.85
-#   - 10th percentile of 30-frame window: ~0.70-0.78
-# 0.70 is still very robust — ONNX alone carries 0.28 weight at 1.0 for real faces.
-LIVENESS_THRESHOLD = _env_float("MG_LIVENESS_THRESHOLD", 0.70)
-ACTIVE_LIVENESS_JITTER_FLOOR = _env_float("MG_ACTIVE_LIVENESS_JITTER_FLOOR", 0.55)
+ACTIVE_CONTINUITY_TRACK_MIN_SCORE = _env_float("MG_ACTIVE_CONTINUITY_TRACK_MIN_SCORE", 0.35, 0.30, 1.0)
+# Liveness threshold: 0.70 -- the calibrated value for RGB-only webcam
+# hardware (restored 2026-09-20 realignment; the briefly-applied 0.82
+# default broke two mg_policy_audit invariants -- burst_fast must stay
+# strictly above the full-path gate and liveness must stay below the
+# 0.78 identity threshold -- which made run_daemon.bat refuse to start
+# the daemon). Replay defense does not depend on this number: the
+# fast/quick/burst paths all require 0.82 (they skip rPPG), the
+# session-scoped replay taint (cc60a7b/aee290f) blocks unlock for the
+# whole session once replay evidence fires, the rPPG SNR
+# confident-negative veto (9d18452) penalizes flat/screen-like pulse
+# hard, and the warm-up cap in liveness_detector.py keeps early frames
+# below this gate. Raising the full-path gate is MG-D-02, an open owner
+# decision. Calibration notes (original): the 12-layer stack is
+# designed for 0.82 with IR depth; on monocular RGB MiDaS depth returns
+# 0.40-0.72 (uncertain range, skip-blended), rPPG blending is additive
+# not substitutive, per-frame combined for a real face is ~0.78-0.85,
+# and the 10th percentile of a 30-frame window is ~0.70-0.78 -- raising
+# the gate to 0.82 would false-reject the owner in normal sessions.
+# Floor 0.55 (MG-B-09/A-11): env override can no longer drop the gate
+# below it. Invariants now hold: burst_fast 0.82 > 0.70, liveness
+# 0.70 < recognition 0.78.
+LIVENESS_THRESHOLD = _env_float("MG_LIVENESS_THRESHOLD", 0.70, 0.55, 1.0)
+ACTIVE_LIVENESS_JITTER_FLOOR = _env_float("MG_ACTIVE_LIVENESS_JITTER_FLOOR", 0.55, 0.50, 1.0)
 LOCK_ENABLED = os.environ.get("MG_ENABLE_LOCK", "0") == "1"
 WHCDF_IPC_ENABLED = os.environ.get("MG_ENABLE_WHCDF_IPC", "0") == "1"
 SERVICE_IPC_ENABLED = os.environ.get("MG_ENABLE_SERVICE_IPC", "0") == "1"
@@ -202,12 +219,46 @@ BIOMETRIC_PATH = (
     / "biometric.mgd"
 )
 INSIGHTFACE_MODEL_DIR = _ROOT_DIR / "models_insightface"
-DPAPI_HELPER_PATH = Path(
-    os.environ.get(
-        "MG_DPAPI_HELPER",
-        r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper\MajestyGuard.DpapiHelper.exe",
+
+
+def _resolve_dpapi_helper_path() -> Path:
+    r"""MG-E-02 (prior audit C1): resolve the DPAPI helper from safe
+    locations before the legacy C:\tmp dev path. C:\tmp is user-writable,
+    so an attacker with any local account could plant a fake helper exe
+    there and have it run by this daemon. Resolution order: (1) env
+    MG_DPAPI_HELPER_PATH (or legacy MG_DPAPI_HELPER), (2) install-base
+    relative candidates -- exe-adjacent repo root, %ProgramData%\MajestyGuard\,
+    %LOCALAPPDATA%\MajestyGuard\ -- and only then (3) the legacy C:\tmp
+    path, kept LAST so existing dev installs keep working while it is no
+    longer the preferred, attacker-controllable default."""
+    candidates: list[Path] = []
+    env_path = os.environ.get("MG_DPAPI_HELPER_PATH") or os.environ.get("MG_DPAPI_HELPER")
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.append(_ROOT_DIR / "MajestyGuard.DpapiHelper.exe")
+    candidates.append(
+        Path(os.environ.get("ProgramData", r"C:\ProgramData"))
+        / "MajestyGuard"
+        / "MajestyGuard.DpapiHelper.exe"
     )
-)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        candidates.append(Path(local_app_data) / "MajestyGuard" / "MajestyGuard.DpapiHelper.exe")
+    candidates.append(
+        Path(
+            r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper"
+            r"\MajestyGuard.DpapiHelper.exe"
+        )
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            log.info("DPAPI helper resolved to: %s", candidate)
+            return candidate
+    log.info("DPAPI helper not found; keeping last candidate: %s", candidates[-1])
+    return candidates[-1]
+
+
+DPAPI_HELPER_PATH = _resolve_dpapi_helper_path()
 
 
 class State(Enum):
@@ -439,6 +490,59 @@ class MajestyGuardDaemon:
         self._read_enrolled_embeddings_from_disk(result)
         self._register_enrolled_embeddings(result)
 
+    # SHA-256 of the single legacy plaintext embeddings_v2.npy known to
+    # predate the fail-closed loader fix (file unchanged since 2026-07-12;
+    # hash pinned 2026-09-20 during the security-audit alignment). Any
+    # other plaintext content is treated as unknown provenance and refused.
+    _LEGACY_V2_PLAINTEXT_SHA256 = "54F6FAB074A8244488A790FB97E8B2C43372A39A642B7623CE2D8F6E334AEF1A"
+
+    def _migrate_pinned_legacy_plaintext(self, v2_path: Path, raw: bytes):
+        """One-time migration of the pinned legacy plaintext embeddings store.
+
+        Returns the parsed np array on success - the file is atomically
+        replaced with a DPAPI-encrypted copy (identical protection to what
+        enroll_v2.py writes), so this plaintext path can never load again.
+        Returns None when the content is not the pinned store, fails shape
+        validation, or anything goes wrong (original file left untouched).
+        Preserves the owner's existing enrollment (continuity) without
+        reopening the plaintext-substitution hole (fail-closed stays).
+        """
+        import hashlib
+
+        digest = hashlib.sha256(raw).hexdigest().upper()
+        if digest != self._LEGACY_V2_PLAINTEXT_SHA256:
+            return None
+        try:
+            data = np.load(io.BytesIO(raw))
+            if getattr(data, "ndim", 0) != 2 or data.shape[1] < 128:
+                log.error(
+                    "Pinned legacy embeddings failed shape validation %s - refusing",
+                    getattr(data, "shape", None),
+                )
+                return None
+            import win32crypt
+
+            encrypted = win32crypt.CryptProtectData(
+                raw, "MajestyGuard biometric embeddings", None, None, None, 0
+            )
+            tmp = v2_path.with_name(v2_path.name + ".migrate.tmp")
+            tmp.write_bytes(encrypted)
+            os.replace(tmp, v2_path)
+            log.warning(
+                "Migrated the pinned legacy plaintext embeddings store to "
+                "DPAPI-encrypted storage (one-time automatic migration). "
+                "Plaintext backup copies of earlier enrollments may still "
+                "exist in %s - delete them when convenient.",
+                v2_path.parent,
+            )
+            return data
+        except Exception as e:
+            log.error(
+                "Legacy plaintext migration failed (%s); original file untouched",
+                e,
+            )
+            return None
+
     def _read_enrolled_embeddings_from_disk(self, out: dict) -> None:
         """Runs on a background thread, in parallel with FaceEngine.initialize().
         Pure disk I/O + parsing only -- must not touch self.face_eng, since it
@@ -452,13 +556,46 @@ class MajestyGuardDaemon:
                     import win32crypt
                     decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
                     data = np.load(io.BytesIO(decrypted))
-                except Exception:
-                    # Not a DPAPI blob (or decrypt unavailable) -- fall back
-                    # to the legacy plaintext format so an existing,
-                    # already-enrolled install keeps working unchanged.
-                    # New enrollments (enroll_v2.py) write encrypted; this
-                    # fallback exists for files enrolled before that change.
-                    data = np.load(io.BytesIO(raw))
+                except Exception as dpapi_exc:
+                    # MG-A-03/C-03/D-03: FAIL CLOSED. A plaintext fallback
+                    # here lets any same-user write to embeddings_v2.npy
+                    # substitute the enrolled gallery (attacker-face
+                    # persistence = unlock without the owner's face). The
+                    # unlock path degrades to "not enrolled" instead.
+                    # ALIGNMENT (2026-09-20): exactly one legacy plaintext
+                    # store auto-migrates once - pinned by the SHA-256
+                    # captured from the pre-fix on-disk file (unchanged
+                    # since 2026-07-12, weeks before fail-closed landed),
+                    # so the owner keeps their existing enrollment.
+                    # Any OTHER plaintext byte sequence (hash mismatch)
+                    # stays refused - attacker substitution included.
+                    # MG_ALLOW_PLAINTEXT_EMBEDDINGS=1 remains the explicit
+                    # escape hatch for a different legacy store.
+                    migrated = self._migrate_pinned_legacy_plaintext(v2_path, raw)
+                    if migrated is not None:
+                        data = migrated
+                    elif os.environ.get("MG_ALLOW_PLAINTEXT_EMBEDDINGS", "0") != "1":
+                        log.error(
+                            "Refusing to load plaintext embeddings from %s "
+                            "(DPAPI decrypt failed: %s; not the pinned "
+                            "legacy store). Treating as NOT ENROLLED - "
+                            "re-run: python daemon/enroll_v2.py. Set "
+                            "MG_ALLOW_PLAINTEXT_EMBEDDINGS=1 only to "
+                            "migrate a known legacy plaintext store, then "
+                            "re-enroll.",
+                            v2_path,
+                            dpapi_exc,
+                        )
+                        out["kind"] = "none_plaintext_refused"
+                        return
+                    else:
+                        log.warning(
+                            "MG_ALLOW_PLAINTEXT_EMBEDDINGS=1: loading legacy "
+                            "plaintext embeddings from %s (migration mode) - "
+                            "re-run daemon/enroll_v2.py to store them encrypted.",
+                            v2_path,
+                        )
+                        data = np.load(io.BytesIO(raw))
                 out["kind"] = "v2"
                 out["data"] = data
             except Exception as e:
@@ -515,6 +652,13 @@ class MajestyGuardDaemon:
 
         if kind == "none":
             log.warning("No biometric found — run: python daemon/enroll_v2.py")
+            return
+        if kind == "none_plaintext_refused":
+            log.error(
+                "Plaintext/unreadable embeddings refused (fail-closed) - "
+                "recognition stays disabled until re-enrollment. Run: "
+                "python daemon/enroll_v2.py"
+            )
             return
         if kind == "none_dpapi_missing":
             log.warning("DPAPI helper not found: %s", DPAPI_HELPER_PATH)
@@ -626,9 +770,6 @@ class MajestyGuardDaemon:
         )
 
     def _handle_ui_command(self, command: str, detail: str) -> None:
-        if command == "simulate_crash":
-            log.warning("Simulating unhandled exception/crash")
-            raise RuntimeError("Simulated unhandled exception")
         if command == "emergency_lock":
             log.warning("UI requested emergency lock from %s", detail or "unknown")
             self._transition(State.HOSTILE_LOCK)
@@ -994,6 +1135,24 @@ class MajestyGuardDaemon:
         log.warning("Camera read failure threshold reached - entering CAMERA_UNAVAILABLE")
         self._camera_read_failures = 0
         self._release_camera()
+        # MG-D-14/M: camera loss must fail closed while protection is
+        # active. CAMERA_UNAVAILABLE broadcasts "idle" and only retries
+        # every 30s, which dissolves the soft-lock overlay while the
+        # camera is dead -- the documented "camera occupied -> fail-closed
+        # lock" case. _camera_read_failures is the consecutive-failure
+        # counter (default 3, reset on every successful read/open, so
+        # camera recovery resumes normal flow automatically). While
+        # locked, engage the same LockWorkStation fail-closed path the
+        # startup camera failure uses (a HOSTILE_LOCK transition here
+        # would stop the 30s retry loop because that state is camera-cold
+        # passive, so lock + CRITICAL log instead).
+        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
+            log.critical(
+                "[Camera] %d consecutive read failures while locked - "
+                "locking workstation (fail-closed)",
+                CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE,
+            )
+            lock_workstation()
         self._transition(State.CAMERA_UNAVAILABLE)
 
     def _tick_idle(self, frame: np.ndarray) -> None:

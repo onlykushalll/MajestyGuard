@@ -114,15 +114,37 @@ class IPCServer:
         if not expected_pid:
             return False
         if client_pid == expected_pid:
-            return True
+            return self._client_pid_is_stable(client_pid)
         try:
             import psutil
             proc = psutil.Process(client_pid)
             if proc.ppid() == expected_pid:
-                return True
+                return self._client_pid_is_stable(client_pid)
         except Exception:
             pass
         return False
+
+    @staticmethod
+    def _client_pid_is_stable(client_pid: int) -> bool:
+        """PID-reuse TOCTOU guard (MG-B-07 hardening): capture the client
+        process's create_time immediately before the accept decision and
+        re-read it right after. If the PID was recycled between the pipe
+        handshake and this check, the two reads disagree (or the process is
+        gone) and we fail closed. Any error (e.g. psutil unavailable) also
+        fails closed, matching the existing reject-on-error style."""
+        try:
+            import psutil
+            first_create_time = psutil.Process(client_pid).create_time()
+            if psutil.Process(client_pid).create_time() != first_create_time:
+                log.warning(
+                    "IPCServer PID %d identity changed between checks - rejecting (PID reuse?)",
+                    client_pid,
+                )
+                return False
+        except Exception:
+            log.warning("IPCServer failed to verify PID %d stability - rejecting", client_pid)
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Public API (called from daemon main loop)

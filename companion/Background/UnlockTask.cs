@@ -19,6 +19,22 @@ namespace MajestyGuard.Companion.Background
         private const string PipeName    = "MajestyGuard_WHCDF";
         private const int    PipeTimeout = 3000; // ms
 
+        // ── MG-C-02 / MG-F-02 SECURITY WARNING (documented-only) ─────────────
+        // The WHCDF unlock path is INSECURE-BY-DESIGN until the
+        // MajestyGuard_WHCDF pipe gains real caller authentication:
+        // AskDaemonForHmacAsync connects by NAME only and trusts whichever
+        // process answers with "HMAC_OK <hmac>". The Python daemon currently
+        // fails CLOSED (companion_ipc.py denies unless BOTH
+        // MG_WHCDF_ALLOW_LOCAL_PIPE_CLIENTS and a key source are explicitly
+        // configured), so this code path stays inert by default — but the
+        // moment it is enabled against an unauthenticated pipe, a same-user
+        // process can squat the pipe name, harvest the three nonces, and forge
+        // the HMAC (full desktop unlock without a face). Do NOT enable WHCDF
+        // in any trusted deployment until daemon-side caller auth
+        // (per-connection SID/PID + FIRST_PIPE_INSTANCE, single instance) is
+        // implemented. See audit findings MG-C-02 / MG-F-02.
+        // ────────────────────────────────────────────────────────────────────
+
         // ── IBackgroundTask entry point ────────────────────────────────────────
 
         public async void Run(IBackgroundTaskInstance taskInstance)
@@ -26,6 +42,12 @@ namespace MajestyGuard.Companion.Background
             var deferral = taskInstance.GetDeferral();
             try
             {
+                // MG-C-02: loud startup marker — see the security warning above.
+                System.Diagnostics.Debug.WriteLine(
+                    "[WHCDF] WARNING: UnlockTask is running. The WHCDF unlock path is " +
+                    "insecure-by-design until MajestyGuard_WHCDF has caller authentication " +
+                    "(MG-C-02 / MG-F-02). Do not enable in trusted deployments.");
+
                 await HandleUnlockRequestAsync();
             }
             catch (Exception ex)

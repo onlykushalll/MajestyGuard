@@ -3,7 +3,7 @@
 //
 // SECURITY DESIGN:
 //   - Embeddings are encrypted using Windows DPAPI (ProtectedData) with
-//     LOCAL=machine scope (see DESCRIPTOR below) — bound to this machine's
+//     LOCAL=machine scope (see DESCRIPTOR below) - bound to this machine's
 //     key, NOT the current user's credentials. This is deliberate: DPAPI
 //     keys derived from a user's password hash can be extracted via
 //     Mimikatz-style LSASS memory attacks if a valid credential is stolen.
@@ -15,20 +15,31 @@
 //     decryption.
 //   - File path includes user SID to prevent cross-profile access
 //   - Raw embedding bytes are zeroed from memory after use
-//   - NEVER write raw embeddings to disk — only the encrypted blob
+//   - NEVER write raw embeddings to disk - only the encrypted blob
+//
+// MG-C-04 hardening (non-breaking): the store file and its directory now
+//   carry an explicit ACL (current user SID + SYSTEM + Administrators only),
+//   and Save() is atomic (temp + File.Replace with backup) so torn files
+//   are impossible. KNOWN LIMITATION (unchanged by design - changing it
+//   would invalidate every enrolled template): the DPAPI-NG descriptor
+//   remains LOCAL=machine, so ANY local process that can READ the file can
+//   decrypt it. The new ACL blocks that read in practice; a same-user or
+//   admin compromise still defeats confidentiality (audit finding MG-C-04).
 //
 // IMPORTANT: This must run in USER context (not SYSTEM).
 //   Call from a user-mode process during enrollment and verification.
 //   The Windows Service (SYSTEM) cannot decrypt this DPAPI-protected data
-//   directly — it uses a user-mode helper process (DpapiHelper) launched
+//   directly - it uses a user-mode helper process (DpapiHelper) launched
 //   via CreateProcessAsUserW for this.
 
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 
 namespace MajestyGuard.Core.Security
 {
@@ -76,7 +87,14 @@ namespace MajestyGuard.Core.Security
         private readonly string _storePath;
         private readonly string _currentUserSid;
 
-        // Entropy adds a per-application salt to DPAPI — prevents
+        // MG-C-04: optional diagnostics logger (null = silent - keeps every
+        // existing single-argument construction source-compatible).
+        private readonly ILogger? _logger;
+
+        // MG-C-04: the directory ACL is asserted once per store instance.
+        private bool _aclApplied;
+
+        // Entropy adds a per-application salt to DPAPI - prevents
         // other apps using DPAPI from accessing our blob
         private static readonly byte[] _entropy = [
             0x4D, 0x61, 0x6A, 0x65, 0x73, 0x74, 0x79, 0x47,
@@ -84,18 +102,19 @@ namespace MajestyGuard.Core.Security
             0x74, 0x5F, 0x76, 0x31
         ];
 
-        public EmbeddingStore(string storePath)
+        public EmbeddingStore(string storePath, ILogger? logger = null)
         {
             _storePath      = storePath;
+            _logger         = logger;
             _currentUserSid = WindowsIdentity.GetCurrent().User?.Value
                               ?? throw new InvalidOperationException("Cannot determine user SID");
 
             Directory.CreateDirectory(Path.GetDirectoryName(storePath)!);
         }
 
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
         // SAVE
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
 
         /// <summary>
         /// Encrypts and saves the enrollment record to disk.
@@ -116,17 +135,40 @@ namespace MajestyGuard.Core.Security
 
                 // DPAPI-NG with LOCAL=machine descriptor.
                 // Binds ciphertext to this specific machine.
-                // Admin cannot decrypt by impersonating the user token —
+                // Admin cannot decrypt by impersonating the user token -
                 // they need to be ON THIS MACHINE with the same OS installation.
                 // Mimikatz LSASS dump attack is defeated: the Master Key alone
                 // is insufficient without the machine-bound TPM component.
                 var cipherBytes = DpapiNg.Protect(plainBytes);
 
-                using var fs = new FileStream(_storePath, FileMode.Create,
-                    FileAccess.Write, FileShare.None);
-                using var bw = new BinaryWriter(fs);
-                bw.Write(cipherBytes.Length);
-                bw.Write(cipherBytes);
+                // MG-C-04: atomic write - write a sibling temp file, then
+                // File.Replace (with .bak backup) so a crash mid-write can never
+                // leave a truncated/torn store behind. The blob format and the
+                // DPAPI-NG scope/entropy are unchanged - existing enrolled
+                // templates keep working.
+                var tempPath   = _storePath + ".tmp";
+                var backupPath = _storePath + ".bak";
+
+                using (var fs = new FileStream(tempPath, FileMode.Create,
+                    FileAccess.Write, FileShare.None))
+                using (var bw = new BinaryWriter(fs))
+                {
+                    bw.Write(cipherBytes.Length);
+                    bw.Write(cipherBytes);
+                }
+
+                // Lock the temp down before it can become the store (also
+                // covers a temp left behind by a failed Replace).
+                ApplyFileAcl(tempPath);
+
+                if (File.Exists(_storePath))
+                    File.Replace(tempPath, _storePath, backupPath);
+                else
+                    File.Move(tempPath, _storePath);
+
+                // MG-C-04: re-assert the restricted ACL on the live files after
+                // every write (ReplaceFile descriptor semantics vary).
+                ApplyStoreHardening();
             }
             finally
             {
@@ -135,18 +177,24 @@ namespace MajestyGuard.Core.Security
             }
         }
 
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
         // LOAD
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
 
         /// <summary>
         /// Decrypts and loads the enrollment record.
-        /// Returns null if no enrollment exists for this user.
-        /// Throws if file is tampered or belongs to a different user.
+        /// Returns null if no enrollment exists for this user, or - MG-C-04
+        /// fail-closed - if the store is corrupt/unreadable. Throws
+        /// UnauthorizedAccessException if the record was tampered with or
+        /// belongs to a different user SID.
         /// </summary>
         public EnrollmentRecord? Load()
         {
             if (!File.Exists(_storePath)) return null;
+
+            // MG-C-04: on first read, harden the ACL of the store (and its
+            // directory) - covers stores written before ACL enforcement.
+            ApplyStoreHardening();
 
             byte[]? cipherBytes = null;
             byte[]? plainBytes  = null;
@@ -170,10 +218,10 @@ namespace MajestyGuard.Core.Security
                 var json   = System.Text.Encoding.UTF8.GetString(plainBytes);
                 var record = JsonSerializer.Deserialize<EnrollmentRecord>(json);
 
-                // Verify SID matches — tamper check
+                // Verify SID matches - tamper check
                 if (record?.UserSid != _currentUserSid)
                     throw new UnauthorizedAccessException(
-                        "Enrollment record SID mismatch — possible tampering");
+                        "Enrollment record SID mismatch - possible tampering");
 
                 // Validate embeddings dimensions (H10)
                 if (record.Embeddings != null)
@@ -191,9 +239,23 @@ namespace MajestyGuard.Core.Security
             }
             catch (CryptographicException ex)
             {
-                // DPAPI decryption failed — wrong user, or file corrupted
-                throw new InvalidOperationException(
-                    "Enrollment record is corrupted or belongs to a different user", ex);
+                // MG-C-04: unreadable ciphertext (corruption or machine change) -
+                // fail closed as "no enrollment" instead of crashing the caller.
+                _logger?.LogError(ex,
+                    "Enrollment store ciphertext unreadable ({Path}) - treating as no enrollment (fail-closed)",
+                    _storePath);
+                return null;
+            }
+            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or JsonException)
+            {
+                // MG-C-04: torn/corrupt framing or JSON - fail closed as
+                // "no enrollment" instead of crashing the caller. (A SID
+                // mismatch - UnauthorizedAccessException - still propagates:
+                // that is a tamper signal, not corruption.)
+                _logger?.LogError(ex,
+                    "Enrollment store corrupt ({Path}) - treating as no enrollment (fail-closed)",
+                    _storePath);
+                return null;
             }
             finally
             {
@@ -202,9 +264,9 @@ namespace MajestyGuard.Core.Security
             }
         }
 
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
         // UTILITIES
-        // ─────────────────────────────────────────────────────────────
+        // -------------------------------------------------------------
 
         public bool HasEnrollment() => File.Exists(_storePath);
 
@@ -218,6 +280,28 @@ namespace MajestyGuard.Core.Security
                 fs.Write(new byte[size]);
                 fs.Flush();
                 File.Delete(_storePath);
+            }
+
+            // MG-C-04: the atomic-write backup/temp siblings also hold
+            // (protected) enrollment ciphertext - wipe and remove them so
+            // "delete enrollment" leaves nothing recoverable behind.
+            foreach (var path in new[] { _storePath + ".bak", _storePath + ".tmp" })
+            {
+                try
+                {
+                    if (File.Exists(path))
+                    {
+                        var size = new FileInfo(path).Length;
+                        using var fs = new FileStream(path, FileMode.Open, FileAccess.Write);
+                        fs.Write(new byte[size]);
+                        fs.Flush();
+                        File.Delete(path);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "MG-C-04: failed to wipe enrollment sibling file {Path}", path);
+                }
             }
         }
 
@@ -240,23 +324,106 @@ namespace MajestyGuard.Core.Security
             };
             Save(updated);
         }
+
+        // -------------------------------------------------------------
+        // MG-C-04 - ACL HARDENING (best-effort, never blocks I/O)
+        // -------------------------------------------------------------
+
+        /// <summary>
+        /// Asserts the restricted ACL on the store directory (once per
+        /// instance) and on the store + backup files (idempotent). Only the
+        /// current user SID, SYSTEM and Administrators retain access; every
+        /// failure is logged as a warning and swallowed - the ciphertext
+        /// remains DPAPI-NG protected either way.
+        /// </summary>
+        private void ApplyStoreHardening()
+        {
+            ApplyDirectoryAcl();
+            ApplyFileAcl(_storePath);
+            ApplyFileAcl(_storePath + ".bak");
+        }
+
+        private void ApplyDirectoryAcl()
+        {
+            if (_aclApplied) return;
+            _aclApplied = true;
+
+            try
+            {
+                var dir = Path.GetDirectoryName(_storePath);
+                if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+
+                var security = new DirectorySecurity();
+                // Protected DACL, no inherited ACEs - exact allowlist only.
+                // The ACEs apply to the directory itself (no propagation), so
+                // sibling files (e.g. the daemon's embeddings_v2.npy) keep
+                // their own token-default ACLs.
+                security.SetAccessRuleProtection(true, false);
+                AddAllowFullControl(security, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+                AddAllowFullControl(security, new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+                AddAllowFullControl(security, new SecurityIdentifier(_currentUserSid));
+
+                new DirectoryInfo(dir).SetAccessControl(security);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex,
+                    "MG-C-04: could not harden ACL on store directory {Path} (continuing - blob is still DPAPI-NG protected)",
+                    Path.GetDirectoryName(_storePath));
+            }
+        }
+
+        private void ApplyFileAcl(string path)
+        {
+            try
+            {
+                if (!File.Exists(path)) return;
+
+                var security = new FileSecurity();
+                security.SetAccessRuleProtection(true, false);
+                AddAllowFullControl(security, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null));
+                AddAllowFullControl(security, new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+                AddAllowFullControl(security, new SecurityIdentifier(_currentUserSid));
+
+                new FileInfo(path).SetAccessControl(security);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex,
+                    "MG-C-04: could not harden ACL on store file {Path} (continuing - blob is still DPAPI-NG protected)",
+                    path);
+            }
+        }
+
+        private static void AddAllowFullControl(FileSystemSecurity security, SecurityIdentifier sid)
+        {
+            security.AddAccessRule(new FileSystemAccessRule(
+                sid, FileSystemRights.FullControl, AccessControlType.Allow));
+        }
     }
-    // ─────────────────────────────────────────────────────────────────
-    // DPAPI-NG wrapper — NCryptProtectSecret with LOCAL=machine descriptor
+    // -----------------------------------------------------------------
+    // DPAPI-NG wrapper - NCryptProtectSecret with LOCAL=machine descriptor
     // Replaces legacy ProtectedData.Protect (DataProtectionScope.CurrentUser)
     // which is vulnerable to admin impersonation + Mimikatz DPAPI extraction.
     //
     // LOCAL=machine binds the ciphertext to this machine's identity.
     // Decryption requires: same machine + same OS installation + same drive.
-    // Booting from a different drive or different machine → decryption fails.
+    // Booting from a different drive or different machine -> decryption fails.
     //
     // Reference: https://learn.microsoft.com/windows/win32/api/ncryptprotect/
-    // ─────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------
     internal static class DpapiNg
     {
         // NCrypt protection descriptor for machine-scoped binding
         // LOCAL=machine: bound to this machine's master key (stored in SYSTEM LSA)
         // An attacker needs BOTH the machine key AND to run on this machine.
+        //
+        // MG-C-04 KNOWN LIMITATION (intentionally unchanged - switching scope
+        // or entropy would invalidate every enrolled template): any process
+        // running locally that can READ the store file can call
+        // NCryptUnprotectSecret with this descriptor. The store ACL (see
+        // EmbeddingStore.ApplyStoreHardening) blocks that read in practice;
+        // same-user/admin compromise remains out of scope for this fix.
         private const string DESCRIPTOR = "LOCAL=machine";
 
         [DllImport("ncrypt.dll", CharSet = CharSet.Unicode)]
@@ -344,7 +511,7 @@ namespace MajestyGuard.Core.Security
             }
             finally
             {
-                // Zero the native buffer before freeing — avoids Unsafe pointer interop issues
+                // Zero the native buffer before freeing - avoids Unsafe pointer interop issues
                 if (pData != IntPtr.Zero && cbData > 0)
                     ZeroMemory(pData, (nint)cbData);
                 LocalFree(pData);

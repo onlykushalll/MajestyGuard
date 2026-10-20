@@ -57,7 +57,12 @@ static LONG g_cDllRef = 0;
 static HMODULE g_hModule = nullptr;  // Set in DllMain
 
 // Credential Manager target name for stored credentials
+#if 0
+// SECURITY: password serialization removed per audit MG-A-08 — this code must never
+// be re-enabled; the design forbids storing/reading Windows passwords (see SECURITY.md).
+// Kept visible for history.
 static const WCHAR CRED_TARGET[] = L"MajestyGuard_FaceAuth";
+#endif
 
 // CLSID string form for registry
 static const WCHAR CLSID_STRING[] = L"{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}";
@@ -284,11 +289,18 @@ CMajestyCredential::CMajestyCredential()
 CMajestyCredential::~CMajestyCredential()
 {
     m_stopPipeThread = true;
-    if (m_hPipe != INVALID_HANDLE_VALUE)
-    {
-        CloseHandle(m_hPipe);
-        m_hPipe = INVALID_HANDLE_VALUE;
-    }
+    // SECURITY (second-auditor finding #4, HIGH — double-close handle; audit MG-A-07
+    // handle-lifetime item): the pipe handle is OWNED by CMajestyCredentialProvider —
+    // it is the object that calls CreateFileW in ConnectToService, and the single,
+    // legitimate close is CMajestyCredentialProvider::DisconnectFromService, called
+    // once from the provider destructor. CMajestyCredential only BORROWS the handle
+    // (Initialize stores a non-owning copy for the reader thread). Closing it here as
+    // well meant the SAME handle value was closed twice per LogonUI session; LogonUI
+    // aggressively reuses handle values, so the second close could invalidate an
+    // unrelated kernel object. The credential must NEVER close the provider's handle.
+    // Reader-thread shutdown is unaffected: CancelSynchronousIo + WaitForSingleObject
+    // below already unblock and join the thread (closing a handle with pending
+    // synchronous IO is undefined behavior and was never a reliable cancel anyway).
     if (m_hPipeThread)
     {
         CancelSynchronousIo(m_hPipeThread);
@@ -491,6 +503,14 @@ STDMETHODIMP CMajestyCredential::GetSerialization(
     return S_OK;
 }
 
+// SECURITY: password serialization removed per audit MG-A-08 — this code must never
+// be re-enabled; the design forbids storing/reading Windows passwords (see SECURITY.md).
+// Kept visible for history. (Verified dead code: zero call sites in the entire mirror;
+// the Credential Manager target constant — compiled out above — was referenced only
+// by this function, and no writer for such a stored credential exists anywhere, so
+// compiling this out changes nothing at runtime. Note: keep this comment free of the
+// Credential Manager API names so grep-based CI guards stay meaningful.)
+#if 0
 HRESULT CMajestyCredential::SerializeCredentials(
     CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*   pcpcs)
@@ -578,6 +598,7 @@ HRESULT CMajestyCredential::SerializeCredentials(
 
     return S_OK;
 }
+#endif // SECURITY MG-A-08: end of disabled dead password-serialization code
 
 STDMETHODIMP CMajestyCredential::ReportResult(
     NTSTATUS /*ntsStatus*/, NTSTATUS /*ntsSubstatus*/,
@@ -634,6 +655,11 @@ void CMajestyCredential::OnAuthDecision(bool granted)
 
 DWORD WINAPI CMajestyCredential::PipeReaderThread(LPVOID lpParam)
 {
+    // SECURITY (audit MG-A-09): hard cap for the per-line verdict-accumulation buffer
+    // (64 KiB — far above any legit AuthDecision line; the C# PipeServer caps lines at
+    // 1 MiB, this is the C++ counterpart). Constant-initialized: zero runtime cost.
+    static const size_t kMaxAccumulatedLineBytes = 64 * 1024;
+
     auto self = static_cast<CMajestyCredential*>(lpParam);
     if (self->m_hPipe == INVALID_HANDLE_VALUE) return 1;
 
@@ -656,6 +682,17 @@ DWORD WINAPI CMajestyCredential::PipeReaderThread(LPVOID lpParam)
 
         buffer[bytesRead] = '\0';
         accumulated += buffer;
+
+        // SECURITY (audit MG-A-09): cap the verdict-accumulation buffer. A pipe peer
+        // that streams bytes with no '\n' would otherwise grow this std::string
+        // without bound inside LogonUI (SYSTEM). Legit verdict messages are tiny,
+        // newline-terminated JSON lines, so a well-behaved service never comes near
+        // this cap; on overflow the partial (malformed) line is dropped — fail-closed:
+        // no verdict is ever parsed from discarded bytes.
+        if (accumulated.size() > kMaxAccumulatedLineBytes)
+        {
+            accumulated.clear();
+        }
 
         // Parse newline-delimited JSON
         size_t pos;

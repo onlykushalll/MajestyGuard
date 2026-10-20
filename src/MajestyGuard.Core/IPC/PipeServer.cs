@@ -7,11 +7,23 @@
 //   and SYSTEM may connect. This prevents other processes from injecting
 //   fake detection results or commands.
 //
+//   MG-C-05 / MG-F-03 (fail-closed caller verification): a server created
+//   with requireTrustedClientPid=true additionally verifies, via
+//   GetNamedPipeClientProcessId, that the connecting client is exactly the
+//   process whose PID was published through ExpectedClientProcessId (the
+//   CV engine the service itself spawned). Any other caller — or any
+//   failure to determine the caller — is disconnected before a single
+//   message (inbound OR outbound, including queued embedding payloads) is
+//   exchanged. Escape hatch for diagnostics: MG_ALLOW_ANY_CV_CLIENT=1
+//   (read once at startup, loud warning logged; default is strict).
+//
 // CODEX: Implement SendAsync, the reconnect loop, and the ACL setup.
 
 using System;
 using System.IO;
 using System.IO.Pipes;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
@@ -35,19 +47,58 @@ namespace MajestyGuard.Core.IPC
         private CancellationTokenSource _cts = new();
         private readonly ConcurrentQueue<string> _pendingMessages = new();
 
+        // MG-C-05 / MG-F-03: fail-closed caller-PID gate. Armed per server
+        // instance (the Worker arms it for the CV pipe only, so Overlay and
+        // CredProvider keep their existing, DACL-only trust model).
+        private readonly bool _requireTrustedClientPid;
+        private readonly bool _allowAnyClient;
+        private volatile int _expectedClientPid;   // 0 = not published yet
+
 
         public event Func<IpcMessage, Task>? MessageReceived;
 
-        public MajestyPipeServer(string pipeName, ILogger logger, string? enrolledUserSid = null)
+        public MajestyPipeServer(string pipeName, ILogger logger, string? enrolledUserSid = null,
+            bool requireTrustedClientPid = false)
         {
             _pipeName = pipeName;
             _logger   = logger;
             _enrolledUserSid = enrolledUserSid;
+            _requireTrustedClientPid = requireTrustedClientPid;
+
+            // MG-C-05 escape hatch for diagnostics (dev tools such as
+            // mg_recog_diag.py, or the default-off daemon ServiceIPCServer
+            // bridge, which cannot know the spawned engine's PID):
+            // read ONCE at startup. Default: strict.
+            _allowAnyClient = requireTrustedClientPid && string.Equals(
+                Environment.GetEnvironmentVariable("MG_ALLOW_ANY_CV_CLIENT"),
+                "1", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// MG-C-05: PID of the only client process allowed to connect while
+        /// requireTrustedClientPid is enabled. The Worker publishes the spawned
+        /// CV-engine PID here immediately after Process.Start, and again on
+        /// every watchdog respawn, so the gate never sticks to a stale PID —
+        /// transient mismatches self-heal through the engine's reconnect loop.
+        /// </summary>
+        public int ExpectedClientProcessId
+        {
+            get => _expectedClientPid;
+            set => _expectedClientPid = value;
         }
 
         public async Task StartAsync(CancellationToken ct)
         {
             _logger.LogInformation("Pipe server starting: {Name}", _pipeName);
+
+            if (_allowAnyClient)
+            {
+                _logger.LogWarning(
+                    "MG_ALLOW_ANY_CV_CLIENT=1 — caller-PID verification DISABLED on pipe {Name}. " +
+                    "Any process passing the pipe DACL can impersonate the CV engine and inject " +
+                    "DetectionResult messages (MG-C-05/MG-F-03). Use only for isolated diagnostics.",
+                    _pipeName);
+            }
 
             while (!ct.IsCancellationRequested)
             {
@@ -58,6 +109,17 @@ namespace MajestyGuard.Core.IPC
 
                     await _pipe.WaitForConnectionAsync(ct);
                     _logger.LogDebug("Client connected on pipe: {Name}", _pipeName);
+
+                    // MG-C-05 / MG-F-03: verify the caller BEFORE any traffic flows —
+                    // including FlushPendingMessagesAsync, whose queue can carry the
+                    // enrolled embedding payload. Fail-closed: disconnect on mismatch.
+                    if (!VerifyClientProcessId(_pipe))
+                    {
+                        _pipe.Dispose();
+                        _pipe = null;
+                        await Task.Delay(500, ct);  // Brief pause to blunt reconnect-spam
+                        continue;
+                    }
 
                     await FlushPendingMessagesAsync();
                     await ReadLoopAsync(_pipe, ct);
@@ -77,6 +139,54 @@ namespace MajestyGuard.Core.IPC
                     _pipe = null;
                 }
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // MG-C-05 / MG-F-03 — CALLER VERIFICATION (fail-closed)
+        // ─────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Returns true only when this connection's client process is the
+        /// process this service spawned (ExpectedClientProcessId). Mismatch,
+        /// failure to query the OS, or an armed gate with no published PID
+        /// all disconnect the client before any byte is processed.
+        /// </summary>
+        private bool VerifyClientProcessId(NamedPipeServerStream pipe)
+        {
+            if (!_requireTrustedClientPid || _allowAnyClient)
+                return true;  // gate not armed for this pipe instance
+
+            int expected = _expectedClientPid;  // volatile read
+            if (expected == 0)
+            {
+                _logger.LogWarning(
+                    "Pipe {Name}: trusted-client PID gate armed but no expected PID published — " +
+                    "disconnecting client (fail-closed, MG-C-05)",
+                    _pipeName);
+                return false;
+            }
+
+            if (!PipeClientIdentity.TryGetClientProcessId(pipe, out uint clientPid, out int win32Error))
+            {
+                _logger.LogWarning(
+                    "Pipe {Name}: could not determine client PID (handle unavailable or " +
+                    "GetNamedPipeClientProcessId failed, Win32Error={Err}) — disconnecting client " +
+                    "(fail-closed, MG-C-05)",
+                    _pipeName, win32Error);
+                return false;
+            }
+
+            if (clientPid != unchecked((uint)expected))
+            {
+                _logger.LogWarning(
+                    "Pipe {Name}: untrusted client PID {ClientPid} (expected {ExpectedPid} — the " +
+                    "spawned CV engine). Disconnecting; no message processed (fail-closed, MG-C-05/MG-F-03).",
+                    _pipeName, clientPid, expected);
+                return false;
+            }
+
+            _logger.LogDebug("Pipe {Name}: client PID {Pid} verified", _pipeName, clientPid);
+            return true;
         }
 
         public async Task SendAsync(IpcMessage message)
@@ -229,6 +339,61 @@ namespace MajestyGuard.Core.IPC
         {
             _cts.Cancel();
             _pipe?.Dispose();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // MG-C-05 — native caller identity for a server pipe instance.
+    // ─────────────────────────────────────────────────────────────────
+    internal static class PipeClientIdentity
+    {
+        // PipeStream.SafePipeHandle's declared accessibility varies across
+        // .NET flavors (protected in several releases), so the handle is
+        // fetched via reflection with a cached PropertyInfo: this compiles
+        // and works regardless of the property's declared accessibility.
+        // If the handle cannot be obtained, callers fail closed
+        // (disconnect) — see MajestyPipeServer.VerifyClientProcessId.
+        private static readonly PropertyInfo? SafePipeHandleProperty =
+            typeof(NamedPipeServerStream).GetProperty(
+                "SafePipeHandle",
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNamedPipeClientProcessId(
+            SafeHandle hNamedPipe, out uint clientProcessId);
+
+        /// <summary>
+        /// Returns the PID of the process that created this pipe connection,
+        /// as reported by the kernel at accept time (not a client-supplied
+        /// claim, and not a stale PID re-resolved later — the MG-F-06
+        /// PID-reuse caveat does not apply to this query shape).
+        /// </summary>
+        internal static bool TryGetClientProcessId(
+            NamedPipeServerStream pipe, out uint clientProcessId, out int win32Error)
+        {
+            clientProcessId = 0;
+            win32Error = 0;
+
+            SafeHandle? handle = null;
+            try
+            {
+                handle = SafePipeHandleProperty?.GetValue(pipe) as SafeHandle;
+            }
+            catch (Exception)
+            {
+                // Inaccessible handle — fall through to fail-closed.
+            }
+
+            if (handle is null || handle.IsInvalid)
+                return false;
+
+            if (!GetNamedPipeClientProcessId(handle, out clientProcessId))
+            {
+                win32Error = Marshal.GetLastWin32Error();
+                return false;
+            }
+
+            return clientProcessId != 0;
         }
     }
 

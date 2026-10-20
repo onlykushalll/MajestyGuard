@@ -244,9 +244,15 @@ private:
 
     static DWORD WINAPI PipeReaderThread(LPVOID lpParam);
 
+#if 0
+    // SECURITY: password serialization removed per audit MG-A-08 — this code must never
+    // be re-enabled; the design forbids storing/reading Windows passwords (see SECURITY.md).
+    // Kept visible for history. (Dead declaration: zero call sites in the mirror; the
+    // definition in the .cpp is likewise compiled out — see the .cpp #if 0 block.)
     HRESULT SerializeCredentials(
         CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
         CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*   pcpcs);
+#endif
 
 public:
     // Field state table (public — accessed by CMajestyCredentialProvider::GetFieldDescriptorAt)

@@ -68,3 +68,30 @@ def test_delayed_backdrop_is_discarded_after_unlock_begins(qapp):
     overlay._on_background_ready(image, capture_generation=7)
 
     assert overlay._background.isNull()
+
+
+def test_animate_opacity_fade_in_does_not_hide_overlay_on_early_finish(qapp):
+    overlay = soft_lock.SoftLockOverlay()
+    overlay.show()
+    overlay._animate_opacity(0.0, 1.0)
+    overlay._opacity_value = 0.01
+    overlay._fade.finished.emit()
+
+    assert overlay.isVisible() is True
+    overlay.hide()
+
+
+def test_fit_virtual_screen_tracks_virtual_geometry(monkeypatch, qapp):
+    from PyQt6.QtCore import QRect
+
+    overlay = soft_lock.SoftLockOverlay()
+
+    class MockScreen:
+        def virtualGeometry(self):
+            return QRect(0, 0, 3840, 1080)
+
+    monkeypatch.setattr(soft_lock.QGuiApplication, "primaryScreen", lambda: MockScreen())
+    overlay._fit_virtual_screen()
+
+    assert overlay.geometry() == QRect(0, 0, 3840, 1080)
+

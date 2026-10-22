@@ -1,8 +1,11 @@
 # Models (too large for GitHub)
-models/
-**/models/
+models/*
+!models/model_hashes.reference.json
+**/models/*
+!**/models/model_hashes.reference.json
 !src/MajestyGuard.Core/Models/
 !src/MajestyGuard.Core/Models/AppConfig.cs
+!models/model_hashes.reference.json
 *.onnx
 *.npy
 *.npz

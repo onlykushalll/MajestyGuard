@@ -532,6 +532,18 @@ class SoftLockOverlay(QWidget):
         self._setup_motion()
         self._fit_virtual_screen()
 
+        app = QGuiApplication.instance()
+        if app is not None:
+            app.screenAdded.connect(self._on_screen_changed)
+            app.screenRemoved.connect(self._on_screen_changed)
+            primary = QGuiApplication.primaryScreen()
+            if primary is not None:
+                primary.geometryChanged.connect(self._on_screen_changed)
+                primary.virtualGeometryChanged.connect(self._on_screen_changed)
+
+    def _on_screen_changed(self, *_args) -> None:
+        self._fit_virtual_screen()
+
     def _setup_window(self) -> None:
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -854,25 +866,7 @@ class SoftLockOverlay(QWidget):
         self._fade.stop()
         self._fade.setStartValue(start)
         self._fade.setEndValue(end)
-        try:
-            self._fade.finished.disconnect(self._hide_after_fade)
-        except TypeError:
-            pass
-        self._fade.finished.connect(self._hide_after_fade)
         self._fade.start()
-
-    def _hide_after_fade(self) -> None:
-        try:
-            self._fade.finished.disconnect(self._hide_after_fade)
-        except TypeError:
-            pass
-        if self._opacity_value <= 0.02:
-            self._timer.stop()
-            self.hide()
-            self._fallback_btn.hide()
-            self._lock_shown_at = None
-            _uninstall_hooks()
-            _set_taskbar_visible(True)
 
     def _tick(self) -> None:
         self._phase = (self._phase + 0.008) % 1.0

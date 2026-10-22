@@ -96,6 +96,30 @@ def _verify_model_tofu(model_path: str) -> bool:
         manifest = {}
     pinned = manifest.get(key)
     if pinned is None:
+        # Check against shipped reference manifest to close first-use TOFU gap
+        ref_manifest_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "models",
+            "model_hashes.reference.json",
+        )
+        try:
+            with open(ref_manifest_path, "r", encoding="utf-8") as rfh:
+                ref_data = json.load(rfh)
+            basename = os.path.basename(model_path)
+            relpath = os.path.relpath(
+                model_path,
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ).replace("\\", "/")
+            ref_hash = ref_data.get(basename) or ref_data.get(relpath)
+            if ref_hash is not None and ref_hash.lower() != actual.lower():
+                logger.critical(
+                    "MODEL INTEGRITY FAILURE: %s sha256=%s does not match "
+                    "shipped reference hash=%s - refusing to load",
+                    model_path, actual, ref_hash,
+                )
+                return False
+        except Exception:
+            pass
         manifest[key] = actual
         try:
             os.makedirs(os.path.dirname(manifest_path), exist_ok=True)

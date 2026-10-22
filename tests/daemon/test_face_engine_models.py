@@ -184,3 +184,24 @@ def test_identity_scoring_normalizes_live_embedding_before_cosine_match():
 
     assert idx == 0
     assert score == pytest.approx(1.0)
+
+def test_verify_model_tofu_validates_against_shipped_reference_hashes(tmp_path, monkeypatch):
+    from face_engine import _verify_model_tofu, _TOFU_VERIFIED
+    import json
+
+    _TOFU_VERIFIED.clear()
+    manifest_file = tmp_path / "model_hashes.json"
+    monkeypatch.setattr(face_engine, "_model_hashes_manifest_path", lambda: str(manifest_file))
+
+    fake_model = tmp_path / "antispoof_minifasv2.onnx"
+    fake_model.write_bytes(b"corrupt-or-tampered-model-content")
+
+    assert _verify_model_tofu(str(fake_model)) is False
+    assert not manifest_file.exists()
+
+    unlisted_model = tmp_path / "custom_unlisted_model.onnx"
+    unlisted_model.write_bytes(b"safe-custom-content")
+    assert _verify_model_tofu(str(unlisted_model)) is True
+    assert manifest_file.exists()
+    saved_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    assert any("custom_unlisted_model.onnx" in k for k in saved_manifest)

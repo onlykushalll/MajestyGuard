@@ -576,14 +576,32 @@ class SoftLockOverlay(QWidget):
         self.setGeometry(rect)
         self.setMinimumSize(rect.size())
 
+    def _hud_rect(self) -> QRect:
+        """Return primary-screen bounds in local widget coordinates so HUD elements
+        never split across a multi-monitor bezel while the glass spans virtualGeometry."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            return self.rect()
+        vrect = screen.virtualGeometry()
+        prect = screen.geometry()
+        if vrect.width() <= 0 or vrect.height() <= 0:
+            return self.rect()
+        return QRect(
+            prect.x() - vrect.x(),
+            prect.y() - vrect.y(),
+            prect.width(),
+            prect.height(),
+        )
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        hud = self._hud_rect()
         btn_w = 180
         btn_h = 32
-        margin = max(24, min(42, self.width() // 48))
+        margin = max(24, min(42, hud.width() // 48))
         self._fallback_btn.setGeometry(
-            margin,
-            self.height() - btn_h - margin,
+            hud.left() + margin,
+            hud.bottom() - btn_h - margin,
             btn_w, btn_h
         )
 
@@ -950,12 +968,12 @@ class SoftLockOverlay(QWidget):
         time_str = now.strftime("%H:%M")
         date_str = now.strftime("%A, %B %d")
 
-        rect = self.rect()
+        rect = self._hud_rect()
         painter.save()
 
-        # Center in the upper-middle region
-        center_x = rect.width() / 2.0
-        center_y = rect.height() * 0.35
+        # Center in the upper-middle region of the primary screen
+        center_x = rect.left() + rect.width() / 2.0
+        center_y = rect.top() + rect.height() * 0.35
 
         # Draw Time
         time_font = QFont("Segoe UI Variable Display", 72, QFont.Weight.Light)
@@ -965,7 +983,7 @@ class SoftLockOverlay(QWidget):
         time_metrics = painter.fontMetrics()
         time_rect = time_metrics.boundingRect(time_str)
         time_w = time_rect.width()
-        
+
         painter.drawText(
             int(center_x - time_w / 2.0),
             int(center_y),
@@ -980,11 +998,29 @@ class SoftLockOverlay(QWidget):
         date_metrics = painter.fontMetrics()
         date_rect = date_metrics.boundingRect(date_str)
         date_w = date_rect.width()
+        date_y = int(center_y + time_metrics.descent() + 28)
 
         painter.drawText(
             int(center_x - date_w / 2.0),
-            int(center_y + time_metrics.descent() + 28),
+            date_y,
             date_str
+        )
+
+        # Subtle center guidance capsule below the date
+        prompt = (
+            "Verifying face identity — hold steady..."
+            if self._state.name == "verifying_lock"
+            else "Press SPACE to verify identity  ·  TAB for Windows Lock"
+        )
+        pill_w = 340.0
+        pill_h = 32.0
+        pill_rect = QRectF(center_x - pill_w / 2.0, date_y + 26.0, pill_w, pill_h)
+        self._paint_corner_pill(
+            painter,
+            pill_rect,
+            prompt,
+            align=Qt.AlignmentFlag.AlignHCenter,
+            brand=True,
         )
 
         painter.restore()
@@ -1062,15 +1098,20 @@ class SoftLockOverlay(QWidget):
         painter.restore()
 
     def _paint_corner_status(self, painter: QPainter) -> None:
-        rect = self.rect()
+        rect = self._hud_rect()
         margin = max(24, min(42, rect.width() // 48))
-        pill = QRectF(margin, margin, 176, 34)
+        pill = QRectF(rect.left() + margin, rect.top() + margin, 176, 34)
         self._paint_corner_pill(painter, pill, self._status_label(), align=Qt.AlignmentFlag.AlignLeft)
 
     def _paint_brand_signature(self, painter: QPainter) -> None:
-        rect = self.rect()
+        rect = self._hud_rect()
         margin = max(24, min(42, rect.width() // 48))
-        pill = QRectF(rect.width() - margin - 218, rect.height() - margin - 34, 218, 34)
+        pill = QRectF(
+            rect.right() - margin - 218,
+            rect.bottom() - margin - 34,
+            218,
+            34,
+        )
         self._paint_corner_pill(
             painter,
             pill,

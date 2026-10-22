@@ -6,6 +6,7 @@ reports cosine similarity against the enrolled matrix. No locking, no IPC, and
 no frames are written to disk.
 """
 from __future__ import annotations
+from diagnostic_common import load_embeddings_array
 
 import argparse
 import json
@@ -49,7 +50,7 @@ def _default_target(env: Mapping[str, str] | None = None) -> float:
 def _load_embeddings() -> np.ndarray:
     if not EMBEDDINGS_PATH.exists():
         raise FileNotFoundError(f"Embeddings not found: {EMBEDDINGS_PATH}")
-    arr = np.load(str(EMBEDDINGS_PATH)).astype(np.float32)
+    arr = load_embeddings_array(EMBEDDINGS_PATH).astype(np.float32)
     if arr.ndim != 2 or arr.shape[1] != 512:
         raise ValueError(f"Expected embeddings shape (N, 512), got {arr.shape}")
     norms = np.linalg.norm(arr, axis=1, keepdims=True) + 1e-8

@@ -113,7 +113,9 @@ def _diagnose_one(detector: LivenessDetector, frame: np.ndarray, face) -> Option
             combined = combined * 0.88 + midas * 0.12
 
     if detector._rppg.has_signal:
-        if rppg >= 0.60 or attention >= 0.75:
+        if detector._rppg.snr < detector._rppg_confident_no_pulse_snr:
+            combined = combined * 0.70 + rppg * 0.30
+        elif rppg >= 0.60 or attention >= 0.75:
             combined = min(
                 0.98,
                 combined
@@ -125,7 +127,7 @@ def _diagnose_one(detector: LivenessDetector, frame: np.ndarray, face) -> Option
 
     detector._score_history.append(combined)
     if detector._frame_index < detector._MIN_FRAMES_FOR_PASS:
-        smoothed = min(float(np.mean(detector._score_history)), 0.75)
+        smoothed = min(float(np.mean(detector._score_history)), 0.65)
     else:
         smoothed = float(np.percentile(list(detector._score_history)[-30:], 10))
 

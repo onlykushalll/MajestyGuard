@@ -39,8 +39,9 @@ from liveness_detector import LivenessDetector
 
 logging.basicConfig(level=logging.WARNING)
 
-MODELS_DIR = Path(__file__).resolve().parent.parent / "models_insightface"
-LIVENESS_MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+from diagnostic_common import resolve_resource_dir
+MODELS_DIR = resolve_resource_dir("models_insightface")
+LIVENESS_MODELS_DIR = resolve_resource_dir("models")
 DEFAULT_ENROLL_LIVENESS_THRESHOLD = 0.70
 
 
@@ -452,6 +453,7 @@ def _backup_existing_artifacts() -> list[Path]:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--cli", action="store_true", help="Force legacy OpenCV CLI window instead of Apple Face ID Studio")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--max-seconds", type=float, default=_env_max_seconds())
     parser.add_argument("--profile", choices=sorted(PROFILE_ANGLES), default="robust")
@@ -542,99 +544,181 @@ def main() -> int:
     samples: list[EnrollmentSample] = []
     enrollment_deadline = _deadline_from_max_seconds(max_seconds)
 
-    for i, angle in enumerate(angles, start=1):
-        if _enrollment_deadline_expired(enrollment_deadline):
-            return abort_with_cleanup("Enrollment timed out before all poses were captured; nothing was saved.")
+    use_studio_window = False
+    if not getattr(args, "cli", False):
+        try:
+            ui_dir = Path(__file__).resolve().parent.parent / "ui"
+            if str(ui_dir) not in sys.path:
+                sys.path.insert(0, str(ui_dir))
+            import importlib
+            _qwidgets = importlib.import_module("PyQt6.QtWidgets")
+            _qcore = importlib.import_module("PyQt6.QtCore")
+            QApplication = getattr(_qwidgets, "QApplication")
+            QTimer = getattr(_qcore, "QTimer")
+            from enrollment_window import EnrollmentStudioWindow
+            use_studio_window = True
+        except Exception as e:
+            print(f"EnrollmentStudioWindow unavailable ({e}), using OpenCV fallback")
+            use_studio_window = False
 
-        print(f"Angle {i}/{len(angles)}: {angle}")
-        print(f"  Press SPACE when READY to capture {samples_per_angle} samples, or Q to quit.")
-        print()
+    if use_studio_window:
+        app_qt = QApplication.instance() or QApplication(sys.argv)
 
-        captured = False
-        while not captured:
+        def _do_burst(angle_name: str, angle_idx: int) -> list[EnrollmentSample]:
+            return _capture_burst(
+                cap,
+                app,
+                angle_name,
+                angle_idx,
+                samples_per_angle,
+                min_quality,
+                liveness,
+                enrollment_deadline,
+            )
+
+        studio = EnrollmentStudioWindow(
+            angles=angles,
+            profile=args.profile,
+            samples_per_angle=samples_per_angle,
+            on_capture_burst=_do_burst,
+        )
+
+        poll_timer = QTimer()
+
+        def _on_studio_tick():
             if _enrollment_deadline_expired(enrollment_deadline):
-                return abort_with_cleanup("Enrollment timed out before all poses were captured; nothing was saved.")
+                studio.abort()
+                poll_timer.stop()
+                app_qt.quit()
+                return
 
             ret, raw_frame = cap.read()
             if not ret or raw_frame is None:
-                continue
+                return
             frame = _enhance_frame(raw_frame)
-
             faces = app.get(frame)
             face = _select_primary_face(frame, faces)
-            display = frame.copy()
-            status = "no face"
-            ready = False
-            height_frac = 0.0
-
             if face is not None:
-                x1, y1, x2, y2 = [int(v) for v in face.bbox]
                 ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
-                color = (0, 220, 0) if ready else (0, 165, 255)
-                cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(
-                    display,
-                    f"{status} q={quality.score:.2f} det={face.det_score:.2f} h={quality.height_frac:.2f}",
-                    (max(0, x1), max(20, y1 - 10)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55,
-                    color,
-                    1,
-                )
+                q_score = quality.score
+            else:
+                ready, status, q_score = False, "no face", 0.0
 
-            label = f"{i}/{len(angles)} {angle} | SPACE=burst Q=quit"
-            cv2.putText(display, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1)
-            cv2.putText(display, status, (10, 455), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1)
-            cv2.imshow("MajestyGuard Enrollment", display)
+            studio.update_live_frame(
+                frame,
+                face,
+                ready=ready,
+                status_text=status,
+                quality_score=q_score,
+            )
+            if studio.completed or studio.aborted:
+                poll_timer.stop()
+                app_qt.quit()
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                print("Aborted.")
-                cap.release()
-                cv2.destroyAllWindows()
-                return 1
+        poll_timer.timeout.connect(_on_studio_tick)
+        poll_timer.start(30)
+        studio.show()
+        app_qt.exec()
 
-            if key == ord(" "):
-                if face is None:
-                    print("  No usable face detected. Reposition and try again.")
-                    continue
+        if not studio.completed or studio.aborted:
+            return abort_with_cleanup("Enrollment was canceled or aborted; nothing was saved.")
+        samples = studio.captured_samples
+        cap.release()
+        cv2.destroyAllWindows()
+    else:
+        for i, angle in enumerate(angles, start=1):
+            if _enrollment_deadline_expired(enrollment_deadline):
+                return abort_with_cleanup("Enrollment timed out before all poses were captured; nothing was saved.")
 
-                ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
-                if not ready:
-                    print(f"  Not ready: {status}. Reposition and try again.")
-                    continue
+            print(f"Angle {i}/{len(angles)}: {angle}")
+            print(f"  Press SPACE when READY to capture {samples_per_angle} samples, or Q to quit.")
+            print()
 
-                burst = _capture_burst(
-                    cap,
-                    app,
-                    angle,
-                    i,
-                    samples_per_angle,
-                    min_quality,
-                    liveness,
-                    enrollment_deadline,
-                )
+            captured = False
+            while not captured:
                 if _enrollment_deadline_expired(enrollment_deadline):
                     return abort_with_cleanup("Enrollment timed out before all poses were captured; nothing was saved.")
-                if len(burst) < samples_per_angle:
-                    print(
-                        f"  Only captured {len(burst)}/{samples_per_angle} good samples. "
-                        "Reposition and try again."
-                    )
+
+                ret, raw_frame = cap.read()
+                if not ret or raw_frame is None:
                     continue
+                frame = _enhance_frame(raw_frame)
 
-                samples.extend(burst)
-                print(
-                    f"  CAPTURED {len(burst)} samples "
-                    f"det_score={face.det_score:.3f} height={quality.height_frac:.2f} "
-                    f"quality={quality.score:.2f}"
-                )
-                print()
-                captured = True
-                time.sleep(0.3)
+                faces = app.get(frame)
+                face = _select_primary_face(frame, faces)
+                display = frame.copy()
+                status = "no face"
+                ready = False
+                height_frac = 0.0
 
-    cap.release()
-    cv2.destroyAllWindows()
+                if face is not None:
+                    x1, y1, x2, y2 = [int(v) for v in face.bbox]
+                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
+                    color = (0, 220, 0) if ready else (0, 165, 255)
+                    cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(
+                        display,
+                        f"{status} q={quality.score:.2f} det={face.det_score:.2f} h={quality.height_frac:.2f}",
+                        (max(0, x1), max(20, y1 - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        color,
+                        1,
+                    )
+
+                label = f"{i}/{len(angles)} {angle} | SPACE=burst Q=quit"
+                cv2.putText(display, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1)
+                cv2.putText(display, status, (10, 455), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1)
+                cv2.imshow("MajestyGuard Enrollment", display)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    print("Aborted.")
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    return 1
+
+                if key == ord(" "):
+                    if face is None:
+                        print("  No usable face detected. Reposition and try again.")
+                        continue
+
+                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
+                    if not ready:
+                        print(f"  Not ready: {status}. Reposition and try again.")
+                        continue
+
+                    burst = _capture_burst(
+                        cap,
+                        app,
+                        angle,
+                        i,
+                        samples_per_angle,
+                        min_quality,
+                        liveness,
+                        enrollment_deadline,
+                    )
+                    if _enrollment_deadline_expired(enrollment_deadline):
+                        return abort_with_cleanup("Enrollment timed out before all poses were captured; nothing was saved.")
+                    if len(burst) < samples_per_angle:
+                        print(
+                            f"  Only captured {len(burst)}/{samples_per_angle} good samples. "
+                            "Reposition and try again."
+                        )
+                        continue
+
+                    samples.extend(burst)
+                    print(
+                        f"  CAPTURED {len(burst)} samples "
+                        f"det_score={face.det_score:.3f} height={quality.height_frac:.2f} "
+                        f"quality={quality.score:.2f}"
+                    )
+                    print()
+                    captured = True
+                    time.sleep(0.3)
+
+        cap.release()
+        cv2.destroyAllWindows()
     try:
         liveness.close()
     except Exception:

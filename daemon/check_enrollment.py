@@ -6,6 +6,7 @@ templates are diverse enough for robust recognition without including obvious
 identity outliers. It does not open the camera and does not write frames.
 """
 from __future__ import annotations
+from diagnostic_common import load_embeddings_array
 
 import argparse
 import os
@@ -149,7 +150,7 @@ def main() -> int:
         print(f"ERROR: embedding file not found: {args.path}")
         return 2
 
-    report = analyze_embeddings(np.load(str(args.path)))
+    report = analyze_embeddings(load_embeddings_array(args.path))
     _print_report(report, args.path)
 
     if not args.no_plot:

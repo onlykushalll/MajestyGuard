@@ -141,9 +141,14 @@ class Supervisor:
         if self._enrollment_process is not None and self._enrollment_process.poll() is None:
             return False
 
-        entrypoint = self._root / "daemon" / "enroll_v2.py"
-        if not entrypoint.is_file():
-            return False
+        packaged_daemon = self._packaged_daemon_executable()
+        if packaged_daemon is not None and packaged_daemon.is_file():
+            cmd = [str(packaged_daemon), "--enroll"]
+        else:
+            entrypoint = self._root / "daemon" / "enroll_v2.py"
+            if not entrypoint.is_file():
+                return False
+            cmd = [str(self._python), str(entrypoint)]
 
         environment = dict(os.environ)
         environment.update(
@@ -156,7 +161,7 @@ class Supervisor:
         )
         try:
             self._enrollment_process = self._spawn_enrollment(
-                [str(self._python), str(entrypoint)],
+                cmd,
                 environment,
             )
         except OSError:

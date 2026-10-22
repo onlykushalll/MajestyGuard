@@ -121,6 +121,7 @@ class IslandWidget(QWidget):
         self._anim_shake_active = False
         self._verify_start_time = 0.0
         self._deferred_lock_state = None
+        self._hovered = False
 
         self._setup_window()
         self._setup_timers()
@@ -157,6 +158,8 @@ class IslandWidget(QWidget):
     def apply_state(self, state: IslandState) -> None:
         # If the state is completely identical, avoid redundant updates/repaints
         if state == self._state and not self._in_exit_sequence and not self._anim_shake_active:
+            if state.name == "idle":
+                self.hide()
             return
 
         # If we are in the exit sequence and a non-active state arrives, abort
@@ -509,11 +512,11 @@ class IslandWidget(QWidget):
 
         if self._anim_morph_active:
             if getattr(self, "_anim_pill_fade_active", False):
-                stiffness = 0.26
+                stiffness = 0.28
                 damping = 0.82  # High damping for butter-smooth contraction frames
             else:
-                stiffness = 0.18
-                damping = 0.70
+                stiffness = 0.22
+                damping = 0.66
             self._vel_w = (self._vel_w + (self._target_w - self._anim_w) * stiffness) * damping
             self._vel_h = (self._vel_h + (self._target_h - self._anim_h) * stiffness) * damping
             self._anim_w += self._vel_w
@@ -598,6 +601,18 @@ class IslandWidget(QWidget):
         mw = pill_w + margin_x * 2
         mh = pill_h + margin_y * 2
         self.setMask(QRegion(mx, my, mw, mh))
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        if not self._hovered:
+            self._hovered = True
+            self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        if self._hovered:
+            self._hovered = False
+            self.update()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if self._state.name in _VERIFY_REQUEST_STATES:
@@ -724,9 +739,9 @@ class IslandWidget(QWidget):
         painter.fillPath(path, body)
 
         top = QLinearGradient(QPointF(rect.left(), rect.top()), QPointF(rect.left(), rect.bottom()))
-        top.setColorAt(0.0, QColor(255, 255, 255, int(self._alpha * 26)))
-        top.setColorAt(0.45, QColor(255, 255, 255, int(self._alpha * 8)))
-        top.setColorAt(1.0, QColor(0, 0, 0, int(self._alpha * 12)))
+        top.setColorAt(0.0, QColor(255, 255, 255, int(self._alpha * 42)))
+        top.setColorAt(0.35, QColor(255, 255, 255, 0))
+        top.setColorAt(1.0, QColor(0, 0, 0, int(self._alpha * 18)))
         painter.fillPath(path, top)
 
         if state.mode == "face_scan":
@@ -1026,6 +1041,22 @@ class IslandWidget(QWidget):
         icon_cx = rect.left() + 15 + icon_size / 2
         icon_cy = rect.center().y()
         self._paint_orb(painter, icon_cx, icon_cy, icon_size / 2, "working")
+
+        live_metric = state.confidence if state.confidence is not None else state.liveness
+        if live_metric is not None and live_metric > 0.05:
+            arc_box = QRectF(
+                icon_cx - icon_size / 2 - 2.5,
+                icon_cy - icon_size / 2 - 2.5,
+                icon_size + 5.0,
+                icon_size + 5.0,
+            )
+            arc_color = QColor(state.accent_color)
+            arc_color.setAlpha(int(self._alpha * self._content_alpha * 195))
+            arc_pen = QPen(arc_color, 1.8)
+            arc_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(arc_pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawArc(arc_box, 90 * 16, int(-360 * 16 * max(0.08, min(1.0, float(live_metric)))))
 
         text_left = int(icon_cx + icon_size / 2 + 14)
         text_right = rect.right() - 16

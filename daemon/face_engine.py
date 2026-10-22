@@ -37,6 +37,7 @@ except ImportError:
 from liveness_detector import LivenessDetector
 from virtual_camera_detector import is_virtual_camera
 from face_quality import measure_face_quality
+from diagnostic_common import resolve_resource_dir
 
 logger = logging.getLogger("MajestyGuard.CVEngine")
 EMBEDDING_DIM = 512
@@ -97,11 +98,7 @@ def _verify_model_tofu(model_path: str) -> bool:
     pinned = manifest.get(key)
     if pinned is None:
         # Check against shipped reference manifest to close first-use TOFU gap
-        ref_manifest_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "models",
-            "model_hashes.reference.json",
-        )
+        ref_manifest_path = str(resolve_resource_dir("models") / "model_hashes.reference.json")
         try:
             with open(ref_manifest_path, "r", encoding="utf-8") as rfh:
                 ref_data = json.load(rfh)
@@ -695,7 +692,13 @@ class FaceEngine:
         presence_confidence  = 0.0
 
         if self._enrolled_matrix is not None:
-            query_embedding = self._normalize_embedding(self._get_best_embedding(frame, primary_face))
+            cached_emb = getattr(primary_face, "_cached_norm_emb", None)
+            if cached_emb is not None:
+                query_embedding = cached_emb
+            else:
+                query_embedding = self._normalize_embedding(self._get_best_embedding(frame, primary_face))
+                if query_embedding is not None:
+                    primary_face._cached_norm_emb = query_embedding
             if query_embedding is None:
                 self._reset_recognition_smoother()
                 self._consecutive_matches = 0
@@ -708,6 +711,7 @@ class FaceEngine:
                 scores = self._enrolled_matrix @ query_embedding  # (N,)
                 best_template_index = int(np.argmax(scores))
                 best_score = float(np.clip(scores[best_template_index], 0.0, 1.0))
+                top3_mean = float(np.mean(np.sort(scores)[-min(3, len(scores)):]))
                 self._last_recognition_score = best_score
 
                 if liveness_passed:
@@ -724,6 +728,7 @@ class FaceEngine:
                         selection_reason=selection_meta["reason"],
                         sticky_iou=selection_meta["sticky_iou"],
                         predicted_iou=selection_meta["predicted_iou"],
+                        top3_mean=top3_mean,
                     )
 
                     # Multi-frame consensus: require N consecutive frames with
@@ -918,6 +923,12 @@ class FaceEngine:
         selected = geometry_face
         meta["reason"] = "geometry"
 
+        if len(faces) == 1:
+            selected_score, selected_idx = self._score_face_identity(frame, selected)
+            meta["candidate_owner_score"] = selected_score
+            meta["best_template_index"] = selected_idx
+            return selected, meta
+
         track_face, track_meta = self._find_owner_track_face(faces)
         if track_face is not None:
             selected = track_face
@@ -1011,7 +1022,13 @@ class FaceEngine:
         if self._enrolled_matrix is None:
             return 0.0, -1
         try:
-            embedding = self._normalize_embedding(self._get_best_embedding(frame, face))
+            cached_emb = getattr(face, "_cached_norm_emb", None)
+            if cached_emb is not None:
+                embedding = cached_emb
+            else:
+                embedding = self._normalize_embedding(self._get_best_embedding(frame, face))
+                if embedding is not None:
+                    face._cached_norm_emb = embedding
             if embedding is None:
                 return 0.0, -1
             scores = self._enrolled_matrix @ embedding
@@ -1066,6 +1083,7 @@ class FaceEngine:
         selection_reason: str,
         sticky_iou: float,
         predicted_iou: float,
+        top3_mean: float = 0.0,
     ) -> float:
         """
         Bounded confidence for live owner continuity/UI during expression or motion dips.
@@ -1085,6 +1103,9 @@ class FaceEngine:
         max_boosted = min(1.0, score + self._presence_confidence_max_boost)
         if score >= self._presence_track_min_score and smoothed_score > score:
             confidence = max(confidence, min(float(smoothed_score), max_boosted))
+
+        if top3_mean >= self.recognition_threshold - 0.04 and score >= self._presence_track_min_score:
+            confidence = max(confidence, min(max_boosted, confidence + 0.015))
 
         track_iou = max(float(sticky_iou), float(predicted_iou))
         tracked_owner = (
@@ -1214,6 +1235,8 @@ class FaceEngine:
                 face.normed_embedding[:] = 0
             if hasattr(face, "embedding") and face.embedding is not None:
                 face.embedding[:] = 0
+            face._cached_norm_emb = None
+            face._cached_face_quality = None
 
     def _frame_quality(self, frame: np.ndarray, face) -> float:
         """
@@ -1221,7 +1244,12 @@ class FaceEngine:
         Low-quality frames are ignored instead of poisoning consensus state.
         """
         try:
-            return measure_face_quality(frame, face).score
+            cached = getattr(face, "_cached_face_quality", None)
+            if cached is not None:
+                return cached.score
+            q = measure_face_quality(frame, face)
+            face._cached_face_quality = q
+            return q.score
         except Exception:
             return 0.5
 
@@ -1238,6 +1266,8 @@ class FaceEngine:
             if mean_l < 50:
                 gamma = 0.6
                 l_enhanced = (np.power(l_enhanced / 255.0, gamma) * 255.0).astype(np.uint8)
+            a = cv2.GaussianBlur(a, (3, 3), 0)
+            b = cv2.GaussianBlur(b, (3, 3), 0)
             enhanced = cv2.merge([l_enhanced, a, b])
             return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
         except Exception:

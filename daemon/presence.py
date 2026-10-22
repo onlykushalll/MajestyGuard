@@ -25,7 +25,9 @@ log = logging.getLogger(__name__)
 # Path resolution — models/ sits one level above daemon/
 # ---------------------------------------------------------------------------
 _DAEMON_DIR = Path(__file__).resolve().parent
-_MODELS_DIR = _DAEMON_DIR.parent / "models"
+from diagnostic_common import resolve_resource_dir
+
+_MODELS_DIR = resolve_resource_dir("models")
 _YUNET_MODEL = _MODELS_DIR / "face_detection_yunet_2023mar.onnx"
 
 

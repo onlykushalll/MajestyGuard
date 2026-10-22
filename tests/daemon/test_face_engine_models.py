@@ -205,3 +205,46 @@ def test_verify_model_tofu_validates_against_shipped_reference_hashes(tmp_path, 
     assert manifest_file.exists()
     saved_manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
     assert any("custom_unlisted_model.onnx" in k for k in saved_manifest)
+
+
+def test_face_engine_single_face_quality_and_embedding_caching():
+    from types import SimpleNamespace
+    engine = FaceEngine.__new__(FaceEngine)
+    engine._min_frame_quality = 0.5
+    
+    frame = np.full((120, 160, 3), 40, dtype=np.uint8)
+    face = SimpleNamespace(
+        bbox=np.array([20, 20, 100, 100], dtype=np.float32),
+        det_score=0.95,
+        normed_embedding=np.ones(512, dtype=np.float32),
+        embedding=np.ones(512, dtype=np.float32),
+    )
+    
+    # Measure quality
+    q1 = engine._frame_quality(frame, face)
+    assert hasattr(face, "_cached_face_quality")
+    assert face._cached_face_quality is not None
+    # Check cached quality is reused
+    q2 = engine._frame_quality(frame, face)
+    assert q1 == q2
+    
+    # Zeroing face data clears cached attributes
+    engine._zero_face_data([face])
+    assert face._cached_norm_emb is None
+    assert face._cached_face_quality is None
+
+
+def test_face_engine_low_light_chroma_denoising():
+    engine = FaceEngine.__new__(FaceEngine)
+    import cv2
+    engine._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    
+    # Dark frame (< 100 mean L)
+    dark_frame = np.full((100, 100, 3), 30, dtype=np.uint8)
+    enhanced = engine._enhance_frame(dark_frame)
+    assert enhanced.shape == dark_frame.shape
+    assert enhanced.dtype == np.uint8
+    # Well-lit frame (> 100 mean L) returns unchanged
+    bright_frame = np.full((100, 100, 3), 200, dtype=np.uint8)
+    enhanced_bright = engine._enhance_frame(bright_frame)
+    assert np.array_equal(enhanced_bright, bright_frame)

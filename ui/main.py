@@ -255,6 +255,7 @@ def main() -> None:
     # getting stuck invisible.
     widget._alpha = 0.0
     widget.update()
+    widget.hide()
 
     sig        = StateSignal()
     stop_event = threading.Event()

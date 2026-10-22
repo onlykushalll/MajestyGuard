@@ -96,6 +96,7 @@ Invoke-PyInstaller ($commonArguments + @(
     "--collect-all", "onnxruntime",
     "--add-data", "$ModelDir;models",
     "--add-data", "$InsightFaceModelDir;models_insightface",
+    "--add-data", "$Root\ui;ui",
     (Join-Path $Root "daemon\main.py")
 ))
 

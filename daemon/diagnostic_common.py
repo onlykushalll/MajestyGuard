@@ -1,18 +1,52 @@
 """
-Shared helpers for camera diagnostics and enrollment.
+Shared helpers for camera diagnostics, resource resolution, DPAPI gallery loading,
+and low-light frame preprocessing.
 
 These functions mirror daemon-side preprocessing and primary-face selection
 without opening a camera or touching machine state.
 """
 from __future__ import annotations
 
+import io
 import re
+import sys
+from pathlib import Path
 from typing import Optional
 
 import cv2
 import numpy as np
 
 _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+
+def resolve_resource_dir(subdir: str) -> Path:
+    """Resolve a bundled resource directory ('models' or 'models_insightface')
+    across PyInstaller frozen builds (_MEIPASS / _internal) and source checkouts."""
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        candidates.append(Path(meipass) / subdir)
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.append(exe_dir / "_internal" / subdir)
+    candidates.append(exe_dir / subdir)
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates.append(repo_root / subdir)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return repo_root / subdir
+
+
+def load_embeddings_array(path: Path) -> np.ndarray:
+    """Load an embeddings .npy file, transparently decrypting DPAPI if encrypted."""
+    raw = Path(path).read_bytes()
+    try:
+        import win32crypt  # type: ignore
+
+        decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
+        return np.load(io.BytesIO(decrypted))
+    except Exception:
+        return np.load(io.BytesIO(raw))
 
 
 def posture_label(value: str | None) -> str:
@@ -24,7 +58,7 @@ def posture_label(value: str | None) -> str:
 
 
 def enhance_frame(frame: np.ndarray) -> np.ndarray:
-    """Mirror FaceEngine._enhance_frame for diagnostic parity."""
+    """Mirror FaceEngine._enhance_frame for diagnostic parity with chroma denoising."""
     try:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
@@ -35,7 +69,10 @@ def enhance_frame(frame: np.ndarray) -> np.ndarray:
         if mean_l < 50:
             gamma = 0.6
             l_enhanced = (np.power(l_enhanced / 255.0, gamma) * 255.0).astype(np.uint8)
-        enhanced = cv2.merge([l_enhanced, a, b])
+        # Suppress low-light chroma sensor noise while keeping luminance edges sharp
+        a_smooth = cv2.GaussianBlur(a, (3, 3), 0)
+        b_smooth = cv2.GaussianBlur(b, (3, 3), 0)
+        enhanced = cv2.merge([l_enhanced, a_smooth, b_smooth])
         return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
     except (cv2.error, ValueError, TypeError):
         return frame

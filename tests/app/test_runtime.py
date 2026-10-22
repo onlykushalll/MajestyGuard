@@ -210,3 +210,24 @@ def test_supervisor_uses_packaged_sibling_folder_layout(tmp_path, monkeypatch):
     assert supervisor.start() is True
     assert launched["command"] == [str(daemon_executable)]
     assert launched["env"]["MG_UI_EXECUTABLE"] == str(ui_executable)
+
+
+def test_start_enrollment_uses_packaged_daemon_when_present(tmp_path, monkeypatch):
+    launched = {}
+    packaged_daemon = tmp_path / "MajestyGuardDaemon.exe"
+    packaged_daemon.write_bytes(b"binary")
+    supervisor = Supervisor(
+        tmp_path,
+        Path("python.exe"),
+        tmp_path / "settings.json",
+        daemon_executable=packaged_daemon,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_spawn_enrollment",
+        lambda command, env: launched.update(command=command, env=env) or FakeProcess(),
+    )
+
+    assert supervisor.start_enrollment() is True
+    assert launched["command"] == [str(packaged_daemon), "--enroll"]
+    assert launched["env"]["MG_ENABLE_LOCK"] == "0"

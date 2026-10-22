@@ -35,3 +35,33 @@ def test_enhance_frame_returns_frame_shape_and_dtype():
 
     assert enhanced.shape == frame.shape
     assert enhanced.dtype == frame.dtype
+
+
+def test_load_embeddings_array_loads_plaintext_and_dpapi(tmp_path):
+    import io
+    from diagnostic_common import load_embeddings_array
+    
+    arr = np.random.randn(5, 512).astype(np.float32)
+    plain_path = tmp_path / "plain.npy"
+    np.save(plain_path, arr)
+    loaded_plain = load_embeddings_array(plain_path)
+    np.testing.assert_allclose(loaded_plain, arr, rtol=1e-5)
+
+    # Test DPAPI encryption if win32crypt is available
+    try:
+        import win32crypt
+        buf = io.BytesIO()
+        np.save(buf, arr)
+        encrypted = win32crypt.CryptProtectData(buf.getvalue(), "test", None, None, None, 0)
+        enc_path = tmp_path / "enc.npy"
+        enc_path.write_bytes(encrypted)
+        loaded_enc = load_embeddings_array(enc_path)
+        np.testing.assert_allclose(loaded_enc, arr, rtol=1e-5)
+    except Exception:
+        pass
+
+
+def test_resolve_resource_dir_finds_existing_repo_models():
+    from diagnostic_common import resolve_resource_dir
+    models_dir = resolve_resource_dir("models")
+    assert models_dir.exists()

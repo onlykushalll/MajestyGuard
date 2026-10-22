@@ -295,7 +295,7 @@ class LivenessDetector:
         MiDaS, and histogram temporal consistency. The daemon applies a
         stricter threshold to this score before clearing the soft lock.
         """
-        quality = measure_face_quality(frame, face)
+        quality = getattr(face, '_cached_face_quality', None) or measure_face_quality(frame, face)
         if quality.score < self._MIN_USABLE_FACE_QUALITY:
             logger.debug(
                 "Skipping fast liveness frame below quality floor: q=%.2f sharp=%.1f illum=%.1f h=%.2f center=%.2f",
@@ -359,7 +359,7 @@ class LivenessDetector:
         return float(np.clip(combined, 0.0, 1.0))
 
     def score_full(self, frame: np.ndarray, face: Any) -> float:
-        quality = measure_face_quality(frame, face)
+        quality = getattr(face, '_cached_face_quality', None) or measure_face_quality(frame, face)
         if quality.score < self._MIN_USABLE_FACE_QUALITY:
             logger.debug(
                 "Skipping liveness frame below quality floor: q=%.2f sharp=%.1f illum=%.1f h=%.2f center=%.2f",

@@ -20,6 +20,7 @@ from enum import Enum, auto
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+from diagnostic_common import resolve_resource_dir
 
 import cv2
 import numpy as np
@@ -27,7 +28,7 @@ import io
 
 _DAEMON_DIR = Path(__file__).resolve().parent
 _ROOT_DIR = _DAEMON_DIR.parent
-_MODELS_DIR = _ROOT_DIR / "models"
+_MODELS_DIR = resolve_resource_dir("models")
 sys.path.insert(0, str(_DAEMON_DIR))
 
 _LOG_DIR = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
@@ -218,7 +219,7 @@ BIOMETRIC_PATH = (
     / "MajestyGuard"
     / "biometric.mgd"
 )
-INSIGHTFACE_MODEL_DIR = _ROOT_DIR / "models_insightface"
+INSIGHTFACE_MODEL_DIR = resolve_resource_dir("models_insightface")
 
 
 def _resolve_dpapi_helper_path() -> Path:
@@ -344,7 +345,8 @@ class MajestyGuardDaemon:
         # The daemon owns the only UI process permitted to consume state and
         # submit commands. Starting it here covers ordinary daily-use startup,
         # not just the special idle-check and locked watchdog paths.
-        self._launch_ui()
+        if not self._idle_check_mode:
+            self._launch_ui()
         self.command_ipc = CMDServer(
             self._queue_ui_command,
             expected_client_pid=self._owned_overlay_pid,
@@ -1963,6 +1965,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if "--enroll" in sys.argv:
+        sys.argv.remove("--enroll")
+        import enroll_v2
+        raise SystemExit(enroll_v2.main())
+
     import ctypes
     _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")
     if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS

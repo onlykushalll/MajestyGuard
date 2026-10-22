@@ -975,10 +975,23 @@ class SoftLockOverlay(QWidget):
         center_x = rect.left() + rect.width() / 2.0
         center_y = rect.top() + rect.height() * 0.35
 
+        # Subtle state-responsive biometric aura behind the clock when verifying
+        if self._state.name == "verifying_lock":
+            pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
+            aura_r = 160.0 + 18.0 * pulse
+            aura = QRadialGradient(QPointF(center_x, center_y - 18.0), aura_r)
+            aura.setColorAt(0.0, QColor(52, 199, 89, int(34 + 22 * pulse)))
+            aura.setColorAt(0.6, QColor(100, 210, 255, int(16 + 10 * pulse)))
+            aura.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(aura)
+            painter.drawEllipse(QPointF(center_x, center_y - 18.0), aura_r, aura_r)
+
         # Draw Time
         time_font = QFont("Segoe UI Variable Display", 72, QFont.Weight.Light)
+        time_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(time_font)
-        painter.setPen(QColor(30, 30, 34, 210))
+        painter.setPen(QColor(30, 30, 34, 215))
 
         time_metrics = painter.fontMetrics()
         time_rect = time_metrics.boundingRect(time_str)
@@ -992,8 +1005,9 @@ class SoftLockOverlay(QWidget):
 
         # Draw Date
         date_font = QFont("Segoe UI Variable Text", 16, QFont.Weight.Normal)
+        date_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(date_font)
-        painter.setPen(QColor(82, 86, 94, 160))
+        painter.setPen(QColor(82, 86, 94, 168))
 
         date_metrics = painter.fontMetrics()
         date_rect = date_metrics.boundingRect(date_str)
@@ -1006,14 +1020,22 @@ class SoftLockOverlay(QWidget):
             date_str
         )
 
-        # Subtle center guidance capsule below the date
-        prompt = (
-            "Verifying face identity — hold steady..."
-            if self._state.name == "verifying_lock"
-            else "Press SPACE to verify identity  ·  TAB for Windows Lock"
-        )
-        pill_w = 340.0
-        pill_h = 32.0
+        # State-specific center guidance capsule below the date (DPI-safe width)
+        if self._state.name == "verifying_lock":
+            prompt = "Verifying face identity — hold steady..."
+        elif self._state.name == "verify_failed":
+            prompt = "Face not recognized — press SPACE to retry  ·  TAB for Windows Lock"
+        elif self._state.name == "social_lock":
+            prompt = "Privacy lock active — press SPACE for owner check  ·  TAB for Windows Lock"
+        else:
+            prompt = "Press SPACE to verify identity  ·  TAB for Windows Lock"
+
+        pill_font = QFont("Segoe UI Variable Text", 9, QFont.Weight.Medium)
+        pill_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        painter.setFont(pill_font)
+        text_advance = painter.fontMetrics().horizontalAdvance(prompt)
+        pill_w = float(max(340, min(520, text_advance + 48)))
+        pill_h = 34.0
         pill_rect = QRectF(center_x - pill_w / 2.0, date_y + 26.0, pill_w, pill_h)
         self._paint_corner_pill(
             painter,

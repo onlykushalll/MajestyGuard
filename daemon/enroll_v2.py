@@ -576,11 +576,25 @@ def main() -> int:
                 enrollment_deadline,
             )
 
+        def _on_switch_profile(new_profile: str) -> list[str]:
+            nonlocal angles, max_templates
+            updated = _angles_for_profile(new_profile)
+            args.profile = new_profile
+            angles = updated
+            req_max = (
+                _default_max_templates_for_profile(new_profile, len(angles), samples_per_angle)
+                if args.max_templates is None
+                else args.max_templates
+            )
+            max_templates = max(1, min(req_max, len(angles) * samples_per_angle))
+            return updated
+
         studio = EnrollmentStudioWindow(
             angles=angles,
             profile=args.profile,
             samples_per_angle=samples_per_angle,
             on_capture_burst=_do_burst,
+            on_switch_profile=_on_switch_profile,
         )
 
         poll_timer = QTimer()
@@ -596,21 +610,27 @@ def main() -> int:
             if not ret or raw_frame is None:
                 return
             frame = _enhance_frame(raw_frame)
-            faces = app.get(frame)
-            face = _select_primary_face(frame, faces)
-            if face is not None:
-                ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
-                q_score = quality.score
-            else:
-                ready, status, q_score = False, "no face", 0.0
+            try:
+                faces = app.get(frame)
+                face = _select_primary_face(frame, faces)
+                if face is not None:
+                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
+                    q_score = quality.score
+                else:
+                    ready, status, q_score = False, "no face", 0.0
 
-            studio.update_live_frame(
-                frame,
-                face,
-                ready=ready,
-                status_text=status,
-                quality_score=q_score,
-            )
+                studio.update_live_frame(
+                    frame,
+                    face,
+                    ready=ready,
+                    status_text=status,
+                    quality_score=q_score,
+                )
+            finally:
+                if frame is not raw_frame:
+                    frame[:] = 0
+                raw_frame[:] = 0
+
             if studio.completed or studio.aborted:
                 poll_timer.stop()
                 app_qt.quit()

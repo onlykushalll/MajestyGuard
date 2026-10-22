@@ -121,3 +121,20 @@ def test_enrollment_studio_window_burst_progression(qapp):
     assert win.completed is True
     assert len(win.captured_samples) == 4
     assert captured_calls == [(angles[0], 1), (angles[1], 2)]
+
+
+def test_enrollment_studio_public_abort_and_profile_switch(qapp):
+    angles_quick = ["Front", "Left"]
+    angles_real = ["Front", "Left", "Night lying down"]
+    win = EnrollmentStudioWindow(
+        angles=angles_quick,
+        profile="quick",
+        samples_per_angle=2,
+        on_switch_profile=lambda p: angles_real if p == "real-life" else angles_quick,
+    )
+    win._handle_profile_change("real-life")
+    assert win.selected_profile == "real-life"
+    assert len(win.active_angles) == 3
+
+    win.abort()
+    assert win.aborted is True

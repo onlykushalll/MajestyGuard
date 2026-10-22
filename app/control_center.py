@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Protocol
@@ -12,10 +13,13 @@ from PyQt6.QtGui import (
     QColor,
     QDesktopServices,
     QIcon,
+    QKeySequence,
     QPainter,
     QPainterPath,
     QPen,
     QPixmap,
+    QRadialGradient,
+    QShortcut,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -62,14 +66,12 @@ def _create_tray_icon(accent_hex: str) -> QIcon:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-    # Outer dark obsidian squircle
     bg_path = QPainterPath()
     bg_path.addRoundedRect(QRectF(4, 4, 56, 56), 16, 16)
     painter.fillPath(bg_path, QColor("#0B0F17"))
     painter.setPen(QPen(QColor(accent_hex), 2.5))
     painter.drawPath(bg_path)
 
-    # Inner glowing core + orbital dots
     accent = QColor(accent_hex)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(accent)
@@ -80,15 +82,73 @@ def _create_tray_icon(accent_hex: str) -> QIcon:
     painter.setBrush(ring_dot)
     for idx in range(6):
         angle = idx * 1.04719755
+        r = 15.5 * (1.0 if idx % 2 == 0 else 0.92)
         painter.drawEllipse(
-            QPointF(32 + 15.5 * (1.0 if idx % 2 == 0 else 0.92) * float(__import__("math").cos(angle)),
-                    32 + 15.5 * (1.0 if idx % 2 == 0 else 0.92) * float(__import__("math").sin(angle))),
+            QPointF(32 + r * math.cos(angle), 32 + r * math.sin(angle)),
             2.4,
             2.4,
         )
 
     painter.end()
     return QIcon(pixmap)
+
+
+class StatusPulseOrbWidget(QWidget):
+    """Live animated Thinking-Orb badge inside the Control Center status card."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(46, 46)
+        self._color = QColor("#7f8b9c")
+        self._animated = False
+        self._phase = 0.0
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self._tick)
+
+    def set_state_visual(self, color_hex: str, *, animated: bool) -> None:
+        self._color = QColor(color_hex)
+        self._animated = animated
+        if animated and not self._timer.isActive():
+            self._timer.start()
+        elif not animated and self._timer.isActive():
+            self._timer.stop()
+        self.update()
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 0.05) % math.tau
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = self.width() * 0.5, self.height() * 0.5
+        pulse = 0.5 + 0.5 * math.sin(self._phase) if self._animated else 0.3
+
+        aura = QRadialGradient(QPointF(cx, cy), 22.0)
+        c_aura = QColor(self._color)
+        c_aura.setAlpha(int(35 + 40 * pulse))
+        aura.setColorAt(0.0, c_aura)
+        aura.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(aura)
+        painter.drawEllipse(QPointF(cx, cy), 22.0, 22.0)
+
+        painter.setBrush(self._color)
+        painter.drawEllipse(QPointF(cx, cy), 5.0 + 0.8 * pulse, 5.0 + 0.8 * pulse)
+
+        dot_color = QColor("#F2F4F8")
+        for i in range(8):
+            ang = (i / 8.0) * math.tau + (self._phase * 0.6 if self._animated else 0.0)
+            rad = 13.5 + (1.2 * math.sin(self._phase + i) if self._animated else 0.0)
+            dot_color.setAlpha(190 if i % 2 == 0 else 125)
+            painter.setBrush(dot_color)
+            painter.drawEllipse(
+                QPointF(cx + math.cos(ang) * rad, cy + math.sin(ang) * rad),
+                1.7,
+                1.7,
+            )
+        painter.end()
 
 
 class ControlCenter(QMainWindow):
@@ -101,16 +161,21 @@ class ControlCenter(QMainWindow):
         self._quitting = False
         self._build_window()
         self._build_tray()
+        self._setup_shortcuts()
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setInterval(2000)
         self._refresh_timer.timeout.connect(self.refresh)
         self._refresh_timer.start()
         self.refresh()
 
+    def _setup_shortcuts(self) -> None:
+        QShortcut(QKeySequence("Ctrl+R"), self, activated=self.start_reenrollment)
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self.open_diagnostics)
+
     def _build_window(self) -> None:
         self.setWindowTitle("MajestyGuard")
-        self.setMinimumSize(500, 420)
-        self.resize(540, 450)
+        self.setMinimumSize(500, 430)
+        self.resize(540, 460)
         self.setStyleSheet(
             "QMainWindow { background: #090C12; color: #F2F4F8; }"
             "QLabel#eyebrow { color: #64D2FF; font: 600 10px 'Segoe UI Variable Text'; letter-spacing: 1.4px; }"
@@ -151,12 +216,15 @@ class ControlCenter(QMainWindow):
         card.setObjectName("card")
         card_layout = QHBoxLayout(card)
         card_layout.setContentsMargins(18, 16, 18, 16)
-        card_layout.setSpacing(16)
+        card_layout.setSpacing(14)
 
         self._rail = QFrame(card)
         self._rail.setFixedWidth(4)
         self._rail.setFixedHeight(68)
         card_layout.addWidget(self._rail)
+
+        self._orb_widget = StatusPulseOrbWidget(card)
+        card_layout.addWidget(self._orb_widget)
 
         status_copy = QVBoxLayout()
         status_copy.setSpacing(5)
@@ -180,8 +248,11 @@ class ControlCenter(QMainWindow):
         self._gallery_chip.setObjectName("chip")
         self._lock_chip = QLabel("Session: UNLOCKED", root)
         self._lock_chip.setObjectName("chip")
+        self._perf_chip = QLabel("Engine: Ready", root)
+        self._perf_chip.setObjectName("chip")
         telemetry_row.addWidget(self._gallery_chip)
         telemetry_row.addWidget(self._lock_chip)
+        telemetry_row.addWidget(self._perf_chip)
         telemetry_row.addStretch(1)
         layout.addLayout(telemetry_row)
 
@@ -303,6 +374,20 @@ class ControlCenter(QMainWindow):
             lock_state = "UNLOCKED"
         self._lock_chip.setText(f"Session: {lock_state or 'UNLOCKED'}")
 
+        log_file = state_dir / "daemon.log"
+        perf_text = "Engine: Ready"
+        if log_file.is_file():
+            try:
+                tail = log_file.read_text(encoding="utf-8", errors="replace")[-4096:]
+                for line in reversed(tail.splitlines()):
+                    if "total=" in line and "Cold start complete:" in line:
+                        total_part = line.split("total=", 1)[1].split()[0]
+                        perf_text = f"Cold start: {total_part}"
+                        break
+            except OSError:
+                pass
+        self._perf_chip.setText(perf_text)
+
     def refresh(self) -> None:
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
@@ -320,6 +405,10 @@ class ControlCenter(QMainWindow):
         self._tray_primary_action.setText(action)
         self._tray_primary_action.setEnabled(status is not RuntimeStatus.STARTING)
         self._rail.setStyleSheet(f"background: {color}; border-radius: 2px;")
+        self._orb_widget.set_state_visual(
+            color,
+            animated=status in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING),
+        )
         self._tray.setIcon(_create_tray_icon(color))
         self._refresh_telemetry_chips(enrolled)
 

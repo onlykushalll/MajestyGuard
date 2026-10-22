@@ -122,6 +122,8 @@ class IslandWidget(QWidget):
         self._verify_start_time = 0.0
         self._deferred_lock_state = None
         self._hovered = False
+        self._hover_progress = 0.0
+        self._content_slide_y = 0.0
 
         self._setup_window()
         self._setup_timers()
@@ -395,6 +397,7 @@ class IslandWidget(QWidget):
 
         if not self._reduce_motion:
             self._anim_morph_active = True
+            self._anim_orb_active = True
             self._start_animation_timer()
 
         self.update()
@@ -495,18 +498,30 @@ class IslandWidget(QWidget):
                 self._shake_offset = 12.0 * math.sin(self._shake_phase * math.pi * 5.0) * (1.0 - self._shake_phase)
             updated = True
 
+        target_hover = 1.0 if (self._hovered and self._state.name in _VERIFY_REQUEST_STATES and not self._reduce_motion) else 0.0
+        if abs(target_hover - self._hover_progress) > 0.01:
+            self._hover_progress += (target_hover - self._hover_progress) * 0.28
+            updated = True
+        elif self._hover_progress != target_hover:
+            self._hover_progress = target_hover
+            updated = True
+
         if self._anim_content_active:
             step = 0.16
             if self._content_fading_out:
                 self._content_alpha = max(0.0, self._content_alpha - step)
+                self._content_slide_y = -2.5 * (1.0 - self._content_alpha)
                 if self._content_alpha <= 0.0:
                     if self._pending_state is not None:
                         self._visible_state = self._pending_state
                     self._pending_state = None
                     self._content_fading_out = False
+                    self._content_slide_y = 2.5
             else:
                 self._content_alpha = min(1.0, self._content_alpha + step)
+                self._content_slide_y = 2.5 * (1.0 - self._content_alpha)
                 if self._content_alpha >= 1.0:
+                    self._content_slide_y = 0.0
                     self._anim_content_active = False
             updated = True
 
@@ -605,12 +620,14 @@ class IslandWidget(QWidget):
     def enterEvent(self, event) -> None:  # type: ignore[override]
         if not self._hovered:
             self._hovered = True
+            self._start_animation_timer()
             self.update()
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # type: ignore[override]
         if self._hovered:
             self._hovered = False
+            self._start_animation_timer()
             self.update()
         super().leaveEvent(event)
 
@@ -624,7 +641,9 @@ class IslandWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing
+        )
 
         # Apply pill-level opacity for fade-out
         if self._pill_opacity < 1.0:
@@ -632,16 +651,19 @@ class IslandWidget(QWidget):
 
         state = self._state
         visible = self._visible_state
-        width = int(round(self._anim_w))
-        height = int(round(self._anim_h))
+        hover_w = int(round(self._hover_progress * 4.0))
+        hover_h = int(round(self._hover_progress * 2.0))
+        width = int(round(self._anim_w)) + hover_w
+        height = int(round(self._anim_h)) + hover_h
         # Draw centering the active pill width in our fixed 500px window
         pill_x = (500 - width) // 2 + int(round(self._shake_offset))
-        rect = QRect(pill_x, _PAD, width, height)
+        rect = QRect(pill_x, _PAD - hover_h // 2, width, height)
         radius = self._corner_radius(height, state)
 
         self._paint_glow(painter, rect, radius, state)
         self._paint_body(painter, rect, radius, state)
-        self._paint_content(painter, rect, visible)
+        content_rect = rect.translated(0, int(round(self._content_slide_y)))
+        self._paint_content(painter, content_rect, visible)
         painter.end()
 
     @staticmethod
@@ -1357,5 +1379,7 @@ class IslandWidget(QWidget):
         tc = QColor(color)
         tc.setAlphaF(self._alpha * self._content_alpha)
         painter.setPen(tc)
-        painter.setFont(QFont("Segoe UI Variable Display", size, QFont.Weight.Medium))
+        font = QFont("Segoe UI Variable Display", size, QFont.Weight.Medium)
+        font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)

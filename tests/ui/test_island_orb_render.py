@@ -312,3 +312,13 @@ def test_relock_interrupts_island_exit_without_leaving_a_stale_fade(qapp):
     assert widget._target_w == float(lock_state.width)
     assert widget._target_h == float(lock_state.height)
     assert widget._anim_pill_fade_active is False
+
+
+def test_welcome_transition_keeps_resolving_orb_animated(qapp):
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("locked_passive"))
+    widget.apply_state(get_state("active"))
+    widget._after_verified()
+
+    assert widget._state.name == "welcome"
+    assert widget._anim_orb_active is True

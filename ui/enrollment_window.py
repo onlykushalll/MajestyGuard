@@ -2,11 +2,11 @@
 enrollment_window.py — Apple Face ID-inspired 3D Circular Registration Studio.
 
 Provides a native PyQt6 circular biometric registration interface with:
-  - 64-tick radial progress ring with per-sector spring extension and glow
+  - 64-tick radial progress ring with per-sector spring extension, completion wave, and glow
   - Real-time 5-point facial landmark 3D head-pose estimation (yaw, pitch, roll)
-  - 3D spherical reticle & magnetic target alignment vector
-  - Hybrid auto-dwell capture (350ms hold when aligned & ready) + Spacebar trigger
-  - Zero-frame-retention privacy (frames zeroed after paint)
+  - 3D perspective-projected latitude/longitude geodesic pose sphere & landmark constellation
+  - Hybrid auto-dwell capture (360ms hold when aligned & ready) + Spacebar trigger
+  - Zero-frame-retention privacy (frames zeroed immediately after QImage copy)
 """
 from __future__ import annotations
 
@@ -71,12 +71,10 @@ def estimate_head_pose_5pt(
         mouth_mid_y = float(l_mouth[1] + r_mouth[1]) * 0.5
         face_vert = max(4.0, mouth_mid_y - eye_mid_y)
 
-        # Horizontal nose offset relative to eye midpoint, normalized by inter-ocular distance
         raw_yaw = (float(nose[0]) - eye_mid_x) / (inter_eye * 0.52)
         if mirror_yaw:
             raw_yaw = -raw_yaw
 
-        # Neutral nose sits ~56% of the way from eye-line to mouth-line
         nose_ratio = (float(nose[1]) - eye_mid_y) / face_vert
         raw_pitch = (nose_ratio - 0.56) / 0.24
 
@@ -89,11 +87,7 @@ def estimate_head_pose_5pt(
 
 
 def target_pose_for_angle(angle_description: str) -> tuple[float, float, float]:
-    """Return (target_yaw, target_pitch, tolerance) in [-1.0, 1.0] for a named enrollment angle.
-
-    A negative pitch means chin up (looking slightly upward); positive pitch means chin down.
-    A negative yaw in mirrored selfie view means turning head left; positive means turning right.
-    """
+    """Return (target_yaw, target_pitch, tolerance) in [-1.0, 1.0] for a named enrollment angle."""
     low = (angle_description or "").lower()
     if "left-up" in low:
         return -0.42, -0.35, 0.48
@@ -111,7 +105,6 @@ def target_pose_for_angle(angle_description: str) -> tuple[float, float, float]:
         return 0.0, -0.36, 0.46
     if "down" in low and "lying down" not in low:
         return 0.0, 0.36, 0.46
-    # Front / natural / glasses / night postures accept centered or relaxed pose
     return 0.0, 0.0, 0.65
 
 
@@ -126,24 +119,64 @@ def check_pose_alignment(
     return dist <= tol, float(dist)
 
 
+def _project_3d_sphere_point(
+    lat_rad: float,
+    lon_rad: float,
+    yaw_rad: float,
+    pitch_rad: float,
+    roll_rad: float,
+) -> tuple[float, float, float]:
+    """Rotate a unit-sphere point (lat, lon) by (yaw, pitch, roll) and return (x, y, z)."""
+    x0 = math.cos(lat_rad) * math.sin(lon_rad)
+    y0 = math.sin(lat_rad)
+    z0 = math.cos(lat_rad) * math.cos(lon_rad)
+
+    # Yaw around Y-axis
+    cy, sy = math.cos(yaw_rad), math.sin(yaw_rad)
+    x1 = x0 * cy + z0 * sy
+    y1 = y0
+    z1 = -x0 * sy + z0 * cy
+
+    # Pitch around X-axis
+    cp, sp = math.cos(pitch_rad), math.sin(pitch_rad)
+    x2 = x1
+    y2 = y1 * cp - z1 * sp
+    z2 = y1 * sp + z1 * cp
+
+    # Roll around Z-axis
+    cr, sr = math.cos(roll_rad), math.sin(roll_rad)
+    x3 = x2 * cr - y2 * sr
+    y3 = x2 * sr + y2 * cr
+    return x3, y3, z2
+
+
 class FaceIdRingCanvas(QWidget):
-    """Circular mirrored camera viewport with a 64-tick 3D Face ID ring and pose reticle."""
+    """Circular mirrored camera viewport with a 64-tick 3D Face ID ring and geodesic sphere."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setMinimumSize(360, 360)
         self._frame_image: Optional[QImage] = None
+        self._frame_w = 640
+        self._frame_h = 480
+        self._kps: Optional[np.ndarray] = None
         self._yaw = 0.0
         self._pitch = 0.0
+        self._roll_deg = 0.0
         self._target_yaw = 0.0
         self._target_pitch = 0.0
         self._ready = False
         self._aligned = False
         self._dwell_progress = 0.0
         self._overall_progress = 0.0
+        self._capture_flash = 0.0
         self._phase = 0.0
         self._tick_levels = [0.0] * _RING_TICKS
         self._completed_ticks: set[int] = set()
+
+    def trigger_capture_flash(self) -> None:
+        self._capture_flash = 1.0
+        self.update()
 
     def set_frame_state(
         self,
@@ -151,6 +184,8 @@ class FaceIdRingCanvas(QWidget):
         *,
         yaw: float,
         pitch: float,
+        roll_deg: float = 0.0,
+        kps: Optional[np.ndarray] = None,
         target_yaw: float,
         target_pitch: float,
         ready: bool,
@@ -158,21 +193,31 @@ class FaceIdRingCanvas(QWidget):
         dwell_progress: float,
         overall_progress: float,
     ) -> None:
-        self._yaw = float(np.clip(yaw, -1.0, 1.0))
-        self._pitch = float(np.clip(pitch, -1.0, 1.0))
+        # Smoothly interpolate pose so the 3D globe glides at 60fps
+        self._yaw += (float(np.clip(yaw, -1.0, 1.0)) - self._yaw) * 0.42
+        self._pitch += (float(np.clip(pitch, -1.0, 1.0)) - self._pitch) * 0.42
+        self._roll_deg += (float(np.clip(roll_deg, -45.0, 45.0)) - self._roll_deg) * 0.42
         self._target_yaw = float(np.clip(target_yaw, -1.0, 1.0))
         self._target_pitch = float(np.clip(target_pitch, -1.0, 1.0))
         self._ready = bool(ready)
         self._aligned = bool(aligned)
         self._dwell_progress = float(np.clip(dwell_progress, 0.0, 1.0))
         self._overall_progress = float(np.clip(overall_progress, 0.0, 1.0))
-        self._phase = (self._phase + 0.04) % math.tau
+        self._phase = (self._phase + 0.045) % math.tau
+        self._capture_flash = max(0.0, self._capture_flash - 0.08)
 
-        # Mark ticks completed proportional to overall angle progress
+        if kps is not None:
+            try:
+                arr = np.asarray(kps, dtype=np.float32)
+                self._kps = arr.copy() if arr.shape == (5, 2) else None
+            except Exception:
+                self._kps = None
+        else:
+            self._kps = None
+
         completed_count = int(round(self._overall_progress * _RING_TICKS))
         self._completed_ticks = set(range(completed_count))
 
-        # Update per-tick spring heights based on live head vector and target direction
         head_angle = math.atan2(self._pitch, self._yaw) % math.tau
         head_mag = min(1.0, math.hypot(self._yaw, self._pitch))
         target_angle = math.atan2(self._target_pitch, self._target_yaw) % math.tau
@@ -180,23 +225,23 @@ class FaceIdRingCanvas(QWidget):
 
         for idx in range(_RING_TICKS):
             tick_angle = (idx / _RING_TICKS) * math.tau
-            target_level = 1.0 if idx in self._completed_ticks else 0.15
-            if head_mag > 0.12:
+            target_level = 1.0 if idx in self._completed_ticks else 0.14
+            if head_mag > 0.10:
                 diff = abs((tick_angle - head_angle + math.pi) % math.tau - math.pi)
                 if diff < 0.55:
-                    target_level = max(target_level, (1.0 - diff / 0.55) * 0.85)
-            if target_mag > 0.12:
+                    target_level = max(target_level, (1.0 - diff / 0.55) * 0.88)
+            if target_mag > 0.10:
                 tdiff = abs((tick_angle - target_angle + math.pi) % math.tau - math.pi)
                 if tdiff < 0.45:
-                    pulse = 0.55 + 0.35 * math.sin(self._phase * 2.0)
+                    pulse = 0.55 + 0.35 * math.sin(self._phase * 2.2)
                     target_level = max(target_level, (1.0 - tdiff / 0.45) * pulse)
-            self._tick_levels[idx] += (target_level - self._tick_levels[idx]) * 0.32
+            self._tick_levels[idx] += (target_level - self._tick_levels[idx]) * 0.34
 
         if bgr_frame is not None and bgr_frame.size > 0:
+            self._frame_h, self._frame_w = bgr_frame.shape[:2]
             mirrored = cv2.flip(bgr_frame, 1)
             rgb = cv2.cvtColor(mirrored, cv2.COLOR_BGR2RGB)
             h, w, ch = rgb.shape
-            # Copy immediately so the caller's numpy buffer can be zeroed safely
             self._frame_image = QImage(
                 rgb.data, w, h, ch * w, QImage.Format.Format_RGB888
             ).copy()
@@ -206,7 +251,9 @@ class FaceIdRingCanvas(QWidget):
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(
+            QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing
+        )
 
         w = float(self.width())
         h = float(self.height())
@@ -215,16 +262,18 @@ class FaceIdRingCanvas(QWidget):
         outer_r = min(w, h) * 0.44
         viewport_r = outer_r - 24.0
 
-        # 1. Subtle ambient radial aura behind the ring
-        aura = QRadialGradient(QPointF(cx, cy), outer_r * 1.15)
-        if self._ready and self._aligned:
-            aura.setColorAt(0.0, QColor(52, 199, 89, 34))
+        # 1. Ambient radial aura behind the ring
+        aura = QRadialGradient(QPointF(cx, cy), outer_r * 1.18)
+        if self._capture_flash > 0.05:
+            aura.setColorAt(0.0, QColor(52, 199, 89, int(85 * self._capture_flash)))
+        elif self._ready and self._aligned:
+            aura.setColorAt(0.0, QColor(52, 199, 89, 38))
         else:
-            aura.setColorAt(0.0, QColor(100, 210, 255, 22))
+            aura.setColorAt(0.0, QColor(100, 210, 255, 24))
         aura.setColorAt(1.0, QColor(8, 10, 15, 0))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(aura)
-        painter.drawEllipse(QPointF(cx, cy), outer_r * 1.15, outer_r * 1.15)
+        painter.drawEllipse(QPointF(cx, cy), outer_r * 1.18, outer_r * 1.18)
 
         # 2. Circular clipped camera viewport
         clip_path = QPainterPath()
@@ -232,6 +281,8 @@ class FaceIdRingCanvas(QWidget):
         painter.save()
         painter.setClipPath(clip_path)
 
+        scale = 1.0
+        target_rect = QRectF(cx - viewport_r, cy - viewport_r, viewport_r * 2.0, viewport_r * 2.0)
         if self._frame_image is not None and not self._frame_image.isNull():
             img = self._frame_image
             iw, ih = float(img.width()), float(img.height())
@@ -240,26 +291,36 @@ class FaceIdRingCanvas(QWidget):
             target_rect = QRectF(cx - dw * 0.5, cy - dh * 0.5, dw, dh)
             painter.drawImage(target_rect, img)
         else:
-            painter.fillRect(
-                QRectF(cx - viewport_r, cy - viewport_r, viewport_r * 2.0, viewport_r * 2.0),
-                QColor("#0D121B"),
-            )
+            painter.fillRect(target_rect, QColor("#0D121B"))
 
         # Subtle inner vignette for optical depth
         vignette = QRadialGradient(QPointF(cx, cy), viewport_r)
         vignette.setColorAt(0.0, QColor(0, 0, 0, 0))
-        vignette.setColorAt(0.78, QColor(0, 0, 0, 28))
-        vignette.setColorAt(1.0, QColor(4, 6, 10, 145))
+        vignette.setColorAt(0.76, QColor(0, 0, 0, 32))
+        vignette.setColorAt(1.0, QColor(4, 6, 10, 155))
         painter.setBrush(vignette)
         painter.drawEllipse(QPointF(cx, cy), viewport_r, viewport_r)
 
-        # 3. 3D Spherical Pose Reticle inside viewport
+        # 3. 3D Geodesic Pose Sphere + 5-Point Facial Constellation
+        self._paint_geodesic_sphere(painter, cx, cy, viewport_r * 0.82)
+        self._paint_landmark_constellation(painter, target_rect, scale)
         self._paint_pose_reticle(painter, cx, cy, viewport_r)
+
+        # Brief emerald flash wash on burst completion
+        if self._capture_flash > 0.02:
+            painter.fillRect(
+                QRectF(cx - viewport_r, cy - viewport_r, viewport_r * 2.0, viewport_r * 2.0),
+                QColor(52, 199, 89, int(55 * self._capture_flash)),
+            )
         painter.restore()
 
         # 4. Optical glass rim around camera circle
-        rim_color = QColor("#34C759") if (self._ready and self._aligned) else QColor(255, 255, 255, 52)
-        painter.setPen(QPen(rim_color, 1.6))
+        rim_color = (
+            QColor("#34C759")
+            if (self._ready and self._aligned) or self._capture_flash > 0.1
+            else QColor(255, 255, 255, 58)
+        )
+        painter.setPen(QPen(rim_color, 1.8))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawEllipse(QPointF(cx, cy), viewport_r, viewport_r)
 
@@ -271,7 +332,7 @@ class FaceIdRingCanvas(QWidget):
                 (viewport_r + 4.0) * 2.0,
                 (viewport_r + 4.0) * 2.0,
             )
-            pen = QPen(QColor("#34C759"), 2.8)
+            pen = QPen(QColor("#34C759"), 3.0)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawArc(arc_rect, 90 * 16, int(-360 * 16 * self._dwell_progress))
@@ -280,32 +341,100 @@ class FaceIdRingCanvas(QWidget):
         self._paint_radial_ticks(painter, cx, cy, viewport_r + 10.0)
         painter.end()
 
-    def _paint_pose_reticle(self, painter: QPainter, cx: float, cy: float, radius: float) -> None:
-        # Subtle crosshair + latitude/longitude ellipse shifted by head pose
-        grid_pen = QPen(QColor(255, 255, 255, 28), 1.0, Qt.PenStyle.DotLine)
-        painter.setPen(grid_pen)
-        painter.drawLine(QPointF(cx - radius * 0.65, cy), QPointF(cx + radius * 0.65, cy))
-        painter.drawLine(QPointF(cx, cy - radius * 0.65), QPointF(cx, cy + radius * 0.65))
+    def _paint_geodesic_sphere(self, painter: QPainter, cx: float, cy: float, sphere_r: float) -> None:
+        """Render a 3D perspective-projected latitude/longitude geodesic wireframe globe."""
+        yaw_rad = self._yaw * 0.68
+        pitch_rad = self._pitch * 0.68
+        roll_rad = math.radians(self._roll_deg * 0.5)
 
-        # Target node (where the user should aim their face)
+        wire_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
+        wire_color.setAlpha(36 if (self._ready and self._aligned) else 26)
+        painter.setPen(QPen(wire_color, 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Latitude rings (-40, 0, +40 deg) and Longitude meridians (-50, 0, +50 deg)
+        for lat_deg in (-38, 0, 38):
+            lat = math.radians(lat_deg)
+            path = QPainterPath()
+            started = False
+            for step in range(25):
+                lon = -math.pi * 0.48 + (step / 24.0) * (math.pi * 0.96)
+                x3, y3, z3 = _project_3d_sphere_point(lat, lon, yaw_rad, pitch_rad, roll_rad)
+                if z3 < 0.05:
+                    started = False
+                    continue
+                px = cx + x3 * sphere_r
+                py = cy + y3 * sphere_r
+                if not started:
+                    path.moveTo(px, py)
+                    started = True
+                else:
+                    path.lineTo(px, py)
+            painter.drawPath(path)
+
+        for lon_deg in (-42, 0, 42):
+            lon = math.radians(lon_deg)
+            path = QPainterPath()
+            started = False
+            for step in range(25):
+                lat = -math.pi * 0.45 + (step / 24.0) * (math.pi * 0.90)
+                x3, y3, z3 = _project_3d_sphere_point(lat, lon, yaw_rad, pitch_rad, roll_rad)
+                if z3 < 0.05:
+                    started = False
+                    continue
+                px = cx + x3 * sphere_r
+                py = cy + y3 * sphere_r
+                if not started:
+                    path.moveTo(px, py)
+                    started = True
+                else:
+                    path.lineTo(px, py)
+            painter.drawPath(path)
+
+    def _paint_landmark_constellation(
+        self, painter: QPainter, target_rect: QRectF, scale: float
+    ) -> None:
+        """Render a delicate biometric constellation over the 5 detected facial keypoints."""
+        if self._kps is None or self._frame_w <= 0:
+            return
+        pts: list[QPointF] = []
+        for kx, ky in self._kps:
+            # Mirror X to match the flipped selfie preview
+            mx = (float(self._frame_w) - float(kx)) * scale + target_rect.left()
+            my = float(ky) * scale + target_rect.top()
+            pts.append(QPointF(mx, my))
+        if len(pts) != 5:
+            return
+
+        line_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
+        line_color.setAlpha(95)
+        painter.setPen(QPen(line_color, 1.1))
+        # Connect left_eye(0)-right_eye(1), eyes to nose(2), nose to mouth corners(3,4), mouth(3)-mouth(4)
+        for a, b in ((0, 1), (0, 2), (1, 2), (2, 3), (2, 4), (3, 4)):
+            painter.drawLine(pts[a], pts[b])
+
+        dot_color = QColor("#F2F4F8")
+        dot_color.setAlpha(210)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(dot_color)
+        for pt in pts:
+            painter.drawEllipse(pt, 2.3, 2.3)
+
+    def _paint_pose_reticle(self, painter: QPainter, cx: float, cy: float, radius: float) -> None:
         tx = cx + self._target_yaw * (radius * 0.52)
         ty = cy + self._target_pitch * (radius * 0.52)
-        # Live head-pose node
         hx = cx + self._yaw * (radius * 0.52)
         hy = cy + self._pitch * (radius * 0.52)
 
-        # Guide line from live pose to target pose
-        guide_pen = QPen(QColor(255, 179, 64, 130), 1.5, Qt.PenStyle.DashLine)
+        guide_pen = QPen(QColor(255, 179, 64, 140), 1.5, Qt.PenStyle.DashLine)
         painter.setPen(guide_pen)
         painter.drawLine(QPointF(hx, hy), QPointF(tx, ty))
 
-        # Target ring
         target_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#FFB340")
         painter.setPen(QPen(target_color, 2.0))
-        painter.setBrush(QColor(target_color.red(), target_color.green(), target_color.blue(), 40))
-        painter.drawEllipse(QPointF(tx, ty), 12.0, 12.0)
+        painter.setBrush(QColor(target_color.red(), target_color.green(), target_color.blue(), 42))
+        painter.drawEllipse(QPointF(tx, ty), 12.5, 12.5)
 
-        # Live nose-vector cursor dot
         cursor_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(cursor_color)
@@ -380,6 +509,14 @@ class EnrollmentStudioWindow(QMainWindow):
     @property
     def aborted(self) -> bool:
         return self._aborted
+
+    @property
+    def selected_profile(self) -> str:
+        return self._profile
+
+    @property
+    def active_angles(self) -> list[str]:
+        return list(self._angles)
 
     def current_angle(self) -> str:
         if 0 <= self._current_index < len(self._angles):
@@ -463,7 +600,7 @@ class EnrollmentStudioWindow(QMainWindow):
         btn_row.setSpacing(12)
         self._cancel_btn = QPushButton("Cancel", root)
         self._cancel_btn.setObjectName("secondary")
-        self._cancel_btn.clicked.connect(self._abort)
+        self._cancel_btn.clicked.connect(self.abort)
         btn_row.addWidget(self._cancel_btn)
 
         self._capture_btn = QPushButton("Capture Pose (SPACE)", root)
@@ -512,11 +649,12 @@ class EnrollmentStudioWindow(QMainWindow):
 
         angle = self.current_angle()
         ty, tp, _tol = target_pose_for_angle(angle)
-        if face is not None and getattr(face, "kps", None) is not None:
-            yaw, pitch, _roll = estimate_head_pose_5pt(face.kps)
+        kps = getattr(face, "kps", None) if face is not None else None
+        if kps is not None:
+            yaw, pitch, roll_deg = estimate_head_pose_5pt(kps)
             aligned, _dist = check_pose_alignment(yaw, pitch, angle)
         else:
-            yaw, pitch = 0.0, 0.0
+            yaw, pitch, roll_deg = 0.0, 0.0, 0.0
             aligned = False
 
         now = time.monotonic()
@@ -533,6 +671,8 @@ class EnrollmentStudioWindow(QMainWindow):
             frame,
             yaw=yaw,
             pitch=pitch,
+            roll_deg=roll_deg,
+            kps=kps,
             target_yaw=ty,
             target_pitch=tp,
             ready=ready,
@@ -565,6 +705,7 @@ class EnrollmentStudioWindow(QMainWindow):
                 self._captured_samples.extend(burst)
                 self._current_index += 1
                 self._profile_combo.setEnabled(False)
+                self.canvas.trigger_capture_flash()
                 self._update_step_copy()
                 if self._current_index >= len(self._angles):
                     self._completed = True
@@ -577,9 +718,13 @@ class EnrollmentStudioWindow(QMainWindow):
             self._burst_in_progress = False
             self._aligned_since = None
 
-    def _abort(self) -> None:
+    def abort(self) -> None:
+        """Public abort method used by Cancel button, Escape key, and deadline timer."""
         self._aborted = True
         self.close()
+
+    def _abort(self) -> None:
+        self.abort()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         if event.key() == Qt.Key.Key_Space:
@@ -587,7 +732,7 @@ class EnrollmentStudioWindow(QMainWindow):
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Q, Qt.Key.Key_Escape):
-            self._abort()
+            self.abort()
             event.accept()
             return
         super().keyPressEvent(event)

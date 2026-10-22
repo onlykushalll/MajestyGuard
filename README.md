@@ -28,6 +28,24 @@ The active runtime has three local processes:
 No cloud account, telemetry service, or remote decision service is required for
 the active runtime.
 
+## Repository Architecture
+
+```text
+MajestyGuard/
+├── app/                       # PyQt6 Obsidian Glass Control Center & process supervisor
+├── daemon/                    # Core Python Biometric Daemon (ArcFace/AdaFace, 12-layer liveness, IPC)
+├── ui/                        # PyQt6 Dynamic Island, Soft-Lock Shield & 3D Face ID Enrollment Studio
+├── packaging/                 # PyInstaller bundle builder & Inno Setup per-user installer (.iss)
+├── models/                    # Local ONNX liveness/detection models & SHA-256 reference manifest
+├── models_insightface/        # Local InsightFace buffalo_l recognition models
+├── scripts/                   # Bounded manual launchers (run_daemon.bat, run_ui.bat)
+├── setup/                     # User startup tasks, signing helpers & machine-state security cleanup
+├── tests/                     # 440+ unit, contract, render, privacy & soak tests (app, daemon, ui, packaging)
+├── docs/                      # Architecture specs, threat model, signing roadmap & consolidated audit ledger
+├── src/ & companion/          # Retired v1 C#/.NET Windows Service & Credential Provider stack (inert/historical)
+└── archive/                   # Historical audits, session handoffs & retired v1 duplicates (gitignored)
+```
+
 ## Development Setup
 
 Use Python 3.11. Create an isolated environment, then install the pinned local
@@ -80,6 +98,7 @@ installer boundary and release gates.
 - [Control Center runtime plan](docs/superpowers/plans/2026-09-19-control-center-runtime-plan.md)
 - [Packaging and release plan](docs/superpowers/plans/2026-09-19-packaging-and-release-plan.md)
 - [Install and update guide](docs/guides/INSTALL_AND_UPDATE.md)
+- [Consolidated audit & verification ledger](docs/AUDIT_AND_VERIFICATION_LEDGER.md)
 
 ## License
 

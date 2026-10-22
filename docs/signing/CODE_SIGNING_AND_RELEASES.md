@@ -178,3 +178,18 @@ Official MajestyGuard downloads are published via GitHub Releases:
 * **Included**: Python CV/liveness daemon, enrollment flows, PyQt6 floating pill UI, and experimental C# service/Credential Provider modules.
 * **Not Included**: Automatic LogonUI unlock. The Credential Provider tile runs as a validation gate and requires password verification upon face match to confirm identity.
 * **Safety note**: Do not disable Windows Smart App Control or enable test-signing mode on daily-use machines. Do not turn Smart App Control off on daily-use machines.
+
+
+---
+
+## Local Developer Authenticode Signing (Non-SAC)
+
+For local development and testing on non-Smart App Control (SAC) developer workstations, binaries can be signed using a local development certificate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup\sign_dev_binaries.ps1
+```
+
+### Key Security & Scope Constraints:
+1. **Target Store**: Provisions `CN=MajestyGuardDev` to `Cert:\LocalMachine\TrustedPublisher` and `Cert:\LocalMachine\My`. In modern hardened scripts (`setup/security_cleanup.ps1`, `Uninstall.ps1`), root certificate injection is restricted to avoid trust store pollution.
+2. **Smart App Control (SAC) Caveat**: Local self-signed Authenticode signatures do **not** satisfy Windows 11 Smart App Control (SAC) evaluation, which requires an unbroken chain to a Microsoft-trusted public CA (such as SignPath.io / SignPath Foundation public signing). Never disable SAC on daily-use machines; use dev-signing only in controlled developer environments.

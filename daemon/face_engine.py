@@ -728,26 +728,49 @@ class FaceEngine:
         presence_confidence  = 0.0
 
         if self._enrolled_matrix is not None:
-            cached_emb = getattr(primary_face, "_cached_norm_emb", None)
-            if cached_emb is not None:
-                query_embedding = cached_emb
+            cached_scores = getattr(primary_face, "_cached_identity_scores", None)
+            if cached_scores is not None:
+                best_score, best_template_index, top3_mean = cached_scores
+                query_embedding = getattr(primary_face, "_cached_norm_emb", None)
             else:
-                query_embedding = self._normalize_embedding(self._get_best_embedding(frame, primary_face))
+                cached_emb = getattr(primary_face, "_cached_norm_emb", None)
+                if cached_emb is not None:
+                    query_embedding = cached_emb
+                else:
+                    query_embedding = self._normalize_embedding(self._get_best_embedding(frame, primary_face))
+                    if query_embedding is not None:
+                        primary_face._cached_norm_emb = query_embedding
                 if query_embedding is not None:
-                    primary_face._cached_norm_emb = query_embedding
+                    scores = self._enrolled_matrix @ query_embedding  # (N,)
+                    best_template_index = int(np.argmax(scores))
+                    best_score = float(np.clip(scores[best_template_index], 0.0, 1.0))
+                    k = min(3, len(scores))
+                    top3_mean = float(np.mean(np.partition(scores, -k)[-k:]))
+                    primary_face._cached_identity_scores = (best_score, best_template_index, top3_mean)
+
             if query_embedding is None:
                 self._reset_recognition_smoother()
                 self._consecutive_matches = 0
                 self._consecutive_liveness = 0
                 self._last_recognition_score = 0.0
-                query_embedding = None
+            else:
+                if (
+                    liveness_passed
+                    and self._adaface_session is None
+                    and getattr(self, "_adaface_flip_fusion_enabled", True)
+                    and 0.68 <= best_score < self.recognition_threshold
+                ):
+                    fused_emb = self._try_arcface_flip_fusion(frame, primary_face, query_embedding)
+                    if fused_emb is not None:
+                        fused_scores = self._enrolled_matrix @ fused_emb
+                        fused_idx = int(np.argmax(fused_scores))
+                        fused_best = float(np.clip(fused_scores[fused_idx], 0.0, 1.0))
+                        if fused_best > best_score:
+                            best_score = fused_best
+                            best_template_index = fused_idx
+                            k = min(3, len(fused_scores))
+                            top3_mean = float(np.mean(np.partition(fused_scores, -k)[-k:]))
 
-            # P-3: vectorized matmul instead of linear loop — O(N) single BLAS call
-            if query_embedding is not None:
-                scores = self._enrolled_matrix @ query_embedding  # (N,)
-                best_template_index = int(np.argmax(scores))
-                best_score = float(np.clip(scores[best_template_index], 0.0, 1.0))
-                top3_mean = float(np.mean(np.sort(scores)[-min(3, len(scores)):]))
                 self._last_recognition_score = best_score
 
                 if liveness_passed:
@@ -1057,6 +1080,9 @@ class FaceEngine:
     def _score_face_identity(self, frame: np.ndarray, face) -> tuple[float, int]:
         if self._enrolled_matrix is None:
             return 0.0, -1
+        cached_tuple = getattr(face, "_cached_identity_scores", None)
+        if cached_tuple is not None:
+            return cached_tuple[0], cached_tuple[1]
         try:
             cached_emb = getattr(face, "_cached_norm_emb", None)
             if cached_emb is not None:
@@ -1069,7 +1095,11 @@ class FaceEngine:
                 return 0.0, -1
             scores = self._enrolled_matrix @ embedding
             best_idx = int(np.argmax(scores))
-            return float(np.clip(scores[best_idx], 0.0, 1.0)), best_idx
+            best_score = float(np.clip(scores[best_idx], 0.0, 1.0))
+            k = min(3, len(scores))
+            top3_mean = float(np.mean(np.partition(scores, -k)[-k:]))
+            face._cached_identity_scores = (best_score, best_idx, top3_mean)
+            return best_score, best_idx
         except Exception as e:
             logger.debug("Identity scoring failed for candidate face: %s", e)
             return 0.0, -1
@@ -1273,6 +1303,7 @@ class FaceEngine:
                 face.embedding[:] = 0
             face._cached_norm_emb = None
             face._cached_face_quality = None
+            face._cached_identity_scores = None
 
     def _frame_quality(self, frame: np.ndarray, face) -> float:
         """
@@ -1327,6 +1358,32 @@ class FaceEngine:
                 except Exception as e:
                     logger.warning("AdaFace inference failed, falling back to ArcFace: %s", e)
         return face.normed_embedding
+
+    def _try_arcface_flip_fusion(
+        self, frame: np.ndarray, face, base_embedding: np.ndarray
+    ) -> Optional[np.ndarray]:
+        """Run test-time horizontal flip fusion on the 112x112 aligned ArcFace chip
+        only for borderline live candidates (0.68 <= score < threshold)."""
+        if self._app is None:
+            return None
+        rec_model = getattr(self._app, "models", {}).get("recognition")
+        if rec_model is None or not hasattr(rec_model, "get_feat"):
+            return None
+        chip = self._extract_adaface_chip(frame, face)
+        if chip.size == 0:
+            return None
+        try:
+            flipped_chip = cv2.flip(chip, 1)
+            flipped_raw = rec_model.get_feat(flipped_chip)
+            flipped_norm = self._normalize_embedding(flipped_raw)
+            if flipped_norm is None or flipped_norm.size != base_embedding.size:
+                return None
+            return self._normalize_embedding(base_embedding + flipped_norm)
+        except Exception as e:
+            logger.debug("ArcFace flip fusion skipped: %s", e)
+            return None
+        finally:
+            self._zero_frame(chip)
 
     def _extract_adaface_chip(self, frame: np.ndarray, face) -> np.ndarray:
         """

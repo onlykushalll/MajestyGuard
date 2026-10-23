@@ -54,7 +54,12 @@ def measure_face_quality(frame: np.ndarray, face: Any) -> FaceQuality:
 
     ycrcb = cv2.cvtColor(roi, cv2.COLOR_BGR2YCrCb)
     illumination_mean = float(np.mean(ycrcb[:, :, 0]))
-    illumination_score = float(np.clip(1.0 - abs(illumination_mean - 128.0) / 128.0, 0.0, 1.0))
+    if 75.0 <= illumination_mean <= 185.0:
+        illumination_score = 1.0
+    elif illumination_mean < 75.0:
+        illumination_score = float(np.clip(illumination_mean / 75.0, 0.0, 1.0))
+    else:
+        illumination_score = float(np.clip((255.0 - illumination_mean) / 70.0, 0.0, 1.0))
 
     face_area = box_w * box_h
     size_score = float(np.clip(face_area / ((h * w + 1.0) * 0.15), 0.0, 1.0))

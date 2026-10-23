@@ -365,6 +365,8 @@ class LivenessDetector:
 
         lbp_score = self._lbp_texture_score(roi)
         specular_score = self._specular_score(roi)
+        color_score = self._color_space_score(roi)
+        moire_score = self._moire_score(roi)
         temporal_score = self._temporal_blink_score(frame, face)
         boundary_score = self._boundary_score(frame, face)
         onnx_score = self._onnx_antispoof_score(roi)
@@ -372,28 +374,34 @@ class LivenessDetector:
 
         if onnx_score is not None:
             combined = (
-                onnx_score * 0.28
-                + lbp_score * 0.18
-                + specular_score * 0.12
-                + temporal_score * 0.12
-                + boundary_score * 0.12
-                + depth_score * 0.10
+                onnx_score * 0.24
+                + lbp_score * 0.16
+                + color_score * 0.12
+                + moire_score * 0.12
+                + specular_score * 0.10
+                + boundary_score * 0.10
+                + temporal_score * 0.04
+                + depth_score * 0.04
                 + replay_penalty * 0.08
             )
         else:
             combined = (
-                lbp_score * 0.24
-                + specular_score * 0.16
-                + temporal_score * 0.16
-                + boundary_score * 0.16
-                + depth_score * 0.14
-                + replay_penalty * 0.14
+                lbp_score * 0.20
+                + color_score * 0.16
+                + moire_score * 0.16
+                + specular_score * 0.12
+                + boundary_score * 0.12
+                + temporal_score * 0.06
+                + depth_score * 0.06
+                + replay_penalty * 0.12
             )
 
         logger.debug(
-            "Fast liveness: LBP=%.2f Spec=%.2f Temp=%.2f Bound=%.2f Depth=%.2f Replay=%.2f ONNX=%s -> %.3f",
+            "Fast liveness: LBP=%.2f Spec=%.2f Color=%.2f Moire=%.2f Temp=%.2f Bound=%.2f Depth=%.2f Replay=%.2f ONNX=%s -> %.3f",
             lbp_score,
             specular_score,
+            color_score,
+            moire_score,
             temporal_score,
             boundary_score,
             depth_score,

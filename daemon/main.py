@@ -1584,14 +1584,13 @@ class MajestyGuardDaemon:
                 return
             if result.liveness_score < 0.50:
                 self._soft_lock_fast_pass_frames = 0
-            return
-
-        if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
-            self._clear_soft_lock(
-                confidence=self._presence_confidence(result),
-                liveness=result.liveness_score,
-            )
-            return
+        else:
+            if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
+                self._clear_soft_lock(
+                    confidence=self._presence_confidence(result),
+                    liveness=result.liveness_score,
+                )
+                return
 
         if self._is_soft_lock_fast_owner_candidate(result, liveness_ok):
             self._soft_lock_owner_candidate_frames += 1

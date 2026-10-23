@@ -698,8 +698,13 @@ class EnrollmentStudioWindow(QMainWindow):
         )
 
         self._quality_chip.setText(f"Quality: {quality_score * 100:.0f}%")
-        self._status_chip.setText("LOCKED ON — Capturing..." if dwell >= 1.0 else status_text.upper())
-        self._capture_btn.setEnabled(ready)
+        if dwell >= 1.0:
+            self._status_chip.setText("LOCKED ON — Capturing...")
+        elif ready and not aligned:
+            self._status_chip.setText("ALIGN HEAD WITH TARGET RING")
+        else:
+            self._status_chip.setText(status_text.upper())
+        self._capture_btn.setEnabled(ready and aligned)
 
         if dwell >= 1.0:
             self._aligned_since = None

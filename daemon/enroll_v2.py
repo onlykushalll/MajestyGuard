@@ -171,11 +171,14 @@ class EnrollmentSample:
         return data
 
 
-def _face_readiness(frame: np.ndarray, face, min_quality: float = 0.62) -> tuple[bool, str, FaceQuality]:
+def _face_readiness(
+    frame: np.ndarray,
+    face,
+    min_quality: float = 0.62,
+    angle: str = "",
+) -> tuple[bool, str, FaceQuality]:
     h, w = frame.shape[:2]
     x1, y1, x2, y2 = [float(v) for v in face.bbox]
-    box_w = max(0.0, x2 - x1)
-    box_h = max(0.0, y2 - y1)
     quality = measure_face_quality(frame, face)
     height_frac = quality.height_frac
     det_score = float(getattr(face, "det_score", 0.0))
@@ -184,13 +187,19 @@ def _face_readiness(frame: np.ndarray, face, min_quality: float = 0.62) -> tuple
     center_dx = abs(face_center_x - w / 2.0) / max(1.0, w / 2.0)
     center_dy = abs(face_center_y - h / 2.0) / max(1.0, h / 2.0)
 
+    low_angle = (angle or "").lower()
+    min_h = 0.26 if ("leaning back" in low_angle or "away" in low_angle) else 0.36
+    max_h = 0.76 if ("closer" in low_angle or "close" in low_angle) else 0.68
+    max_dx = 0.34 if any(k in low_angle for k in ("left", "right", "lying")) else 0.26
+    max_dy = 0.34 if any(k in low_angle for k in ("up", "down", "lying")) else 0.28
+
     if det_score < 0.70:
         return False, f"det too low ({det_score:.2f})", quality
-    if height_frac < 0.38:
+    if height_frac < min_h:
         return False, "move closer", quality
-    if height_frac > 0.68:
+    if height_frac > max_h:
         return False, "move back slightly", quality
-    if center_dx > 0.25 or center_dy > 0.28:
+    if center_dx > max_dx or center_dy > max_dy:
         return False, "center your face", quality
     if quality.score < min_quality:
         return False, f"quality low ({quality.score:.2f})", quality
@@ -223,46 +232,51 @@ def _capture_burst(
         and time.monotonic() < deadline
         and not _enrollment_deadline_expired(enrollment_deadline)
     ):
-        ret, frame = cap.read()
-        if not ret or frame is None:
+        ret, raw_frame = cap.read()
+        if not ret or raw_frame is None:
             continue
-        frame = _enhance_frame(frame)
-        face = _select_primary_face(frame, app.get(frame))
-        if face is None:
-            time.sleep(0.05)
-            continue
+        frame = _enhance_frame(raw_frame)
+        try:
+            face = _select_primary_face(frame, app.get(frame))
+            if face is None:
+                time.sleep(0.05)
+                continue
 
-        ready, _, quality = _face_readiness(frame, face, min_quality=min_quality)
-        if not ready:
-            time.sleep(0.05)
-            continue
+            ready, _, quality = _face_readiness(frame, face, min_quality=min_quality, angle=angle)
+            if not ready:
+                time.sleep(0.05)
+                continue
 
-        live_score = liveness.score_fast(frame, face)
-        if live_score < ENROLL_LIVENESS_THRESHOLD:
-            logging.getLogger(__name__).warning(
-                "Enrollment sample rejected: liveness %.2f below %.2f (angle=%s)",
-                live_score, ENROLL_LIVENESS_THRESHOLD, angle,
+            live_score = liveness.score_fast(frame, face)
+            if live_score < ENROLL_LIVENESS_THRESHOLD:
+                logging.getLogger(__name__).warning(
+                    "Enrollment sample rejected: liveness %.2f below %.2f (angle=%s)",
+                    live_score, ENROLL_LIVENESS_THRESHOLD, angle,
+                )
+                time.sleep(0.05)
+                continue
+
+            emb = face.normed_embedding.astype(np.float32)
+            emb = emb / (np.linalg.norm(emb) + 1e-8)
+            det_score = float(getattr(face, "det_score", 0.0))
+            accepted.append(
+                EnrollmentSample(
+                    embedding=emb.copy(),
+                    angle=angle,
+                    angle_index=angle_index,
+                    sample_index=len(accepted) + 1,
+                    det_score=det_score,
+                    height_frac=float(quality.height_frac),
+                    quality=_sample_quality(quality),
+                    center_offset=float(quality.center_offset),
+                    sharpness=float(quality.sharpness),
+                    illumination=float(quality.illumination_mean),
+                )
             )
-            time.sleep(0.05)
-            continue
-
-        emb = face.normed_embedding.astype(np.float32)
-        emb = emb / (np.linalg.norm(emb) + 1e-8)
-        det_score = float(getattr(face, "det_score", 0.0))
-        accepted.append(
-            EnrollmentSample(
-                embedding=emb.copy(),
-                angle=angle,
-                angle_index=angle_index,
-                sample_index=len(accepted) + 1,
-                det_score=det_score,
-                height_frac=float(quality.height_frac),
-                quality=_sample_quality(quality),
-                center_offset=float(quality.center_offset),
-                sharpness=float(quality.sharpness),
-                illumination=float(quality.illumination_mean),
-            )
-        )
+        finally:
+            if frame is not raw_frame:
+                frame[:] = 0
+            raw_frame[:] = 0
         time.sleep(0.12)
 
     return accepted
@@ -615,7 +629,7 @@ def main() -> int:
                 faces = app.get(frame)
                 face = _select_primary_face(frame, faces)
                 if face is not None:
-                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality)
+                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality, angle=studio.current_angle())
                     q_score = quality.score
                 else:
                     ready, status, q_score = False, "no face", 0.0

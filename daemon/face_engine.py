@@ -295,6 +295,7 @@ class FaceEngine:
         liveness_threshold: float = 0.70,
         open_camera: bool = True,
         liveness_model_dir: Optional[str] = None,
+        defer_heavy_liveness: bool = False,
     ):
         self.model_dir  = model_dir
         self.camera_idx = camera_idx
@@ -303,7 +304,10 @@ class FaceEngine:
         self._open_camera_on_initialize = open_camera
         self._app: Optional[FaceAnalysis] = None
         self._aux_model_dir = liveness_model_dir or model_dir
-        self._liveness = LivenessDetector(model_dir=liveness_model_dir or model_dir)
+        self._liveness = LivenessDetector(
+            model_dir=liveness_model_dir or model_dir,
+            defer_heavy_models=defer_heavy_liveness,
+        )
         self._adaface_session = None
         self._adaface_input_name = "input"
         self._adaface_flip_fusion_enabled = os.environ.get("MG_ADAFACE_FLIP_FUSION", "1") != "0"
@@ -387,6 +391,13 @@ class FaceEngine:
                     self.model_dir,
                 )
                 return False
+            if self._aux_model_dir and self._aux_model_dir != self.model_dir:
+                if not _verify_model_pack_tofu(self._aux_model_dir):
+                    logger.error(
+                        "Auxiliary model pack TOFU verification failed for %s - refusing to initialize",
+                        self._aux_model_dir,
+                    )
+                    return False
 
             # CPU-first by default: DirectML can hang on some laptop ONNX stacks.
             # Set MG_ONNX_PROVIDERS=DmlExecutionProvider,CPUExecutionProvider to opt in.
@@ -442,6 +453,31 @@ class FaceEngine:
         except Exception as e:
             logger.error("FaceEngine initialization failed: %s", e)
             return False
+
+    def warmup_fast(self) -> None:
+        """Warm up Phase-1 ONNX sessions (RetinaFace det_10g, ArcFace w600k_r50, MiniFASNetV2)
+        using a non-obstructed mid-gray synthetic frame so ONNX Runtime allocates its CPU
+        arenas during startup instead of stalling on the first live camera frame."""
+        warm_frame = np.full((480, 640, 3), 128, dtype=np.uint8)
+        if self._app is not None:
+            try:
+                self._app.get(warm_frame)
+            except Exception as exc:
+                logger.debug("Detector warmup skipped: %s", exc)
+            try:
+                rec_model = getattr(self._app, "models", {}).get("recognition")
+                if rec_model is not None and hasattr(rec_model, "get_feat"):
+                    rec_model.get_feat(np.full((112, 112, 3), 128, dtype=np.uint8))
+            except Exception as exc:
+                logger.debug("Recognition warmup skipped: %s", exc)
+        if hasattr(self._liveness, "_onnx_antispoof_score"):
+            try:
+                self._liveness._onnx_antispoof_score(np.full((128, 128, 3), 128, dtype=np.uint8))
+                self._liveness._onnx_score_history.clear()
+            except Exception as exc:
+                logger.debug("Anti-spoof warmup skipped: %s", exc)
+        if hasattr(self._liveness, "start_background_heavy_load"):
+            self._liveness.start_background_heavy_load()
 
     def _open_camera(self) -> bool:
         self._cap = cv2.VideoCapture(self.camera_idx, cv2.CAP_DSHOW)  # DSHOW on Windows

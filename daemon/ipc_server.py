@@ -94,7 +94,12 @@ class IPCServer:
         self._thread: Optional[threading.Thread] = None
         self._client_handle = None
         self._has_new_state = threading.Event()
+        self._client_connected = threading.Event()
         self._expected_client_pid = expected_client_pid
+
+    def wait_for_client(self, timeout: float = 0.5) -> bool:
+        """Wait up to `timeout` seconds for the owned UI client to connect."""
+        return self._client_connected.wait(timeout=max(0.0, float(timeout)))
 
     def _is_expected_client(self, client_pid: int) -> bool:
         """Same PID-authentication logic as CMDServer: rejects any client
@@ -248,6 +253,7 @@ class IPCServer:
 
                 with self._lock:
                     self._client_handle = handle
+                    self._client_connected.set()
                     # Send current state immediately
                     payload = json.dumps(self._state) + "\n"
                     win32file.WriteFile(handle, payload.encode("utf-8"))

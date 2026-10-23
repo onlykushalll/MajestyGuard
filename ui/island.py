@@ -66,7 +66,7 @@ def _orb_particle_seed(i: int) -> tuple[float, float, float]:
 # Verified → Welcome → Fade sequence timing
 _VERIFIED_DURATION_MS = 400
 _CHECKMARK_DRAW_MS = 150
-_WELCOME_DWELL_MS = 2000
+_WELCOME_DWELL_MS = 1450
 _PILL_FADE_MS = 400
 
 
@@ -416,6 +416,8 @@ class IslandWidget(QWidget):
             self._content_alpha = 0.0
             self._target_w = 4.0
             self._target_h = 4.0
+            self._vel_w = -2.8
+            self._vel_h = -0.8
             self._anim_morph_active = True
             self._anim_pill_fade_active = True
             self._start_animation_timer()
@@ -501,7 +503,7 @@ class IslandWidget(QWidget):
             updated = True
 
         if self._anim_shake_active:
-            self._shake_phase += 0.016 / 0.45
+            self._shake_phase += (0.016 * dt_scale) / 0.45
             if self._shake_phase >= 1.0:
                 self._anim_shake_active = False
                 self._shake_offset = 0.0
@@ -516,14 +518,14 @@ class IslandWidget(QWidget):
 
         target_hover = 1.0 if (self._hovered and self._state.name in _VERIFY_REQUEST_STATES and not self._reduce_motion) else 0.0
         if abs(target_hover - self._hover_progress) > 0.01:
-            self._hover_progress += (target_hover - self._hover_progress) * 0.28
+            self._hover_progress += (target_hover - self._hover_progress) * min(1.0, 0.28 * dt_scale)
             updated = True
         elif self._hover_progress != target_hover:
             self._hover_progress = target_hover
             updated = True
 
         if self._anim_content_active:
-            step = 0.16
+            step = 0.16 * dt_scale
             if self._content_fading_out:
                 self._content_alpha = max(0.0, self._content_alpha - step)
                 self._content_slide_y = -2.5 * (1.0 - self._content_alpha)
@@ -570,7 +572,7 @@ class IslandWidget(QWidget):
             updated = True
 
         if self._anim_checkmark_active:
-            step = _FRAME_MS / _CHECKMARK_DRAW_MS
+            step = frame_ms / _CHECKMARK_DRAW_MS
             self._checkmark_progress = min(1.0, self._checkmark_progress + step)
             if self._checkmark_progress >= 1.0:
                 self._anim_checkmark_active = False
@@ -582,7 +584,7 @@ class IslandWidget(QWidget):
                 self._anim_pill_fade_active = False
                 self._finish_exit_sequence()
             else:
-                step = _FRAME_MS / 180.0
+                step = frame_ms / 180.0
                 self._pill_opacity = max(0.0, self._pill_opacity - step)
                 if self._pill_opacity <= 0.0:
                     self._anim_pill_fade_active = False

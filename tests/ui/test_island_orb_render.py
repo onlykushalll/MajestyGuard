@@ -322,3 +322,14 @@ def test_welcome_transition_keeps_resolving_orb_animated(qapp):
 
     assert widget._state.name == "welcome"
     assert widget._anim_orb_active is True
+
+
+def test_island_exit_sequence_duration_budget_fits_inside_daemon_teardown_window():
+    """The full verified -> welcome -> blipp fade sequence must complete with at least
+    750ms of safety margin before the daemon's 3000ms ClearSoftLock teardown."""
+    total_exit_ms = (
+        island._VERIFIED_DURATION_MS
+        + island._WELCOME_DWELL_MS
+        + island._PILL_FADE_MS
+    )
+    assert total_exit_ms <= 2250

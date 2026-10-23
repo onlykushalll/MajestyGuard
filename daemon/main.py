@@ -401,7 +401,9 @@ class MajestyGuardDaemon:
             self._set_idle_check_phase("CAMERA_OPENING")
             self._open_camera()
             t_cam = time.perf_counter()
-            time.sleep(0.4)
+            if hasattr(self.ipc, "wait_for_client"):
+                self.ipc.wait_for_client(timeout=0.35)
+            time.sleep(0.15)
             self.ipc.broadcast_state("scanning", detail="Verifying...")
 
             self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
@@ -441,10 +443,13 @@ class MajestyGuardDaemon:
     def _warmup_inference(self) -> None:
         if self.face_eng is None:
             return
-        blank = np.zeros((480, 640, 3), dtype=np.uint8)
         try:
-            self.face_eng.process_frame(blank, liveness_mode="fast")
-            log.info("Warmup inference complete (blank frame)")
+            if hasattr(self.face_eng, "warmup_fast"):
+                self.face_eng.warmup_fast()
+            else:
+                blank = np.full((480, 640, 3), 128, dtype=np.uint8)
+                self.face_eng.process_frame(blank, liveness_mode="fast")
+            log.info("Warmup inference complete (Phase-1 ONNX arenas ready)")
         except Exception as exc:
             log.warning("Warmup inference failed (non-fatal): %s", exc)
 
@@ -457,6 +462,7 @@ class MajestyGuardDaemon:
             liveness_threshold=LIVENESS_THRESHOLD,
             open_camera=False,
             liveness_model_dir=str(_MODELS_DIR),
+            defer_heavy_liveness=True,
         )
         # Reading + decrypting the embeddings file doesn't depend on the
         # engine being initialized -- only registering the result into it
@@ -1633,7 +1639,7 @@ class MajestyGuardDaemon:
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)
 
         # Write UNLOCKED + schedule teardown so overlay dissolve sequence completes first.
-        # The overlay exit sequence (verified → welcome → fade) takes ~2.4s.
+        # The overlay exit sequence (verified 400ms → welcome 1450ms → fade 200ms = 2.05s) completes safely before teardown (3.0s).
         log.info("[ClearSoftLock] Lock lifted — scheduling teardown in 3s")
         try:
             (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")

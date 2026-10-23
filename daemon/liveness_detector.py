@@ -57,7 +57,10 @@ class LivenessDetector:
     # fallback fails closed instead.
     _STALE_SCORE_MAX_AGE_S = 4.0
 
-    def __init__(self, model_dir: str = ""):
+    def __init__(self, model_dir: str = "", *, defer_heavy_models: bool = False):
+        self._model_dir = model_dir
+        self._heavy_models_lock = __import__("threading").Lock()
+        self._heavy_models_loaded = False
         self._score_history: deque[float] = deque(maxlen=self._WINDOW)
         self._frame_index = 0
         self._last_smoothed_score = 0.0
@@ -123,10 +126,10 @@ class LivenessDetector:
         # low while preventing one bad frame from poisoning the 10th percentile.
         self._onnx_score_history: deque[float] = deque(maxlen=5)
 
-        # Add-on liveness layers.
-        self._depth_liveness = DepthLivenessDetector(model_dir) if model_dir else None
+        # Phase 1 (Immediate fast-path layers): rPPG + MiniFASNetV2 ONNX (1.9MB)
         self._rppg = CHROMrPPGDetector()
-        self._attention = AttentionDetector()
+        self._depth_liveness: Optional[DepthLivenessDetector] = None
+        self._attention: Optional[AttentionDetector] = None
 
         # Optional ONNX anti-spoof model
         self._antispoof_session: Optional[Any] = None
@@ -139,6 +142,48 @@ class LivenessDetector:
         # E-2: track consecutive ONNX failures — init in __init__ not lazily
         self._onnx_consecutive_failures: int = 0
         self._load_antispoof_model(model_dir)
+
+        if not defer_heavy_models:
+            self._ensure_heavy_models_loaded()
+
+    def _ensure_heavy_models_loaded(self) -> None:
+        """Load Phase-2 full-path models (MiDaS depth + MediaPipe attention) sequentially."""
+        if getattr(self, "_heavy_models_loaded", True):
+            return
+        lock = getattr(self, "_heavy_models_lock", None)
+        if lock is None:
+            self._heavy_models_loaded = True
+            return
+        with lock:
+            if self._heavy_models_loaded:
+                return
+            t0 = time.perf_counter()
+            model_dir = getattr(self, "_model_dir", "")
+            if self._depth_liveness is None and model_dir:
+                self._depth_liveness = DepthLivenessDetector(model_dir)
+            t_midas = time.perf_counter()
+            if self._attention is None:
+                self._attention = AttentionDetector()
+            t_end = time.perf_counter()
+            self._heavy_models_loaded = True
+            logger.info(
+                "Phase-2 full-liveness models loaded sequentially: midas=%dms attention=%dms total=%dms",
+                round((t_midas - t0) * 1000),
+                round((t_end - t_midas) * 1000),
+                round((t_end - t0) * 1000),
+            )
+
+    def start_background_heavy_load(self) -> None:
+        """Kick off sequential Phase-2 loading of MiDaS + MediaPipe on a background thread."""
+        if getattr(self, "_heavy_models_loaded", True):
+            return
+        import threading
+
+        threading.Thread(
+            target=self._ensure_heavy_models_loaded,
+            name="mg-liveness-phase2",
+            daemon=True,
+        ).start()
 
     def reset_temporal_buffers(self) -> None:
         """Reset temporal scoring buffers (score smoothing, blink tracking,
@@ -424,6 +469,9 @@ class LivenessDetector:
         # Layer 9: Color histogram temporal consistency
         hist_score = self._histogram_consistency_score(roi)
 
+        if not getattr(self, "_heavy_models_loaded", True):
+            self._ensure_heavy_models_loaded()
+
         # Layer 10: MiDaS monocular depth (neutral if model is missing)
         midas_score = (
             self._depth_liveness.score(frame, face)
@@ -432,7 +480,10 @@ class LivenessDetector:
 
         # Layer 11/12: rPPG blood-flow and MediaPipe iris attention.
         rppg_score = self._rppg.update(frame, face)
-        attention_score = self._attention.score(frame)
+        attention_score = (
+            self._attention.score(frame)
+            if self._attention is not None else 0.5
+        )
 
         if onnx_score is not None:
             combined = (

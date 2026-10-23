@@ -60,6 +60,8 @@ class DepthLivenessDetector:
         try:
             import onnxruntime as ort
             sess_opts = ort.SessionOptions()
+            sess_opts.inter_op_num_threads = 1
+            sess_opts.intra_op_num_threads = 2
             sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
             # CPU-first by default: DirectML can hang on some laptop ONNX
             # stacks (same lesson already applied in face_engine.py's

@@ -168,3 +168,27 @@ def test_replay_taint_decays_after_configured_window(monkeypatch):
     monkeypatch.setattr(time, "monotonic", lambda: 100.0 + detector._replay_taint_decay_seconds + 1.0)
     assert detector.replay_flagged_this_session() is False
 
+
+
+def test_liveness_deferred_heavy_models_load_on_demand_in_score_full(monkeypatch):
+    """When defer_heavy_models=True, __init__ must not instantiate DepthLivenessDetector
+    or AttentionDetector until _ensure_heavy_models_loaded / score_full runs."""
+    depth_calls = []
+    attn_calls = []
+    monkeypatch.setattr(
+        "liveness_detector.DepthLivenessDetector",
+        lambda model_dir: depth_calls.append(model_dir) or SimpleNamespace(available=False, score=lambda f, face: 0.5),
+    )
+    monkeypatch.setattr(
+        "liveness_detector.AttentionDetector",
+        lambda: attn_calls.append(True) or SimpleNamespace(score=lambda f: 0.5, close=lambda: None),
+    )
+
+    det = LivenessDetector(model_dir="", defer_heavy_models=True)
+    assert det._heavy_models_loaded is False
+    assert depth_calls == []
+    assert attn_calls == []
+
+    det._ensure_heavy_models_loaded()
+    assert det._heavy_models_loaded is True
+    assert len(attn_calls) == 1

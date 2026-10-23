@@ -139,3 +139,13 @@ def test_control_center_reenrollment_action_uses_guarded_supervisor(qapp, tmp_pa
 
     assert supervisor.enrollment_calls == 1
     view.close()
+
+def test_control_center_timeout_preset_updates_spinbox_and_saves(qapp, tmp_path):
+    supervisor = FakeSupervisor(RuntimeStatus.STOPPED)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    view.apply_timeout_preset(120)
+
+    assert view._timeout_input.value() == 120
+    assert supervisor.idle_timeout == 120
+    view.close()

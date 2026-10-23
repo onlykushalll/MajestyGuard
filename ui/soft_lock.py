@@ -521,6 +521,7 @@ class SoftLockOverlay(QWidget):
         self._lock_shown_at = None
         self._lock_generation = 0
         self._dissolve_generation = -1
+        self._last_win32_reassert_at = 0.0
 
         self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
         self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
@@ -557,7 +558,7 @@ class SoftLockOverlay(QWidget):
 
     def _setup_motion(self) -> None:
         self._timer = QTimer(self)
-        self._timer.setInterval(250)
+        self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
 
         self._fade = QPropertyAnimation(self, b"overlayOpacity", self)
@@ -887,33 +888,21 @@ class SoftLockOverlay(QWidget):
         self._fade.start()
 
     def _tick(self) -> None:
-        self._phase = (self._phase + 0.008) % 1.0
+        self._phase = (self._phase + 0.012) % 1.0
+        now = time.monotonic()
+        due_win32 = (now - getattr(self, "_last_win32_reassert_at", 0.0)) >= 0.22
 
-        if _mouse_locked:
+        if _mouse_locked and due_win32:
             _engage_cursor_lock()
 
-        if _overlay_locked:
-            # Re-assert every tick, not just once at lock-entry. A touchpad
-            # gesture (3/4-finger "show desktop") can bring the taskbar back
-            # regardless of anything this app does — that trigger itself
-            # can't be blocked from user space, but nothing stops us from
-            # putting it back within one tick instead of leaving it exposed
-            # until the next full lock/unlock cycle.
+        if _overlay_locked and due_win32:
+            self._last_win32_reassert_at = now
             _set_taskbar_visible(False)
-            # Same reasoning for topmost/foreground: a 3/4-finger gesture
-            # (Task View, virtual desktop switch) can briefly bring another
-            # window in front of or in place of this one. Confirmed via
-            # Microsoft's own docs that these are OS-shell-level "global
-            # gestures", not something a normal userspace app can intercept
-            # or block at the source (WM_GESTURE is the legacy touch-screen
-            # API and isn't involved in modern Precision Touchpad global
-            # gestures at all) — so the same "re-assert every tick to
-            # minimize the exposure window" strategy applies here too.
             self._force_topmost()
             self.raise_()
             self.activateWindow()
 
-        if self._lock_shown_at and (time.monotonic() - self._lock_shown_at) > 5.0:
+        if self._lock_shown_at and (now - self._lock_shown_at) > 5.0:
             if not getattr(self, "_fallback_prominent", False):
                 self._fallback_prominent = True
                 self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_PROMINENT)
@@ -987,9 +976,10 @@ class SoftLockOverlay(QWidget):
             painter.setBrush(aura)
             painter.drawEllipse(QPointF(center_x, center_y - 18.0), aura_r, aura_r)
 
-        # Draw Time
+        # Draw Time with tight Apple lock-screen optical letter-spacing
         time_font = QFont("Segoe UI Variable Display", 72, QFont.Weight.Light)
         time_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
+        time_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -1.5)
         painter.setFont(time_font)
         painter.setPen(QColor(30, 30, 34, 215))
 
@@ -1044,6 +1034,18 @@ class SoftLockOverlay(QWidget):
             align=Qt.AlignmentFlag.AlignHCenter,
             brand=True,
         )
+
+        if self._state.name == "verifying_lock":
+            scan_path = QPainterPath()
+            scan_path.addRoundedRect(pill_rect.adjusted(-1.5, -1.5, 1.5, 1.5), 18.5, 18.5)
+            sweep_x = pill_rect.left() + pill_rect.width() * ((self._phase * 1.8) % 1.0)
+            sweep_grad = QLinearGradient(sweep_x - 55.0, pill_rect.top(), sweep_x + 55.0, pill_rect.top())
+            sweep_grad.setColorAt(0.0, QColor(52, 199, 89, 0))
+            sweep_grad.setColorAt(0.5, QColor(52, 199, 89, 185))
+            sweep_grad.setColorAt(1.0, QColor(100, 210, 255, 0))
+            painter.setPen(QPen(sweep_grad, 2.0))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(scan_path)
 
         painter.restore()
 

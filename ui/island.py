@@ -124,6 +124,7 @@ class IslandWidget(QWidget):
         self._hovered = False
         self._hover_progress = 0.0
         self._content_slide_y = 0.0
+        self._last_tick_ts = 0.0
 
         self._setup_window()
         self._setup_timers()
@@ -140,6 +141,12 @@ class IslandWidget(QWidget):
         # Use a fixed large canvas size to prevent OS-level window resize artifacts & DWM jitter
         self.setFixedSize(500, 120)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        app = QApplication.instance()
+        if app is not None:
+            primary = QApplication.primaryScreen()
+            if primary is not None:
+                primary.geometryChanged.connect(lambda *_: self._reposition())
 
     def _setup_timers(self) -> None:
         # Single unified timer for all 60fps animations to ensure exactly one update() per frame
@@ -452,13 +459,22 @@ class IslandWidget(QWidget):
 
     def _start_animation_timer(self) -> None:
         if not self._main_timer.isActive():
+            self._last_tick_ts = time.monotonic()
             self._main_timer.start()
 
     def _tick_animations(self) -> None:
+        now = time.monotonic()
+        if self._last_tick_ts > 0.0 and self._main_timer.isActive():
+            elapsed_ms = (now - self._last_tick_ts) * 1000.0
+            dt_scale = min(1.8, max(0.6, elapsed_ms / _FRAME_MS))
+        else:
+            dt_scale = 1.0
+        self._last_tick_ts = now
+        frame_ms = _FRAME_MS * dt_scale
         updated = False
 
         if self._anim_pulse_active:
-            self._pulse_phase = (self._pulse_phase + _FRAME_MS / _PULSE_PERIOD_MS) % 1.0
+            self._pulse_phase = (self._pulse_phase + frame_ms / _PULSE_PERIOD_MS) % 1.0
             updated = True
 
         if self._anim_flash_active:
@@ -473,15 +489,15 @@ class IslandWidget(QWidget):
                 updated = True
 
         if self._anim_scan_active:
-            self._scan_phase = (self._scan_phase + _FRAME_MS / _SCAN_PERIOD_MS) % 1.0
+            self._scan_phase = (self._scan_phase + frame_ms / _SCAN_PERIOD_MS) % 1.0
             updated = True
 
         if self._anim_dot_scan_active:
-            self._dot_scan_phase = (self._dot_scan_phase + _FRAME_MS / _DOT_SCAN_PERIOD_MS) % 1.0
+            self._dot_scan_phase = (self._dot_scan_phase + frame_ms / _DOT_SCAN_PERIOD_MS) % 1.0
             updated = True
 
         if self._anim_orb_active:
-            self._phase = (self._phase + _FRAME_MS / 1000.0) % 60.0
+            self._phase = (self._phase + frame_ms / 1000.0) % 60.0
             updated = True
 
         if self._anim_shake_active:
@@ -741,9 +757,10 @@ class IslandWidget(QWidget):
 
         accent = QColor(state.accent_color)
         pulse = 0.5 + 0.5 * math.sin(self._pulse_phase * 2.0 * math.pi)
-        glow_alpha = int(self._alpha * (36 + (44 * pulse if state.pulse else 0)))
-        accent.setAlpha(max(0, min(120, glow_alpha)))
-        for offset, scale in ((7, 0.32), (3, 0.58)):
+        hover_boost = int(self._hover_progress * 28)
+        glow_alpha = int(self._alpha * (36 + hover_boost + (44 * pulse if state.pulse else 0)))
+        accent.setAlpha(max(0, min(145, glow_alpha)))
+        for offset, scale in ((7, 0.34), (3, 0.62)):
             glow = QColor(accent)
             glow.setAlpha(int(accent.alpha() * scale))
             path = QPainterPath()
@@ -761,16 +778,25 @@ class IslandWidget(QWidget):
         painter.fillPath(path, body)
 
         top = QLinearGradient(QPointF(rect.left(), rect.top()), QPointF(rect.left(), rect.bottom()))
-        top.setColorAt(0.0, QColor(255, 255, 255, int(self._alpha * 42)))
-        top.setColorAt(0.35, QColor(255, 255, 255, 0))
+        rim_alpha = int(self._alpha * (42 + 24 * self._hover_progress))
+        top.setColorAt(0.0, QColor(255, 255, 255, min(255, rim_alpha)))
+        top.setColorAt(0.35, QColor(255, 255, 255, int(self._alpha * 6 * self._hover_progress)))
         top.setColorAt(1.0, QColor(0, 0, 0, int(self._alpha * 18)))
         painter.fillPath(path, top)
 
         if state.mode == "face_scan":
             self._paint_biometric_material(painter, rect, path, state)
 
-        # Border — pulse ±15% for dot_scan
+        # Border — pulse ±15% for dot_scan, plus tactile hover brightening
         border = QColor(state.border_color)
+        if self._hover_progress > 0.01:
+            accent_c = QColor(state.accent_color)
+            t_h = self._hover_progress * 0.45
+            border = QColor(
+                int(border.red() * (1.0 - t_h) + accent_c.red() * t_h),
+                int(border.green() * (1.0 - t_h) + accent_c.green() * t_h),
+                int(border.blue() * (1.0 - t_h) + accent_c.blue() * t_h),
+            )
         if state.mode == "dot_scan":
             pulse = 0.5 + 0.5 * math.sin(self._pulse_phase * 2.0 * math.pi)
             base_alpha = 180
@@ -778,8 +804,8 @@ class IslandWidget(QWidget):
             border.setAlpha(int(self._alpha * min(255, base_alpha + variance)))
         else:
             pulse = 0.5 + 0.5 * math.sin(self._pulse_phase * 2.0 * math.pi)
-            border.setAlpha(int(self._alpha * (150 + (55 * pulse if state.pulse else 0))))
-        painter.setPen(QPen(border, 1.0))
+            border.setAlpha(int(self._alpha * min(255, 150 + int(40 * self._hover_progress) + (55 * pulse if state.pulse else 0))))
+        painter.setPen(QPen(border, 1.0 + 0.35 * self._hover_progress))
         painter.drawPath(path)
 
     def _paint_biometric_material(
@@ -837,14 +863,21 @@ class IslandWidget(QWidget):
         self, painter: QPainter, x: float, y: float, radius: float,
         opacity: float = 1.0,
     ) -> None:
+        alpha = max(0.0, min(1.0, self._alpha * self._content_alpha * opacity))
+        if radius > 1.55 and alpha > 0.65:
+            halo = QColor("#F2F2F7")
+            halo.setAlphaF(alpha * 0.22)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(halo)
+            painter.drawEllipse(QPointF(x, y), radius * 1.65, radius * 1.65)
         dot = QColor("#F2F2F7")
-        dot.setAlphaF(max(0.0, min(1.0, self._alpha * self._content_alpha * opacity)))
+        dot.setAlphaF(alpha)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(dot)
         painter.drawEllipse(QPointF(x, y), radius, radius)
 
     def _paint_searching_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
-        """Dotted globe with a meridian sweep: owner search is purposeful and legible."""
+        """3D depth-shaded dotted globe with a meridian sweep."""
         _, speed, _, spread, dot_px = _ORB_STYLES["searching"]
         phase = 0.0 if self._reduce_motion else self._phase
         for latitude, count in ((-0.46, 4), (0.0, 6), (0.46, 4)):
@@ -852,12 +885,15 @@ class IslandWidget(QWidget):
             ring_height = max(0.9, icon_radius * 0.095)
             for index in range(count):
                 theta = math.tau * (index / count + phase * speed)
+                z_depth = math.sin(theta)  # -1 (back) to +1 (front)
+                depth_scale = 0.80 + 0.28 * (0.5 + 0.5 * z_depth)
+                depth_alpha = 0.38 + 0.54 * (0.5 + 0.5 * z_depth)
                 self._paint_orb_dot(
                     painter,
                     cx + math.cos(theta) * ring_radius,
-                    cy + latitude * icon_radius * 1.25 + math.sin(theta) * ring_height,
-                    dot_px,
-                    0.55 + 0.35 * (index % 2),
+                    cy + latitude * icon_radius * 1.25 + z_depth * ring_height,
+                    dot_px * depth_scale,
+                    depth_alpha,
                 )
 
         meridian_x = math.sin(phase * math.tau * speed * 1.8) * icon_radius * 0.64
@@ -867,14 +903,15 @@ class IslandWidget(QWidget):
                 painter,
                 cx + meridian_x * math.cos(progress * math.pi / 2),
                 cy + progress * icon_radius * 0.76,
-                dot_px * (1.10 if index == 2 else 0.88),
-                0.60 + 0.09 * index,
+                dot_px * (1.14 if index == 2 else 0.90),
+                0.64 + 0.09 * index,
             )
 
     def _paint_working_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
-        """Three tilted orbital bands: active biometric verification, not generic loading."""
+        """Three 3D tilted orbital bands with depth-modulated particles and a core nucleus."""
         _, speed, _, spread, dot_px = _ORB_STYLES["working"]
         phase = 0.0 if self._reduce_motion else self._phase
+        self._paint_orb_dot(painter, cx, cy, dot_px * 1.12, 0.88)
         for band, tilt in enumerate((-0.72, 0.0, 0.72)):
             cos_tilt = math.cos(tilt)
             sin_tilt = math.sin(tilt)
@@ -882,12 +919,15 @@ class IslandWidget(QWidget):
                 theta = math.tau * (index / 5 + phase * speed * (1.0 + band * 0.08))
                 x = math.cos(theta) * icon_radius * spread
                 y = math.sin(theta) * icon_radius * 0.28
+                z_depth = math.sin(theta)
+                depth_scale = (1.12 if index == 0 else 0.88) * (0.84 + 0.22 * (0.5 + 0.5 * z_depth))
+                depth_alpha = (0.52 + 0.38 * (0.5 + 0.5 * z_depth)) + 0.05 * band
                 self._paint_orb_dot(
                     painter,
                     cx + x * cos_tilt - y * sin_tilt,
                     cy + x * sin_tilt + y * cos_tilt,
-                    dot_px * (1.08 if index == 0 else 0.90),
-                    0.66 + 0.10 * band,
+                    dot_px * depth_scale,
+                    min(1.0, depth_alpha),
                 )
 
     def _paint_resolving_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
@@ -962,43 +1002,50 @@ class IslandWidget(QWidget):
         self._paint_orb_badge(painter, rect, state, "searching")
 
     def _paint_verified(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Checkmark draw animation — verified state. No text."""
-        accent = QColor(state.accent_color)
-        accent.setAlphaF(self._alpha * self._content_alpha)
-
-        # Checkmark centered in pill
-        cx = rect.center().x()
-        cy = rect.center().y()
-        # Checkmark: left tail → bottom → right top
-        p1 = QPointF(cx - 7, cy)          # start of check
-        p2 = QPointF(cx - 2, cy + 5)      # bottom vertex
-        p3 = QPointF(cx + 8, cy - 5)      # end of check
-
-        pen = QPen(accent, 2.4)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        painter.setPen(pen)
-
+        """Checkmark draw animation with a soft emerald radial bloom."""
         progress = self._checkmark_progress
-
         if progress <= 0.0:
             return
 
-        # Stroke animation: draw as much of the path as progress allows
-        # Segment 1: p1→p2 (40% of path), Segment 2: p2→p3 (60% of path)
+        cx = float(rect.center().x())
+        cy = float(rect.center().y())
+
+        # Soft emerald bloom behind the checkmark
+        bloom = QRadialGradient(QPointF(cx, cy), 16.0)
+        bloom_c = QColor(state.accent_color)
+        bloom_c.setAlphaF(max(0.0, min(1.0, self._alpha * self._content_alpha * 0.28 * progress)))
+        bloom.setColorAt(0.0, bloom_c)
+        bloom.setColorAt(1.0, QColor(0, 0, 0, 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bloom)
+        painter.drawEllipse(QPointF(cx, cy), 16.0, 16.0)
+
+        accent = QColor(state.accent_color)
+        accent.setAlphaF(self._alpha * self._content_alpha)
+
+        p1 = QPointF(cx - 7.0, cy)
+        p2 = QPointF(cx - 2.0, cy + 5.0)
+        p3 = QPointF(cx + 8.0, cy - 5.0)
+
+        pen = QPen(accent, 2.5)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+
         path = QPainterPath()
         path.moveTo(p1)
 
         if progress <= 0.4:
-            # Drawing segment 1
             t = progress / 0.4
             mid = QPointF(p1.x() + (p2.x() - p1.x()) * t, p1.y() + (p2.y() - p1.y()) * t)
             path.lineTo(mid)
         else:
-            # Segment 1 complete, drawing segment 2
             path.lineTo(p2)
             t = (progress - 0.4) / 0.6
-            end = QPointF(p2.x() + (p3.x() - p2.x()) * t, p2.y() + (p3.y() - p2.y()) * t)
+            # Cubic ease-out for crisp final stroke snap
+            ease_t = 1.0 - (1.0 - t) ** 3
+            end = QPointF(p2.x() + (p3.x() - p2.x()) * ease_t, p2.y() + (p3.y() - p2.y()) * ease_t)
             path.lineTo(end)
 
         painter.drawPath(path)

@@ -293,6 +293,21 @@ class ControlCenter(QMainWindow):
         timeout_row.addWidget(self._save_timeout_button)
         layout.addLayout(timeout_row)
 
+        layout.addSpacing(8)
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        preset_label = QLabel("Presets:", root)
+        preset_label.setObjectName("detail")
+        preset_row.addWidget(preset_label)
+        for label_text, secs in (("30s", 30), ("1m", 60), ("2m", 120), ("5m", 300)):
+            btn = QPushButton(label_text, root)
+            btn.setObjectName("secondary")
+            btn.setFixedHeight(26)
+            btn.clicked.connect(lambda _checked=False, s=secs: self.apply_timeout_preset(s))
+            preset_row.addWidget(btn)
+        preset_row.addStretch(1)
+        layout.addLayout(preset_row)
+
         self._timeout_note = QLabel("Changes apply on the next start.", root)
         self._timeout_note.setObjectName("detail")
         self._timeout_note.setContentsMargins(0, 6, 0, 0)
@@ -415,6 +430,10 @@ class ControlCenter(QMainWindow):
     def start_protection(self) -> None:
         self._supervisor.start()
         self.refresh()
+
+    def apply_timeout_preset(self, seconds: int) -> None:
+        self._timeout_input.setValue(int(seconds))
+        self.save_idle_timeout()
 
     def save_idle_timeout(self) -> None:
         seconds = self._timeout_input.value()

@@ -426,9 +426,25 @@ class FaceIdRingCanvas(QWidget):
         hx = cx + self._yaw * (radius * 0.52)
         hy = cy + self._pitch * (radius * 0.52)
 
-        guide_pen = QPen(QColor(255, 179, 64, 140), 1.5, Qt.PenStyle.DashLine)
+        guide_pen = QPen(QColor(255, 179, 64, 150), 1.6, Qt.PenStyle.DashLine)
         painter.setPen(guide_pen)
         painter.drawLine(QPointF(hx, hy), QPointF(tx, ty))
+
+        # Directional arrowhead along vector from live head pose to target pose
+        dx, dy = tx - hx, ty - hy
+        dist = math.hypot(dx, dy)
+        if dist > 16.0 and not self._aligned:
+            ux, uy = dx / dist, dy / dist
+            ax, ay = tx - ux * 14.0, ty - uy * 14.0
+            px, py = -uy * 5.0, ux * 5.0
+            arrow = QPainterPath()
+            arrow.moveTo(ax, ay)
+            arrow.lineTo(ax - ux * 8.0 + px, ay - uy * 8.0 + py)
+            arrow.lineTo(ax - ux * 8.0 - px, ay - uy * 8.0 - py)
+            arrow.closeSubpath()
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(255, 179, 64, 210))
+            painter.drawPath(arrow)
 
         target_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#FFB340")
         painter.setPen(QPen(target_color, 2.0))

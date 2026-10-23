@@ -500,3 +500,32 @@ def test_windows_lock_used_command_schedules_exit(tmp_path, monkeypatch):
     lock_state_file = mock_state_dir / "lock_state.txt"
     assert lock_state_file.exists()
     assert lock_state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"
+
+def test_repeated_stranger_strikes_while_locked_escalate_to_hostile_lock(monkeypatch):
+    called = []
+    monkeypatch.setattr(daemon_main, "lock_workstation", lambda: called.append("lock"))
+    monkeypatch.setattr(daemon_main, "MAX_LOCK_STRANGER_STRIKES", 3)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+
+    daemon._soft_lock_stranger()
+    assert daemon.state == State.SOCIAL_LOCK
+    assert called == []
+
+    daemon._soft_lock_stranger()
+    assert daemon.state == State.SOCIAL_LOCK
+    assert called == []
+
+    daemon._soft_lock_stranger()
+    assert daemon.state == State.HOSTILE_LOCK
+    assert called == ["lock"]
+
+
+def test_verify_requested_during_cooldown_broadcasts_verify_failed_detail(monkeypatch):
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 100.0)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._verify_cooldown_until = 104.0
+
+    daemon._handle_ui_command("verify_requested", "space")
+
+    assert daemon.ipc.states[-1][0] == "verify_failed"
+    assert "cooldown" in daemon.ipc.states[-1][1].get("detail", "").lower()

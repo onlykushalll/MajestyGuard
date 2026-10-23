@@ -103,11 +103,14 @@ WM_XBUTTONDOWN = 0x020B
 WM_XBUTTONUP = 0x020C
 VK_TAB = 0x09
 VK_SPACE = 0x20
+VK_SHIFT = 0x10
 VK_CTRL = 0x11
 VK_ALT = 0x12
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 VK_MEDIA_STOP = 0xB2
+WDA_NONE = 0x00000000
+WDA_MONITOR = 0x00000001
 
 import ctypes.wintypes as wintypes
 
@@ -173,7 +176,7 @@ _active_overlay = None
 
 
 def _any_modifier_held() -> bool:
-    for vk in (VK_CTRL, VK_ALT, VK_LWIN, VK_RWIN):
+    for vk in (VK_SHIFT, VK_CTRL, VK_ALT, VK_LWIN, VK_RWIN):
         if ctypes.windll.user32.GetAsyncKeyState(vk) & 0x8000:
             return True
     return False
@@ -215,6 +218,10 @@ def _engage_cursor_lock():
     screen_w = ctypes.windll.user32.GetSystemMetrics(0)
     screen_h = ctypes.windll.user32.GetSystemMetrics(1)
     cx, cy = screen_w // 2, screen_h // 2
+    try:
+        ctypes.windll.user32.SetCursorPos(cx, cy)
+    except Exception:
+        pass
     rect = wintypes.RECT(cx, cy, cx + 1, cy + 1)
     if not ctypes.windll.user32.ClipCursor(ctypes.byref(rect)):
         import logging
@@ -374,6 +381,7 @@ def _hook_thread_func():
 
     msg = ctypes.wintypes.MSG()
     _last_taskmgr_check = 0.0
+    _last_hook_refresh = _time.monotonic()
     while not _hook_thread_stop:
         if ctypes.windll.user32.PeekMessageW(
             ctypes.byref(msg), None, 0, 0, 1
@@ -393,6 +401,28 @@ def _hook_thread_func():
                 hwnd_taskmgr = ctypes.windll.user32.FindWindowW("TaskManagerWindow", None)
                 if hwnd_taskmgr:
                     ctypes.windll.user32.PostMessageW(hwnd_taskmgr, WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+
+        if _overlay_locked and (now - _last_hook_refresh) >= 5.0:
+            _last_hook_refresh = now
+            try:
+                new_kb = ctypes.windll.user32.SetWindowsHookExW(
+                    WH_KEYBOARD_LL, _kb_callback_ref, None, 0
+                )
+                if new_kb:
+                    old_kb = _kb_hook_id
+                    _kb_hook_id = new_kb
+                    if old_kb:
+                        ctypes.windll.user32.UnhookWindowsHookEx(old_kb)
+                new_mouse = ctypes.windll.user32.SetWindowsHookExW(
+                    WH_MOUSE_LL, _mouse_callback_ref, None, 0
+                )
+                if new_mouse:
+                    old_mouse = _mouse_hook_id
+                    _mouse_hook_id = new_mouse
+                    if old_mouse:
+                        ctypes.windll.user32.UnhookWindowsHookEx(old_mouse)
             except Exception:
                 pass
 
@@ -622,6 +652,15 @@ class SoftLockOverlay(QWidget):
         except Exception:
             pass
 
+    def _set_capture_protection(self, enabled: bool) -> None:
+        """Apply WDA_MONITOR while locked so external screen-capture / screen-share
+        tools cannot record the desktop or lock overlay."""
+        try:
+            affinity = WDA_MONITOR if enabled else WDA_NONE
+            ctypes.windll.user32.SetWindowDisplayAffinity(int(self.winId()), affinity)
+        except Exception:
+            pass
+
     def apply_state(self, state: IslandState) -> None:
         if state.name == self._state.name and self.isVisible():
             self._state = state
@@ -687,12 +726,15 @@ class SoftLockOverlay(QWidget):
 
     def _capture_background(self) -> None:
         capture_generation = self._lock_generation
+        self._set_capture_protection(False)
         screen = QGuiApplication.primaryScreen()
         if screen is None:
+            self._set_capture_protection(True)
             self._background = QPixmap()
             return
         rect = screen.virtualGeometry()
         shot = screen.grabWindow(0)
+        self._set_capture_protection(True)
         if shot.isNull():
             self._background = QPixmap()
             return
@@ -848,6 +890,7 @@ class SoftLockOverlay(QWidget):
         # The unlock decision is already final by the time this runs. Restore
         # desktop ownership before the visual exit, then let the glass fade as
         # a purely cosmetic last step.
+        self._set_capture_protection(False)
         if not self.isVisible():
             _uninstall_hooks()
             _set_taskbar_visible(True)
@@ -878,6 +921,7 @@ class SoftLockOverlay(QWidget):
         self._fallback_btn.hide()
         self._lock_shown_at = None
         self.setWindowOpacity(1.0)  # reset for next show
+        self._set_capture_protection(False)
         _uninstall_hooks()
         _set_taskbar_visible(True)
 
@@ -964,13 +1008,20 @@ class SoftLockOverlay(QWidget):
         center_x = rect.left() + rect.width() / 2.0
         center_y = rect.top() + rect.height() * 0.35
 
-        # Subtle state-responsive biometric aura behind the clock when verifying
-        if self._state.name == "verifying_lock":
+        # Subtle state-responsive biometric / security aura behind the clock
+        if self._state.name in {"verifying_lock", "social_lock", "hostile_lock", "verify_failed"}:
             pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
-            aura_r = 160.0 + 18.0 * pulse
+            aura_r = 165.0 + 18.0 * pulse
             aura = QRadialGradient(QPointF(center_x, center_y - 18.0), aura_r)
-            aura.setColorAt(0.0, QColor(52, 199, 89, int(34 + 22 * pulse)))
-            aura.setColorAt(0.6, QColor(100, 210, 255, int(16 + 10 * pulse)))
+            if self._state.name == "verifying_lock":
+                aura.setColorAt(0.0, QColor(52, 199, 89, int(34 + 22 * pulse)))
+                aura.setColorAt(0.6, QColor(100, 210, 255, int(16 + 10 * pulse)))
+            elif self._state.name == "social_lock":
+                aura.setColorAt(0.0, QColor(255, 179, 64, int(36 + 20 * pulse)))
+                aura.setColorAt(0.6, QColor(255, 149, 0, int(14 + 10 * pulse)))
+            else:
+                aura.setColorAt(0.0, QColor(255, 69, 58, int(38 + 24 * pulse)))
+                aura.setColorAt(0.6, QColor(255, 105, 97, int(16 + 10 * pulse)))
             aura.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(aura)
@@ -1011,10 +1062,16 @@ class SoftLockOverlay(QWidget):
         )
 
         # State-specific center guidance capsule below the date (DPI-safe width)
+        detail_text = (self._state.detail or "").strip()
         if self._state.name == "verifying_lock":
             prompt = "Verifying face identity — hold steady..."
+        elif self._state.name == "hostile_lock":
+            prompt = "Security hold active — press TAB for Windows Lock"
         elif self._state.name == "verify_failed":
-            prompt = "Face not recognized — press SPACE to retry  ·  TAB for Windows Lock"
+            if "cooldown" in detail_text.lower():
+                prompt = f"{detail_text}  ·  Press TAB for Windows Lock"
+            else:
+                prompt = "Face not recognized — press SPACE to retry  ·  TAB for Windows Lock"
         elif self._state.name == "social_lock":
             prompt = "Privacy lock active — press SPACE for owner check  ·  TAB for Windows Lock"
         else:

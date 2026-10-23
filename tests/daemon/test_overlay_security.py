@@ -176,3 +176,11 @@ def test_media_stopped_on_lock_engage():
     lock_seq_idx = source.index("_install_hooks(self)")
     lock_seq_region = source[lock_seq_idx:lock_seq_idx + 300]
     assert "_stop_background_media()" in lock_seq_region
+
+def test_modifier_check_includes_shift_and_capture_protection():
+    """Shift+Space/Tab must be blocked alongside Ctrl/Alt/Win, and WDA_MONITOR
+    must be configured to black out external screen capture while locked."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    assert "VK_SHIFT" in source
+    assert "SetWindowDisplayAffinity" in source
+    assert "WDA_MONITOR" in source

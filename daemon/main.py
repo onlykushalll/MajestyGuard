@@ -139,6 +139,7 @@ ACTIVE_REACQUIRE_GRACE_FRAMES = _env_int("MG_ACTIVE_REACQUIRE_GRACE_FRAMES", 8, 
 # ACTIVE: 8 consecutive unrecognized frames → social lock (tolerates brief quality drops)
 STRANGER_CONFIRM_FRAMES_SCANNING = 3
 STRANGER_CONFIRM_FRAMES_ACTIVE   = 8
+MAX_LOCK_STRANGER_STRIKES = _env_int("MG_MAX_LOCK_STRANGER_STRIKES", 3, 1)
 # MG-B-09/A-11: env-tunable security thresholds now carry hard floors
 # (and ceilings where raising weakens) via _env_float bounds; defaults
 # are unchanged, only out-of-bounds env values are rejected.
@@ -331,6 +332,7 @@ class MajestyGuardDaemon:
         self._soft_lock_fast_pass_frames = 0
         self._verify_cooldown_until = 0.0
         self._verify_failed_until = 0.0
+        self._soft_lock_stranger_strikes = 0
         self._idle_check_mode = IDLE_CHECK_MODE
         self._persistent_idle_loop = PERSISTENT_IDLE_LOOP
         self._idle_check_deadline = 0.0
@@ -823,8 +825,9 @@ class MajestyGuardDaemon:
             return
         cooldown_until = getattr(self, "_verify_cooldown_until", 0.0)
         if cooldown_until and time.monotonic() < cooldown_until:
-            remaining = cooldown_until - time.monotonic()
+            remaining = max(1.0, cooldown_until - time.monotonic())
             log.info("[CMD] verify_requested ignored — cooldown active, %.1fs remaining", remaining)
+            self.ipc.broadcast_state("verify_failed", detail=f"Retry cooldown ({remaining:.0f}s)")
             return
         self._start_soft_lock_verification(detail or "ui")
 
@@ -1098,7 +1101,7 @@ class MajestyGuardDaemon:
             self._stop.wait(OVERLAY_WATCHDOG_INTERVAL_S)
 
     def _ensure_overlay_alive_if_needed(self) -> None:
-        if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK):
+        if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
             return
         if self._overlay_proc is not None and self._overlay_proc.poll() is None:
             return
@@ -1702,6 +1705,7 @@ class MajestyGuardDaemon:
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
+        self._soft_lock_stranger_strikes = 0
         self._background_processes_restricted = False
         FaceState.clear()
         self.ipc.broadcast_state("locked_passive", detail=reason)
@@ -1719,6 +1723,7 @@ class MajestyGuardDaemon:
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
+        self._soft_lock_stranger_strikes = 0
         FaceState.set_recognized(liveness_score=liveness)
         self._transition(State.ACTIVE)
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)
@@ -1755,11 +1760,24 @@ class MajestyGuardDaemon:
         self._soft_lock_release_grace_until = time.monotonic() + SOFT_LOCK_RELEASE_GRACE_SECONDS
 
     def _soft_lock_stranger(self) -> None:
+        was_locked = self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK)
         self._soft_lock_verify_until = 0.0
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         FaceState.clear()
+        if was_locked:
+            strikes = getattr(self, "_soft_lock_stranger_strikes", 0) + 1
+            self._soft_lock_stranger_strikes = strikes
+            if strikes >= MAX_LOCK_STRANGER_STRIKES:
+                log.warning(
+                    "SoftLock: %d consecutive stranger strikes while locked — escalating to HOSTILE_LOCK",
+                    strikes,
+                )
+                self._transition(State.HOSTILE_LOCK)
+                return
+        else:
+            self._soft_lock_stranger_strikes = 1
         self._transition(State.SOCIAL_LOCK)
         try:
             (_MG_STATE_DIR / "lock_state.txt").write_text("LOCKED\n", encoding="utf-8")

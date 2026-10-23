@@ -438,7 +438,10 @@ class ControlCenter(QMainWindow):
     def save_idle_timeout(self) -> None:
         seconds = self._timeout_input.value()
         if self._supervisor.set_idle_timeout(seconds):
-            self._timeout_note.setText("Saved. Changes apply on the next start.")
+            if self._supervisor.status() is RuntimeStatus.RUNNING:
+                self._timeout_note.setText("Saved. Active protection updated live (next start also uses this).")
+            else:
+                self._timeout_note.setText("Saved. Changes apply on the next start.")
         else:
             self._timeout_note.setText("That timeout is outside the permitted range.")
 

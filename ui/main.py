@@ -278,6 +278,12 @@ def main() -> None:
     def _shutdown(*_):
         log.info("Shutting down UI")
         stop_event.set()
+        try:
+            from soft_lock import _uninstall_hooks, _set_taskbar_visible
+            _uninstall_hooks()
+            _set_taskbar_visible(True)
+        except Exception:
+            pass
         app.quit()
 
     signal.signal(signal.SIGINT,  _shutdown)

@@ -99,3 +99,26 @@ def test_idle_check_phase_publishes_monitor_lifecycle_boundary(monkeypatch, tmp_
     daemon._set_idle_check_phase("STARTING_UI")
 
     assert (tmp_path / "idle_check_result.txt").read_text(encoding="utf-8") == "STARTING_UI\n"
+
+def test_persistent_idle_loop_parks_camera_and_stays_alive_after_owner_verify(monkeypatch, tmp_path):
+    """Under Control Center supervision (MG_PERSISTENT_IDLE_LOOP=1), verifying the owner
+    or clearing soft-lock must release the camera and return to IDLE without setting _exit_at."""
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    daemon = _bare_daemon()
+    daemon._persistent_idle_loop = True
+    released = []
+    daemon._release_camera = lambda: released.append(True)
+
+    daemon._finish_idle_check_owner(confidence=0.92, liveness=0.85)
+
+    assert not hasattr(daemon, "_exit_at") or getattr(daemon, "_exit_at", None) is None
+    assert daemon.state == State.IDLE
+    assert released == [True]
+    assert daemon.ipc.states[-1][0] == "active"
+
+    daemon.state = State.SOFT_LOCK
+    daemon._clear_soft_lock(confidence=0.93, liveness=0.86)
+
+    assert not hasattr(daemon, "_exit_at") or getattr(daemon, "_exit_at", None) is None
+    assert daemon.state == State.IDLE
+    assert len(released) == 2

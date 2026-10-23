@@ -231,3 +231,29 @@ def test_start_enrollment_uses_packaged_daemon_when_present(tmp_path, monkeypatc
     assert supervisor.start_enrollment() is True
     assert launched["command"] == [str(packaged_daemon), "--enroll"]
     assert launched["env"]["MG_ENABLE_LOCK"] == "0"
+
+def test_start_enrollment_stops_running_daemon_and_resumes_after_completion(tmp_path, monkeypatch):
+    daemon_entry = tmp_path / "daemon" / "main.py"
+    enroll_entry = tmp_path / "daemon" / "enroll_v2.py"
+    daemon_entry.parent.mkdir(parents=True)
+    daemon_entry.write_text("# daemon", encoding="utf-8")
+    enroll_entry.write_text("# enroll", encoding="utf-8")
+    local_app_data = tmp_path / "local"
+    gallery = local_app_data / "MajestyGuard" / "embeddings_v2.npy"
+    gallery.parent.mkdir(parents=True)
+    gallery.write_bytes(b"enrolled")
+
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json", local_app_data=local_app_data)
+    running_daemon = FakeProcess(returncode=None)
+    enroll_proc = FakeProcess(returncode=None)
+    supervisor._process = running_daemon
+    monkeypatch.setattr(supervisor, "_spawn_enrollment", lambda *_args: enroll_proc)
+    monkeypatch.setattr(supervisor, "_spawn", lambda *_args: FakeProcess(returncode=None))
+
+    assert supervisor.start_enrollment() is True
+    assert running_daemon.terminated is True
+    assert supervisor._process is None
+
+    # Simulate enrollment finishing -> next status() poll auto-resumes protection
+    enroll_proc.returncode = 0
+    assert supervisor.status() is RuntimeStatus.RUNNING

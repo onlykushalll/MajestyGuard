@@ -45,8 +45,14 @@ class Supervisor:
         self._daemon_executable = Path(daemon_executable) if daemon_executable else None
         self._process: Optional[subprocess.Popen] = None
         self._enrollment_process: Optional[subprocess.Popen] = None
+        self._resume_after_enrollment: bool = False
 
     def status(self) -> RuntimeStatus:
+        if self._enrollment_process is not None and self._enrollment_process.poll() is not None:
+            self._enrollment_process = None
+            if self._resume_after_enrollment and self.enrollment_present():
+                self._resume_after_enrollment = False
+                self.start()
         if self._process is None:
             return RuntimeStatus.PAUSED if load_settings(self._settings_path).paused else RuntimeStatus.STOPPED
         return RuntimeStatus.RUNNING if self._process.poll() is None else RuntimeStatus.DEGRADED
@@ -76,7 +82,7 @@ class Supervisor:
         environment = dict(os.environ)
         environment.update(
             {
-                "MG_ENABLE_LOCK": "0",
+                "MG_ENABLE_LOCK": "1" if settings.enable_windows_lock else "0",
                 "MG_MAX_SECONDS": "0",
                 "MG_OVERLAY_WATCHDOG": "1",
                 "MG_IDLE_TIMEOUT": str(settings.idle_timeout_seconds),
@@ -84,6 +90,8 @@ class Supervisor:
                 "MG_ENABLE_WHCDF_IPC": "0",
                 "MG_ENABLE_SERVICE_IPC": "0",
                 "MG_ADAFACE_FLIP_FUSION": "1",
+                "MG_IDLE_CHECK_MODE": "1",
+                "MG_PERSISTENT_IDLE_LOOP": "1",
                 "PYTHONUNBUFFERED": "1",
             }
         )
@@ -112,7 +120,11 @@ class Supervisor:
         settings = load_settings(self._settings_path)
         save_settings(
             self._settings_path,
-            RuntimeSettings(idle_timeout_seconds=settings.idle_timeout_seconds, paused=True),
+            RuntimeSettings(
+                idle_timeout_seconds=settings.idle_timeout_seconds,
+                paused=True,
+                enable_windows_lock=settings.enable_windows_lock,
+            ),
         )
         self.stop()
 
@@ -120,7 +132,11 @@ class Supervisor:
         settings = load_settings(self._settings_path)
         save_settings(
             self._settings_path,
-            RuntimeSettings(idle_timeout_seconds=settings.idle_timeout_seconds, paused=False),
+            RuntimeSettings(
+                idle_timeout_seconds=settings.idle_timeout_seconds,
+                paused=False,
+                enable_windows_lock=settings.enable_windows_lock,
+            ),
         )
         return self.start()
 
@@ -132,14 +148,42 @@ class Supervisor:
         settings = load_settings(self._settings_path)
         save_settings(
             self._settings_path,
-            RuntimeSettings(idle_timeout_seconds=seconds, paused=settings.paused),
+            RuntimeSettings(
+                idle_timeout_seconds=seconds,
+                paused=settings.paused,
+                enable_windows_lock=settings.enable_windows_lock,
+            ),
         )
+        return True
+
+    def windows_lock_enabled(self) -> bool:
+        return load_settings(self._settings_path).enable_windows_lock
+
+    def set_windows_lock_enabled(self, enabled: bool) -> bool:
+        if not isinstance(enabled, bool):
+            return False
+        settings = load_settings(self._settings_path)
+        save_settings(
+            self._settings_path,
+            RuntimeSettings(
+                idle_timeout_seconds=settings.idle_timeout_seconds,
+                paused=settings.paused,
+                enable_windows_lock=enabled,
+            ),
+        )
+        if self.status() is RuntimeStatus.RUNNING:
+            self.stop()
+            self.start()
         return True
 
     def start_enrollment(self) -> bool:
         """Launch the existing guided enrollment tool at most once at a time."""
         if self._enrollment_process is not None and self._enrollment_process.poll() is None:
             return False
+
+        if self.status() in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING):
+            self._resume_after_enrollment = True
+            self.stop()
 
         packaged_daemon = self._packaged_daemon_executable()
         if packaged_daemon is not None and packaged_daemon.is_file():

@@ -16,6 +16,7 @@ MAX_IDLE_TIMEOUT_SECONDS = 1800
 class RuntimeSettings:
     idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
     paused: bool = False
+    enable_windows_lock: bool = False
 
 
 def _validated_settings(data: object) -> RuntimeSettings:
@@ -32,7 +33,15 @@ def _validated_settings(data: object) -> RuntimeSettings:
     if not isinstance(paused, bool):
         paused = False
 
-    return RuntimeSettings(idle_timeout_seconds=idle_timeout, paused=paused)
+    enable_windows_lock = data.get("enable_windows_lock", False)
+    if not isinstance(enable_windows_lock, bool):
+        enable_windows_lock = False
+
+    return RuntimeSettings(
+        idle_timeout_seconds=idle_timeout,
+        paused=paused,
+        enable_windows_lock=enable_windows_lock,
+    )
 
 
 def load_settings(path: Path) -> RuntimeSettings:

@@ -40,6 +40,7 @@ from liveness_detector import LivenessDetector
 logging.basicConfig(level=logging.WARNING)
 
 from diagnostic_common import resolve_resource_dir
+_resolve_resource_dir = resolve_resource_dir
 MODELS_DIR = resolve_resource_dir("models_insightface")
 LIVENESS_MODELS_DIR = resolve_resource_dir("models")
 DEFAULT_ENROLL_LIVENESS_THRESHOLD = 0.70
@@ -547,7 +548,7 @@ def main() -> int:
     use_studio_window = False
     if not getattr(args, "cli", False):
         try:
-            ui_dir = Path(__file__).resolve().parent.parent / "ui"
+            ui_dir = _resolve_resource_dir("ui")
             if str(ui_dir) not in sys.path:
                 sys.path.insert(0, str(ui_dir))
             import importlib

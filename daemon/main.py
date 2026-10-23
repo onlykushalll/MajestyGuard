@@ -125,6 +125,7 @@ SOFT_LOCK_VERIFY_WINDOW_SECONDS = _env_float("MG_SOFT_LOCK_VERIFY_WINDOW_SECONDS
 IDLE_CHECK_MODE = os.environ.get("MG_IDLE_CHECK_MODE", "0") == "1"
 IDLE_OWNER_PROBE_SECONDS = _env_float("MG_IDLE_OWNER_PROBE_SECONDS", 14.0, 3.0, 20.0)
 IDLE_CHECK_SUCCESS_EXIT_SECONDS = _env_float("MG_IDLE_CHECK_SUCCESS_EXIT_SECONDS", 1.25, 0.5, 5.0)
+PERSISTENT_IDLE_LOOP = os.environ.get("MG_PERSISTENT_IDLE_LOOP", "0") == "1"
 PASSIVE_FPS = _env_float("MG_PASSIVE_FPS", 0.0, 0.0, 5.0)
 PASSIVE_LOOP_SLEEP_S = 0.5 if PASSIVE_FPS <= 0 else max(0.2, 1.0 / PASSIVE_FPS)
 BURST_FAST_PATH_SECONDS = _env_float("MG_BURST_FAST_PATH_SECONDS", 5.0, 0.5, 10.0)
@@ -331,7 +332,10 @@ class MajestyGuardDaemon:
         self._verify_cooldown_until = 0.0
         self._verify_failed_until = 0.0
         self._idle_check_mode = IDLE_CHECK_MODE
+        self._persistent_idle_loop = PERSISTENT_IDLE_LOOP
         self._idle_check_deadline = 0.0
+        self._settings_mtime = 0.0
+        self._dynamic_idle_timeout = SOFT_LOCK_IDLE_SECONDS
         self._cold_start_ms: dict[str, int] = {}
         self._overlay_proc: Optional[subprocess.Popen] = None
         self._overlay_watchdog_thread: Optional[threading.Thread] = None
@@ -385,30 +389,37 @@ class MajestyGuardDaemon:
         t_warm = time.perf_counter()
         t_cam = t_warm
 
-        if self._idle_check_mode:
+        if self._idle_check_mode and not getattr(self, "_persistent_idle_loop", False):
             self._set_idle_check_phase("PREWARMING")
-            target_idle = read_idle_timeout()
+            target_idle = self._current_idle_timeout()
             log.info("Models preloaded in background. Waiting for system idle >= %.1fs...", target_idle)
             self._set_idle_check_phase("WAITING_FOR_IDLE")
-            while get_idle_seconds() < target_idle:
+            while not self._stop.is_set() and get_idle_seconds() < self._current_idle_timeout():
                 time.sleep(0.05)
 
-            log.info("System idle threshold reached (%.1fs) — launching Dynamic Island", get_idle_seconds())
-            self._set_idle_check_phase("STARTING_UI")
-            self._launch_ui()
-            self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
+            if not self._stop.is_set():
+                log.info("System idle threshold reached (%.1fs) — launching Dynamic Island", get_idle_seconds())
+                self._set_idle_check_phase("STARTING_UI")
+                self._launch_ui()
+                self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
 
-            self._set_idle_check_phase("CAMERA_OPENING")
-            self._open_camera()
-            t_cam = time.perf_counter()
-            if hasattr(self.ipc, "wait_for_client"):
-                self.ipc.wait_for_client(timeout=0.35)
-            time.sleep(0.15)
-            self.ipc.broadcast_state("scanning", detail="Verifying...")
+                self._set_idle_check_phase("CAMERA_OPENING")
+                self._open_camera()
+                t_cam = time.perf_counter()
+                if hasattr(self.ipc, "wait_for_client"):
+                    self.ipc.wait_for_client(timeout=0.35)
+                time.sleep(0.15)
+                self.ipc.broadcast_state("scanning", detail="Verifying...")
 
-            self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
-            self._set_idle_check_phase("PROBING")
-            log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
+                self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
+                self._set_idle_check_phase("PROBING")
+                log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
+        elif getattr(self, "_persistent_idle_loop", False):
+            self._set_idle_check_phase("WAITING_FOR_IDLE")
+            log.info(
+                "Persistent idle-guard ready: camera parked until system idle >= %.1fs",
+                self._current_idle_timeout(),
+            )
         elif self._should_open_camera_on_start():
             self._open_camera()
             t_cam = time.perf_counter()
@@ -773,8 +784,11 @@ class MajestyGuardDaemon:
                 (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
             except OSError as e:
                 log.warning("Failed to write lock_state.txt: %s", e)
+            self._idle_check_deadline = 0.0
+            self._defer_input_idle_soft_lock()
             self._transition(State.IDLE)
-            self.schedule_exit()
+            if getattr(self, "_idle_check_mode", False) and not getattr(self, "_persistent_idle_loop", False):
+                self.schedule_exit()
             return
         log.info(
             "Ignoring unknown session event: %s",
@@ -787,6 +801,14 @@ class MajestyGuardDaemon:
             self._transition(State.HOSTILE_LOCK)
             return
         if command == "windows_lock_used":
+            if getattr(self, "_persistent_idle_loop", False):
+                log.info("[CMD] Windows lock used — parking camera in SYSTEM_LOCKED until session unlock")
+                try:
+                    (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
+                except OSError:
+                    pass
+                self._transition(State.SYSTEM_LOCKED)
+                return
             log.info("[CMD] Windows lock used by user — scheduling clean teardown")
             self.schedule_exit()
             return
@@ -955,6 +977,8 @@ class MajestyGuardDaemon:
             if self._maybe_enter_soft_lock_for_input_idle():
                 self._pace(loop_start)
                 continue
+            if self._handle_persistent_idle_park():
+                continue
             if self._is_soft_lock_passive():
                 self._handle_passive_soft_lock(loop_start)
                 continue
@@ -1005,6 +1029,43 @@ class MajestyGuardDaemon:
         sleep_for = FRAME_INTERVAL_S - (time.monotonic() - loop_start)
         if sleep_for > 0:
             time.sleep(sleep_for)
+
+    def _handle_persistent_idle_park(self) -> bool:
+        """When MG_PERSISTENT_IDLE_LOOP=1 and state is IDLE with no active probe,
+        keep the camera released and Dynamic Island hidden until input idle hits threshold."""
+        if not getattr(self, "_persistent_idle_loop", False):
+            return False
+        if self.state != State.IDLE or getattr(self, "_idle_check_deadline", 0.0) > 0.0:
+            return False
+
+        self._release_camera()
+        idle_seconds = get_idle_seconds()
+        if not getattr(self, "_input_idle_soft_lock_armed", True):
+            if idle_seconds <= SOFT_LOCK_IDLE_REARM_SECONDS:
+                self._input_idle_soft_lock_armed = True
+            elif time.monotonic() < getattr(self, "_soft_lock_release_grace_until", 0.0):
+                time.sleep(0.2)
+                return True
+            else:
+                self._input_idle_soft_lock_armed = True
+
+        target_idle = self._current_idle_timeout()
+        if idle_seconds < target_idle:
+            time.sleep(0.2)
+            return True
+
+        log.info("System idle threshold reached (%.1fs >= %.1fs) — starting owner probe", idle_seconds, target_idle)
+        self._set_idle_check_phase("STARTING_UI")
+        self._launch_ui()
+        self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
+        self._set_idle_check_phase("CAMERA_OPENING")
+        if not self._open_camera():
+            return True
+        time.sleep(0.15)
+        self.ipc.broadcast_state("scanning", detail="Verifying...")
+        self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
+        self._set_idle_check_phase("PROBING")
+        return True
 
     def _handle_passive_soft_lock(self, loop_start: float) -> None:
         now = time.monotonic()
@@ -1121,6 +1182,23 @@ class MajestyGuardDaemon:
         elif self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
             self._tick_soft_lock(frame, frame_no)
 
+    def _current_idle_timeout(self) -> float:
+        settings_file = _MG_STATE_DIR / "settings.json"
+        try:
+            if settings_file.is_file():
+                mtime = settings_file.stat().st_mtime
+                if mtime != getattr(self, "_settings_mtime", 0.0):
+                    self._settings_mtime = mtime
+                    data = json.loads(settings_file.read_text(encoding="utf-8"))
+                    val = data.get("idle_timeout_seconds")
+                    if isinstance(val, int) and not isinstance(val, bool) and 15 <= val <= 1800:
+                        self._dynamic_idle_timeout = float(val)
+                        log.info("Hot-reloaded idle timeout from settings.json: %.0fs", self._dynamic_idle_timeout)
+                return float(getattr(self, "_dynamic_idle_timeout", SOFT_LOCK_IDLE_SECONDS))
+        except Exception:
+            pass
+        return float(SOFT_LOCK_IDLE_SECONDS)
+
     def _maybe_enter_soft_lock_for_input_idle(self) -> bool:
         if getattr(self, "state", None) != State.ACTIVE:
             return False
@@ -1132,7 +1210,7 @@ class MajestyGuardDaemon:
                 return False
             else:
                 self._input_idle_soft_lock_armed = True
-        if idle_seconds < SOFT_LOCK_IDLE_SECONDS:
+        if idle_seconds < self._current_idle_timeout():
             return False
         self._enter_soft_lock(f"input_idle_{idle_seconds:.0f}s")
         return True
@@ -1190,7 +1268,7 @@ class MajestyGuardDaemon:
         return True
 
     def _finish_idle_check_owner(self, *, confidence: float, liveness: float) -> None:
-        """Return a successful idle probe to the lightweight monitor."""
+        """Return a successful idle probe to the lightweight monitor or persistent idle park."""
         FaceState.set_recognized(liveness_score=liveness)
         self._absent_frames = 0
         self._stranger_frames = 0
@@ -1198,6 +1276,14 @@ class MajestyGuardDaemon:
         self._scanning_owner_candidate_frames = 0
         self._transition(State.ACTIVE)
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)
+        if getattr(self, "_persistent_idle_loop", False):
+            self._idle_check_deadline = 0.0
+            self._write_idle_check_result("OWNER_VERIFIED")
+            self._release_camera()
+            self._defer_input_idle_soft_lock()
+            self.state = State.IDLE
+            log.info("Idle owner probe passed; camera released and parked for next idle cycle")
+            return
         if not getattr(self, "_idle_check_mode", False):
             return
         self._idle_check_deadline = 0.0
@@ -1638,14 +1724,22 @@ class MajestyGuardDaemon:
         self._transition(State.ACTIVE)
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)
 
-        # Write UNLOCKED + schedule teardown so overlay dissolve sequence completes first.
-        # The overlay exit sequence (verified 400ms → welcome 1450ms → fade 200ms = 2.05s) completes safely before teardown (3.0s).
-        log.info("[ClearSoftLock] Lock lifted — scheduling teardown in 3s")
         try:
             (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
         except OSError as e:
             log.warning("Failed to write lock_state.txt: %s", e)
-        self._exit_at = time.monotonic() + 3.0
+
+        if getattr(self, "_persistent_idle_loop", False):
+            self._idle_check_deadline = 0.0
+            self._release_camera()
+            self._defer_input_idle_soft_lock()
+            self.state = State.IDLE
+            log.info("[ClearSoftLock] Lock lifted — camera parked for next idle cycle")
+            return
+
+        if getattr(self, "_idle_check_mode", False):
+            log.info("[ClearSoftLock] Lock lifted — scheduling teardown in 3s")
+            self._exit_at = time.monotonic() + 3.0
 
     @staticmethod
     def _write_idle_check_result(result: str) -> None:

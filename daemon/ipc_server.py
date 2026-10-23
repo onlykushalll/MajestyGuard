@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 
 PIPE_NAME = r"\\.\pipe\MajestyGuard_UI"
 SERVICE_PIPE_NAME = r"\\.\pipe\MajestyGuard_CV"
+_PIPE_REJECT_REMOTE_CLIENTS = getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x00000008)
 VALID_STATES = frozenset({
     "active",
     "scanning",
@@ -49,6 +50,7 @@ VALID_STATES = frozenset({
     "locked_passive",
     "soft_locked",
     "verifying_lock",
+    "verify_failed",
     "social_lock",
     "hostile_lock",
     "idle",
@@ -231,8 +233,11 @@ class IPCServer:
                 handle = win32pipe.CreateNamedPipe(
                     PIPE_NAME,
                     win32pipe.PIPE_ACCESS_DUPLEX,
-                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-                    win32pipe.PIPE_UNLIMITED_INSTANCES,
+                    win32pipe.PIPE_TYPE_MESSAGE
+                    | win32pipe.PIPE_READMODE_MESSAGE
+                    | win32pipe.PIPE_WAIT
+                    | _PIPE_REJECT_REMOTE_CLIENTS,
+                    2,
                     4096, 4096, 0, sa,
                 )
                 # Block until UI client connects (or stop() unblocks us)

@@ -22,6 +22,7 @@ import win32security  # type: ignore
 log = logging.getLogger(__name__)
 
 CMD_PIPE_NAME = r"\\.\pipe\MajestyGuard_CMD"
+_PIPE_REJECT_REMOTE_CLIENTS = getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x00000008)
 VALID_COMMANDS = frozenset({"verify_requested", "emergency_lock", "windows_lock_used"})
 
 
@@ -154,8 +155,11 @@ class CMDServer:
                 handle = win32pipe.CreateNamedPipe(
                     self.pipe_name,
                     win32pipe.PIPE_ACCESS_INBOUND,
-                    win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-                    win32pipe.PIPE_UNLIMITED_INSTANCES,
+                    win32pipe.PIPE_TYPE_MESSAGE
+                    | win32pipe.PIPE_READMODE_MESSAGE
+                    | win32pipe.PIPE_WAIT
+                    | _PIPE_REJECT_REMOTE_CLIENTS,
+                    2,
                     4096,
                     4096,
                     0,

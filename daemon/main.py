@@ -538,7 +538,7 @@ class MajestyGuardDaemon:
         if digest != self._LEGACY_V2_PLAINTEXT_SHA256:
             return None
         try:
-            data = np.load(io.BytesIO(raw))
+            data = np.load(io.BytesIO(raw), allow_pickle=False)
             if getattr(data, "ndim", 0) != 2 or data.shape[1] < 128:
                 log.error(
                     "Pinned legacy embeddings failed shape validation %s - refusing",
@@ -580,7 +580,7 @@ class MajestyGuardDaemon:
                 try:
                     import win32crypt
                     decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
-                    data = np.load(io.BytesIO(decrypted))
+                    data = np.load(io.BytesIO(decrypted), allow_pickle=False)
                 except Exception as dpapi_exc:
                     # MG-A-03/C-03/D-03: FAIL CLOSED. A plaintext fallback
                     # here lets any same-user write to embeddings_v2.npy
@@ -620,7 +620,7 @@ class MajestyGuardDaemon:
                             "re-run daemon/enroll_v2.py to store them encrypted.",
                             v2_path,
                         )
-                        data = np.load(io.BytesIO(raw))
+                        data = np.load(io.BytesIO(raw), allow_pickle=False)
                 out["kind"] = "v2"
                 out["data"] = data
             except Exception as e:

@@ -30,13 +30,19 @@ class LASTINPUTINFO(ctypes.Structure):
 
 
 def get_idle_seconds() -> float:
-    """Return seconds since the last local keyboard or mouse input."""
+    """Return seconds since the last local keyboard or mouse input.
+    Uses unsigned 32-bit modular arithmetic to prevent signed c_int overflow
+    after 24.85 days of uptime and 49.7-day DWORD wraparound."""
     info = LASTINPUTINFO()
     info.cbSize = ctypes.sizeof(LASTINPUTINFO)
     if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
         return 0.0
-    elapsed_ms = ctypes.windll.kernel32.GetTickCount() - info.dwTime
-    return max(0.0, float(elapsed_ms) / 1000.0)
+    tick = int(ctypes.windll.kernel32.GetTickCount()) & 0xFFFFFFFF
+    last = int(info.dwTime) & 0xFFFFFFFF
+    elapsed_ms = (tick - last) & 0xFFFFFFFF
+    if elapsed_ms > 0x7FFFFFFF:
+        return 0.0
+    return float(elapsed_ms) / 1000.0
 
 
 def clamp_idle_timeout(value: float) -> float:

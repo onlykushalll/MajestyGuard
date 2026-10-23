@@ -232,6 +232,12 @@ class IslandWidget(QWidget):
                 self._defer_timer.start(remaining_ms)
                 return
 
+        if hasattr(self, "_defer_timer") and self._defer_timer is not None and self._defer_timer.isActive():
+            self._defer_timer.stop()
+            try:
+                self._defer_timer.timeout.disconnect()
+            except Exception:
+                pass
 
         # Track when we enter verifying_lock state to enforce minimum duration
         if state.name == "verifying_lock":

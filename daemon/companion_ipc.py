@@ -152,8 +152,20 @@ def _local_pipe_clients_allowed() -> bool:
 
 
 def _build_security_attributes() -> Optional[win32security.SECURITY_ATTRIBUTES]:
-    """Use the process default DACL; never install a NULL DACL."""
-    return None
+    """Bind WHCDF pipe to SYSTEM, Administrators, and current user SID."""
+    try:
+        from pipe_security import build_user_pipe_sddl
+        sddl = build_user_pipe_sddl()
+        sd = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+            sddl, win32security.SDDL_REVISION_1
+        )
+        sa = win32security.SECURITY_ATTRIBUTES()
+        sa.SECURITY_DESCRIPTOR = sd
+        sa.bInheritHandle = 0
+        return sa
+    except Exception:
+        log.warning("Failed to build custom SDDL for WHCDF pipe; using process default DACL")
+        return None
 
 
 def _authorize_hmac_request() -> tuple[Optional[bytes], Optional[str]]:
@@ -180,11 +192,15 @@ def _authorize_hmac_request() -> tuple[Optional[bytes], Optional[str]]:
 def _serve_one_connection_sync() -> None:
     """Block until one client connects, handle the HMAC exchange, disconnect."""
     sa = _build_security_attributes()
+    _PIPE_REJECT_REMOTE_CLIENTS = getattr(win32pipe, "PIPE_REJECT_REMOTE_CLIENTS", 0x00000008)
     handle = win32pipe.CreateNamedPipe(
         PIPE_NAME,
         win32pipe.PIPE_ACCESS_DUPLEX,
-        win32pipe.PIPE_TYPE_MESSAGE | win32pipe.PIPE_READMODE_MESSAGE | win32pipe.PIPE_WAIT,
-        win32pipe.PIPE_UNLIMITED_INSTANCES,
+        win32pipe.PIPE_TYPE_MESSAGE
+        | win32pipe.PIPE_READMODE_MESSAGE
+        | win32pipe.PIPE_WAIT
+        | _PIPE_REJECT_REMOTE_CLIENTS,
+        2,
         4096, 4096, 0, sa,
     )
     try:

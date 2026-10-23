@@ -451,7 +451,9 @@ def _write_metadata(
         "selected_samples": [sample.metadata() for sample in selected],
         "all_samples": [sample.metadata() for sample in all_samples],
     }
-    OUT_META_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_meta = OUT_META_FILE.with_suffix(".json.tmp")
+    tmp_meta.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_meta, OUT_META_FILE)
 
 
 def _backup_existing_artifacts() -> list[Path]:
@@ -786,23 +788,24 @@ def main() -> int:
     for backup in backups:
         print(f"Backed up previous artifact to {backup}")
     buf = io.BytesIO()
-    np.save(buf, arr)
+    np.save(buf, arr, allow_pickle=False)
+    tmp_out = OUT_FILE.with_suffix(".npy.tmp")
     try:
         import win32crypt
         encrypted = win32crypt.CryptProtectData(
             buf.getvalue(), "MajestyGuard biometric embeddings", None, None, None, 0
         )
-        OUT_FILE.write_bytes(encrypted)
+        tmp_out.write_bytes(encrypted)
+        os.replace(tmp_out, OUT_FILE)
         print(f"Wrote DPAPI-encrypted embeddings to {OUT_FILE}")
     except Exception as e:
-        # Fail open to plaintext rather than losing the enrollment entirely
-        # (this is the same file the daemon falls back to reading as
-        # plaintext if decryption fails, so it stays loadable either way).
-        # An enrollment session is expensive to redo; that outweighs
-        # writing this one file unencrypted on a machine where DPAPI is
-        # for some reason unavailable.
-        print(f"WARNING: DPAPI encryption failed ({e}); writing plaintext instead")
-        np.save(str(OUT_FILE), arr)
+        if os.environ.get("MG_ALLOW_PLAINTEXT_EMBEDDINGS", "0") == "1":
+            print(f"WARNING: DPAPI encryption failed ({e}); writing plaintext (MG_ALLOW_PLAINTEXT_EMBEDDINGS=1)")
+            tmp_out.write_bytes(buf.getvalue())
+            os.replace(tmp_out, OUT_FILE)
+        else:
+            print(f"ERROR: DPAPI encryption failed ({e}) — refusing to write plaintext biometric gallery.")
+            return 1
     _write_metadata(
         profile=args.profile,
         angles=angles,

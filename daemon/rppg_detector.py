@@ -91,7 +91,22 @@ class CHROMrPPGDetector:
         self._ts_buf.append(time.monotonic())
         self._rgb_buf.append((red, green, blue))
         if not self.has_signal:
-            return 0.5
+            if len(self._rgb_buf) >= 3:
+                # Early-window chrominance microvascular liveness (Frames 3..44)
+                frames = np.array(self._rgb_buf, dtype=np.float64)
+                red = frames[:, 0]
+                green = frames[:, 1]
+                red_norm = red / (np.mean(red) + 1e-9)
+                green_norm = green / (np.mean(green) + 1e-9)
+                chrom_early = 3.0 * red_norm - 2.0 * green_norm
+                pulse_std = float(np.std(chrom_early))
+                if 1e-4 <= pulse_std <= 0.045:
+                    self._score = 0.55
+                elif pulse_std < 1e-5:
+                    self._score = 0.45
+                else:
+                    self._score = 0.50
+            return self._score
 
         self._score = self._chrom()
         return self._score

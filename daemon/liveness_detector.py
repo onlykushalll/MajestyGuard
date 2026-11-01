@@ -48,7 +48,7 @@ except ImportError:
 class LivenessDetector:
     _WINDOW = 30           # 2 seconds at 15 FPS — 10th percentile tolerates ~3 bad frames
     _MIN_FRAMES_FOR_PASS = 5
-    _MIN_USABLE_FACE_QUALITY = 0.40
+    _MIN_USABLE_FACE_QUALITY = float(os.environ.get("MG_LIVENESS_MIN_FACE_QUALITY", "0.40"))
     # H16 fix: score_full() falls back to the last smoothed score when the
     # current frame's quality is too poor to score. Without a time cap, a
     # sustained quality drop (bad lighting, camera obstruction settling in
@@ -141,6 +141,8 @@ class LivenessDetector:
         self._last_onnx_idx1: float = float("nan")
         # E-2: track consecutive ONNX failures — init in __init__ not lazily
         self._onnx_consecutive_failures: int = 0
+        self._last_layer_breakdown: dict[str, float | None] = {}
+        self._last_raw_roi: Optional[np.ndarray] = None
         self._load_antispoof_model(model_dir)
 
         if not defer_heavy_models:
@@ -215,6 +217,9 @@ class LivenessDetector:
         self._face_center_history.clear()
         self._landmark_ratios.clear()
         self._hist_history.clear()
+        if hasattr(self, "_last_layer_breakdown"):
+            self._last_layer_breakdown.clear()
+        self._last_raw_roi = None
         self._onnx_score_history.clear()
         if self._rppg is not None:
             self._rppg.reset()
@@ -236,10 +241,17 @@ class LivenessDetector:
         self._replay_flagged_at = None
         self._landmark_ratios.clear()
         self._hist_history.clear()
+        if hasattr(self, "_last_layer_breakdown"):
+            self._last_layer_breakdown.clear()
+        self._last_raw_roi = None
         self._onnx_score_history.clear()
         if self._rppg is not None:
             self._rppg.reset()
         self._onnx_consecutive_failures = 0  # E-2: proper field reset
+
+    def get_layer_breakdown(self) -> dict[str, float | None]:
+        """Return the dictionary of individual layer scores from the last full evaluation."""
+        return dict(getattr(self, "_last_layer_breakdown", {}))
 
     def replay_flagged_this_session(self) -> bool:
         """True if a replay/duplicate-frame gate (in either score_fast or
@@ -488,10 +500,13 @@ class LivenessDetector:
 
         # Layer 11/12: rPPG blood-flow and MediaPipe iris attention.
         rppg_score = self._rppg.update(frame, face)
-        attention_score = (
-            self._attention.score(frame)
-            if self._attention is not None else 0.5
-        )
+        if self._attention is not None:
+            try:
+                attention_score = self._attention.score(frame, face)
+            except TypeError:
+                attention_score = self._attention.score(frame)
+        else:
+            attention_score = 0.5
 
         if onnx_score is not None:
             combined = (
@@ -555,6 +570,22 @@ class LivenessDetector:
                 )
             else:
                 combined = combined * 0.94 + rppg_score * 0.04 + attention_score * 0.02
+
+        self._last_layer_breakdown = {
+            "lbp": float(lbp_score),
+            "specular": float(specular_score),
+            "color": float(color_score),
+            "moire": float(moire_score),
+            "temporal": float(temporal_score),
+            "boundary": float(boundary_score),
+            "onnx": float(onnx_score) if onnx_score is not None else None,
+            "depth": float(depth_score),
+            "hist": float(hist_score),
+            "midas": float(midas_score),
+            "rppg": float(rppg_score),
+            "attention": float(attention_score),
+            "replay": float(replay_penalty),
+        }
 
         self._score_history.append(combined)
 
@@ -1196,13 +1227,30 @@ class LivenessDetector:
     def _replay_detection(self, roi: np.ndarray) -> float:
         frame_hash = self._dhash(roi)
 
+        # Check raw sensor noise floor between consecutive frames
+        cmos_noise = False
+        if hasattr(self, "_last_raw_roi") and self._last_raw_roi is not None and self._last_raw_roi.shape == roi.shape:
+            diff_val = float(np.mean(np.abs(roi.astype(np.int16) - self._last_raw_roi.astype(np.int16))))
+            if 0.8 <= diff_val <= 12.0:
+                # Characteristic microscopic CMOS shot/thermal noise of live sensor
+                cmos_noise = True
+        self._last_raw_roi = roi.copy()
+
         # Count how many recent frames have very low hamming distance (perceptually identical)
-        matches = sum(1 for h in self._frame_hashes if self._hamming_distance(h, frame_hash) < 3)
-        self._frame_hashes.append(frame_hash)
+        hashes = getattr(self, "_frame_hashes", None)
+        if hashes is None:
+            self._frame_hashes = deque(maxlen=30)
+            hashes = self._frame_hashes
+        matches = sum(1 for h in hashes if self._hamming_distance(h, frame_hash) < 3)
+        hashes.append(frame_hash)
 
         if matches == 0:
             self._duplicate_frame_count = max(0, self._duplicate_frame_count - 1)
             return 0.95
+
+        if cmos_noise:
+            self._duplicate_frame_count = max(0, min(self._duplicate_frame_count, 1))
+            return 0.85
 
         self._duplicate_frame_count += 1
 

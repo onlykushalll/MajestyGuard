@@ -26,7 +26,8 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping, Optional
+from typing import Any, Mapping, Optional
+import math
 
 import cv2
 import numpy as np
@@ -171,6 +172,141 @@ class EnrollmentSample:
         return data
 
 
+
+def l2_normalize(vec: np.ndarray) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float32).ravel()
+    norm = float(np.linalg.norm(arr))
+    if norm < 1e-8 or not np.isfinite(norm):
+        return np.zeros_like(arr)
+    return arr / norm
+
+
+def spherical_slerp(u: np.ndarray, v: np.ndarray, t: float) -> np.ndarray:
+    u_unit = l2_normalize(u)
+    v_unit = l2_normalize(v)
+    t_clamped = float(np.clip(t, 0.0, 1.0))
+    dot = float(np.clip(np.dot(u_unit, v_unit), -1.0, 1.0))
+    if abs(dot) > 0.9995:
+        return l2_normalize((1.0 - t_clamped) * u_unit + t_clamped * v_unit)
+    omega = math.acos(dot)
+    sin_omega = math.sin(omega)
+    if abs(sin_omega) < 1e-6:
+        return u_unit
+    w_u = math.sin((1.0 - t_clamped) * omega) / sin_omega
+    w_v = math.sin(t_clamped * omega) / sin_omega
+    return l2_normalize(w_u * u_unit + w_v * v_unit)
+
+
+def weiszfeld_spherical_median(
+    embeddings: list[np.ndarray],
+    weights: list[float] | None = None,
+    max_iter: int = 15,
+    tol: float = 1e-5,
+) -> np.ndarray:
+    if not embeddings:
+        raise ValueError("Cannot compute spherical median of empty embedding list")
+    unit_vecs: list[np.ndarray] = []
+    valid_weights: list[float] = []
+    first_dim = np.asarray(embeddings[0]).size
+
+    for i, emb in enumerate(embeddings):
+        arr = np.asarray(emb, dtype=np.float32).ravel()
+        if arr.size != first_dim or not np.all(np.isfinite(arr)):
+            continue
+        u = l2_normalize(arr)
+        if float(np.linalg.norm(u)) > 0.5:
+            unit_vecs.append(u)
+            w = float(weights[i]) if (weights and i < len(weights)) else 1.0
+            valid_weights.append(max(0.05, w if math.isfinite(w) else 1.0))
+
+    if not unit_vecs:
+        return np.ones(first_dim, dtype=np.float32) / math.sqrt(first_dim)
+    if len(unit_vecs) == 1:
+        return unit_vecs[0]
+
+    mat = np.stack(unit_vecs, axis=0)
+    w_arr = np.asarray(valid_weights, dtype=np.float32)
+    w_arr /= np.sum(w_arr)
+
+    est = l2_normalize(np.sum(mat * w_arr[:, None], axis=0))
+    for _ in range(max_iter):
+        diffs = mat - est[None, :]
+        dists = np.linalg.norm(diffs, axis=1)
+        inv_dists = w_arr / np.maximum(dists, 1e-4)
+        inv_dists /= np.sum(inv_dists)
+        next_est = l2_normalize(np.sum(mat * inv_dists[:, None], axis=0))
+        if float(np.linalg.norm(next_est - est)) < tol:
+            est = next_est
+            break
+        est = next_est
+    return est
+
+
+def prune_outlier_embeddings(
+    embeddings: list[np.ndarray],
+    qualities: list[float] | None = None,
+    min_consensus_cosine: float = 0.42,
+) -> tuple[list[np.ndarray], list[float]]:
+    if len(embeddings) <= 3:
+        return list(embeddings), list(qualities or [0.85] * len(embeddings))
+    quals = list(qualities) if (qualities and len(qualities) == len(embeddings)) else [0.85] * len(embeddings)
+    median_unit = weiszfeld_spherical_median(embeddings, quals)
+    sims = [float(np.dot(l2_normalize(e), median_unit)) for e in embeddings]
+    kept_e: list[np.ndarray] = []
+    kept_q: list[float] = []
+    for e, q, s in zip(embeddings, quals, sims):
+        if math.isfinite(s) and s >= min_consensus_cosine:
+            kept_e.append(e)
+            kept_q.append(q)
+    if len(kept_e) < 3:
+        order = sorted(range(len(sims)), key=lambda idx: sims[idx], reverse=True)[:3]
+        kept_e = [embeddings[idx] for idx in order]
+        kept_q = [quals[idx] for idx in order]
+    return kept_e, kept_q
+
+
+_LAST_POSE_TRACK: dict[str, float] = {"yaw": 0.0, "pitch": 0.0, "time": 0.0}
+
+
+def _estimate_head_pose_and_vel(face: Any, frame_shape: tuple[int, ...]) -> tuple[float, float, float, float]:
+    h = int(frame_shape[0]) if len(frame_shape) >= 2 else 480
+    w = int(frame_shape[1]) if len(frame_shape) >= 2 else 640
+    kps = getattr(face, "kps", None)
+    if kps is None or len(kps) < 5:
+        return 0.0, 0.0, 0.0, 0.0
+    try:
+        pts = [[float(p[0]), float(p[1])] for p in kps[:5]]
+        left_eye, right_eye, nose, left_mouth, right_mouth = pts
+        dy_eye = right_eye[1] - left_eye[1]
+        dx_eye = max(1e-4, right_eye[0] - left_eye[0])
+        roll = math.degrees(math.atan2(dy_eye, dx_eye))
+        eye_mid_x = 0.5 * (left_eye[0] + right_eye[0])
+        inter_ocular = math.hypot(dx_eye, dy_eye)
+        yaw = ((nose[0] - eye_mid_x) / max(1.0, inter_ocular)) * 72.0
+        eye_mid_y = 0.5 * (left_eye[1] + right_eye[1])
+        mouth_mid_y = 0.5 * (left_mouth[1] + right_mouth[1])
+        eye_to_mouth = max(1.0, mouth_mid_y - eye_mid_y)
+        pitch = (0.56 - ((nose[1] - eye_mid_y) / eye_to_mouth)) * 140.0
+
+        now = time.monotonic()
+        prev_t = _LAST_POSE_TRACK["time"]
+        dt = max(1e-3, now - prev_t)
+        ang_vel = 0.0
+        if 0.0 < (now - prev_t) < 0.6:
+            ang_vel = math.hypot(yaw - _LAST_POSE_TRACK["yaw"], pitch - _LAST_POSE_TRACK["pitch"]) / dt
+        _LAST_POSE_TRACK["yaw"] = yaw
+        _LAST_POSE_TRACK["pitch"] = pitch
+        _LAST_POSE_TRACK["time"] = now
+        return yaw, pitch, roll, ang_vel
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0
+
+
+def estimate_head_pose_3d(face: Any, frame_shape: tuple[int, ...]) -> tuple[float, float, float]:
+    yaw, pitch, roll, _ = _estimate_head_pose_and_vel(face, frame_shape)
+    return yaw, pitch, roll
+
+
 def _face_readiness(
     frame: np.ndarray,
     face,
@@ -205,6 +341,11 @@ def _face_readiness(
         return False, f"quality low ({quality.score:.2f})", quality
     if getattr(face, "normed_embedding", None) is None:
         return False, "embedding not ready", quality
+
+    _, _, _, ang_vel = _estimate_head_pose_and_vel(face, frame.shape)
+    if ang_vel > 55.0:
+        return False, "hold still (motion blur)", quality
+
     return True, "READY", quality
 
 

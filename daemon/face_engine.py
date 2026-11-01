@@ -23,8 +23,144 @@ import hashlib
 import json
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 import cv2
+
+import sys
+from importlib.abc import MetaPathFinder
+
+class _DummySACFinder(MetaPathFinder):
+    """Prevents Windows 11 Smart App Control (SAC) blocks on unsupported C-extensions."""
+    def __init__(self):
+        blocked = set()
+        if os.environ.get("MG_SAC_STUB_SIMSIMD", "0") == "1":
+            blocked.add("simsimd")
+        if os.environ.get("MG_SAC_STUB_ALBUMENTATIONS", "0") == "1":
+            blocked.add("albumentations")
+        self.BLOCKED_MODULES = frozenset(blocked)
+
+    def find_spec(self, fullname, path, target=None):
+        if getattr(self, "BLOCKED_MODULES", None) and fullname.split(".")[0] in self.BLOCKED_MODULES:
+            raise ModuleNotFoundError(f"SAC-protected stub: {fullname}")
+        return None
+
+if not any(isinstance(f, _DummySACFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _DummySACFinder())
+
+_ARCFACE_112_DST = np.array(
+    [
+        [38.2946, 51.6963],
+        [73.5318, 51.5014],
+        [56.0252, 71.7366],
+        [41.5493, 92.3655],
+        [70.7299, 92.2041],
+    ],
+    dtype=np.float32,
+)
+
+def _umeyama_similarity_2d(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Exact 2D Umeyama similarity transform (rotation + uniform scale + translation)."""
+    num = src.shape[0]
+    src_mean = src.mean(axis=0)
+    dst_mean = dst.mean(axis=0)
+    src_demean = src - src_mean
+    dst_demean = dst - dst_mean
+    A = (dst_demean.T @ src_demean) / num
+    U, S, Vt = np.linalg.svd(A)
+    d = np.ones((2,), dtype=np.float64)
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        d[1] = -1
+    T = np.eye(3, dtype=np.float64)
+    rank = np.linalg.matrix_rank(A)
+    if rank == 0:
+        return np.zeros((2, 3), dtype=np.float32)
+    if rank == 1:
+        if np.linalg.det(U) * np.linalg.det(Vt) > 0:
+            T[:2, :2] = U @ Vt
+        else:
+            s = d[1]
+            d[1] = -1
+            T[:2, :2] = U @ np.diag(d) @ Vt
+            d[1] = s
+    else:
+        T[:2, :2] = U @ np.diag(d) @ Vt
+    var_src = float(np.var(src_demean, axis=0).sum())
+    scale = 1.0 if var_src < 1e-8 else float((S @ d) / var_src)
+    T[:2, 2] = dst_mean - scale * (T[:2, :2] @ src_mean)
+    T[:2, :2] *= scale
+    return T[:2, :].astype(np.float32)
+
+class _PureOnnxFace:
+    def __init__(self, bbox: np.ndarray, kps: np.ndarray, det_score: float, embedding: np.ndarray):
+        self.bbox = bbox
+        self.kps = kps
+        self.det_score = float(det_score)
+        self.embedding = embedding
+        self.normed_embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
+
+class _PureOnnxBuffaloApp:
+    """Zero-SAC-Block Pure-ONNXRuntime Detector and ArcFace Recognizer fallback."""
+    def __init__(self, name: str = "buffalo_l", root: str = "", providers: list[str] | None = None, allowed_modules: list[str] | None = None):
+        self.name = name
+        self.root = root
+        self.providers = providers or ["CPUExecutionProvider"]
+        self.models: dict[str, Any] = {}
+        self._det_model = None
+        self._rec_model = None
+
+    def prepare(self, ctx_id: int = 0, det_size: tuple[int, int] = (320, 320)) -> None:
+        try:
+            from insightface.model_zoo import get_model
+            cand_roots = [
+                os.path.join(self.root, "models", self.name),
+                os.path.join(self.root, self.name),
+                self.root,
+            ]
+            det_path = None
+            rec_path = None
+            for cr in cand_roots:
+                dp = os.path.join(cr, "det_10g.onnx")
+                rp = os.path.join(cr, "w600k_r50.onnx")
+                if os.path.exists(dp) and det_path is None:
+                    det_path = dp
+                if os.path.exists(rp) and rec_path is None:
+                    rec_path = rp
+
+            if det_path and os.path.exists(det_path):
+                self._det_model = get_model(det_path, providers=self.providers)
+                self._det_model.prepare(ctx_id=ctx_id, input_size=det_size)
+            if rec_path and os.path.exists(rec_path):
+                self._rec_model = get_model(rec_path, providers=self.providers)
+                self._rec_model.prepare(ctx_id=ctx_id)
+                self.models["recognition"] = self._rec_model
+        except Exception as e:
+            logging.getLogger("MajestyGuard.CVEngine").warning("PureOnnxBuffaloApp prepare failed: %s", e)
+
+    def get(self, img: np.ndarray) -> list[Any]:
+        if self._det_model is None or img is None or img.size == 0:
+            return []
+        try:
+            bboxes, kpss = self._det_model.detect(img, max_num=0, metric="default")
+            if bboxes is None or len(bboxes) == 0:
+                return []
+            faces = []
+            for i in range(len(bboxes)):
+                bbox = bboxes[i, :4]
+                det_score = float(bboxes[i, 4])
+                kps = kpss[i] if kpss is not None and i < len(kpss) else None
+                emb = None
+                if self._rec_model is not None and kps is not None:
+                    M = _umeyama_similarity_2d(kps, _ARCFACE_112_DST)
+                    chip = cv2.warpAffine(img, M, (112, 112), borderValue=0.0)
+                    emb = self._rec_model.get_feat(chip).flatten()
+                elif self._rec_model is not None:
+                    emb = np.zeros(EMBEDDING_DIM, dtype=np.float32)
+                face = _PureOnnxFace(bbox, kps, det_score, emb if emb is not None else np.zeros(EMBEDDING_DIM, dtype=np.float32))
+                faces.append(face)
+            return faces
+        except Exception as exc:
+            logging.getLogger("MajestyGuard.CVEngine").debug("PureOnnxBuffaloApp get() error: %s", exc)
+            return []
 
 # InsightFace — install: pip install insightface onnxruntime
 try:
@@ -407,23 +543,31 @@ class FaceEngine:
                 if provider_env else ["CPUExecutionProvider"]
             )
 
-            self._app = FaceAnalysis(
-                name="buffalo_l",
-                root=self.model_dir,
-                providers=providers,
-                # Do NOT add landmark_2d_106 here — it causes det_10g.onnx to silently
-                # stop returning faces in InsightFace 0.7.3 (pipeline conflict).
-                # The 5-point kps from det_10g.onnx are sufficient for recognition alignment.
-                allowed_modules=["detection", "recognition"],
-            )
-            # Always prepares at the fixed 320x320 self._det_size set in
-            # __init__. A smaller idle-mode size (160x160) was tried
-            # previously and found to hurt recognition embedding quality
-            # (see the __init__ comment on _det_size), so the dynamic
-            # low-RAM-idle / raise-when-verifying switch this comment used
-            # to describe was abandoned -- set_det_size() below still exists
-            # and works, but nothing currently calls it.
-            self._app.prepare(ctx_id=0, det_size=self._det_size)
+            try:
+                if INSIGHTFACE_AVAILABLE:
+                    self._app = FaceAnalysis(
+                        name="buffalo_l",
+                        root=self.model_dir,
+                        providers=providers,
+                        # Do NOT add landmark_2d_106 here — it causes det_10g.onnx to silently
+                        # stop returning faces in InsightFace 0.7.3 (pipeline conflict).
+                        # The 5-point kps from det_10g.onnx are sufficient for recognition alignment.
+                        allowed_modules=["detection", "recognition"],
+                    )
+                    self._app.prepare(ctx_id=0, det_size=self._det_size)
+                else:
+                    raise ImportError("InsightFace not available")
+            except Exception as app_exc:
+                logger.warning(
+                    "InsightFace FaceAnalysis failed (%s); falling back to Pure-ONNX Buffalo",
+                    app_exc,
+                )
+                self._app = _PureOnnxBuffaloApp(
+                    name="buffalo_l",
+                    root=self.model_dir,
+                    providers=providers,
+                )
+                self._app.prepare(ctx_id=0, det_size=self._det_size)
 
             # MG-D-05: pin (TOFU) any models InsightFace just auto-downloaded
             # on a first run (the pre-check above saw an empty directory).
@@ -758,7 +902,7 @@ class FaceEngine:
                     liveness_passed
                     and self._adaface_session is None
                     and getattr(self, "_adaface_flip_fusion_enabled", True)
-                    and 0.68 <= best_score < self.recognition_threshold
+                    and 0.64 <= best_score < self.recognition_threshold
                 ):
                     fused_emb = self._try_arcface_flip_fusion(frame, primary_face, query_embedding)
                     if fused_emb is not None:
@@ -798,9 +942,17 @@ class FaceEngine:
                         self._consecutive_matches = 0
                         self._consecutive_liveness = 0  # L-3: reset both counters together
 
+                    fast_track_pass = (
+                        self._consecutive_matches >= 2 and
+                        self._consecutive_liveness >= 2 and
+                        best_score >= 0.84 and
+                        liveness_score >= 0.76 and
+                        quality_score >= 0.55
+                    )
                     primary_user_present = (
-                        self._consecutive_matches >= self._consensus_threshold and
-                        self._consecutive_liveness >= self._consensus_threshold
+                        (self._consecutive_matches >= self._consensus_threshold and
+                         self._consecutive_liveness >= self._consensus_threshold) or
+                        fast_track_pass
                     )
                     if self._should_refresh_owner_track(best_score, liveness_passed, selection_meta["reason"]):
                         self._remember_owner(primary_face)
@@ -1363,7 +1515,7 @@ class FaceEngine:
         self, frame: np.ndarray, face, base_embedding: np.ndarray
     ) -> Optional[np.ndarray]:
         """Run test-time horizontal flip fusion on the 112x112 aligned ArcFace chip
-        only for borderline live candidates (0.68 <= score < threshold)."""
+        only for borderline live candidates (0.64 <= score < threshold)."""
         if self._app is None:
             return None
         rec_model = getattr(self._app, "models", {}).get("recognition")
@@ -1397,12 +1549,8 @@ class FaceEngine:
             try:
                 src = np.asarray(kps, dtype=np.float32)
                 if src.shape == (5, 2):
-                    matrix, _inliers = cv2.estimateAffinePartial2D(
-                        src,
-                        _ARCFACE_112_DST,
-                        method=cv2.LMEDS,
-                    )
-                    if matrix is not None:
+                    matrix = _umeyama_similarity_2d(src, _ARCFACE_112_DST)
+                    if matrix is not None and not np.all(matrix == 0):
                         return cv2.warpAffine(frame, matrix, (112, 112), borderValue=0.0)
             except cv2.error:
                 pass

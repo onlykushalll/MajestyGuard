@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 import logging
 from collections import deque
+from typing import Any
 
 logger = logging.getLogger("MajestyGuard.Attention")
 
@@ -47,6 +48,7 @@ class AttentionDetector:
         # Iris position history — (x, y) normalised per-eye
         self._iris_x_hist: deque[float] = deque(maxlen=_HISTORY_LEN)
         self._iris_y_hist: deque[float] = deque(maxlen=_HISTORY_LEN)
+        self._kps_gaze_hist: deque[tuple[float, float]] = deque(maxlen=_HISTORY_LEN)
 
         # Blink tracking
         self._blink_count    = 0
@@ -69,7 +71,7 @@ class AttentionDetector:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def score(self, frame: np.ndarray) -> float:
+    def score(self, frame: np.ndarray, face: Any = None) -> float:
         """
         Returns 0.0–1.0.
           ≥ 0.70 → live person (eyes moving and/or blinking)
@@ -77,12 +79,16 @@ class AttentionDetector:
           0.5    → neutral (not enough history yet, or MediaPipe unavailable)
         """
         if not self._ready or self._mesh is None:
+            if face is not None:
+                return self._score_kps_gaze(face)
             return 0.5   # neutral — don't penalise if MediaPipe is unavailable
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self._mesh.process(rgb)
 
         if not result.multi_face_landmarks:
+            if face is not None:
+                return self._score_kps_gaze(face)
             return 0.5   # no face — neutral, not a penalty
 
         lm = result.multi_face_landmarks[0].landmark
@@ -191,9 +197,37 @@ class AttentionDetector:
         )
         return float(np.clip(final, 0.0, 1.0))
 
+    def _score_kps_gaze(self, face: Any) -> float:
+        kps = getattr(face, "kps", None)
+        if kps is None or len(kps) < 5:
+            return 0.5
+        try:
+            pts = np.asarray(kps, dtype=np.float32)
+            left_eye, right_eye, nose = pts[0], pts[1], pts[2]
+            eye_w = float(np.linalg.norm(right_eye - left_eye))
+            if eye_w < 1.0:
+                return 0.5
+            eye_mid = (left_eye + right_eye) * 0.5
+            gx = float((nose[0] - eye_mid[0]) / eye_w)
+            gy = float((nose[1] - eye_mid[1]) / eye_w)
+            self._kps_gaze_hist.append((gx, gy))
+            if len(self._kps_gaze_hist) < 8:
+                return 0.5
+            arr = np.array(self._kps_gaze_hist)
+            std = float(np.mean([np.std(arr[:, 0]), np.std(arr[:, 1])]))
+            if std >= 0.008:
+                return 0.85
+            elif std <= 0.0015:
+                return 0.35
+            else:
+                return float(0.35 + 0.50 * ((std - 0.0015) / (0.008 - 0.0015)))
+        except Exception:
+            return 0.5
+
     def reset(self) -> None:
         self._iris_x_hist.clear()
         self._iris_y_hist.clear()
+        self._kps_gaze_hist.clear()
         self._blink_count    = 0
         self._was_blinking   = False
         self._frames_watched = 0

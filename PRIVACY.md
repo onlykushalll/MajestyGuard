@@ -45,4 +45,4 @@ MajestyGuard depends on third-party open-source components such as .NET, Python 
 
 Use the GitHub repository issue tracker for project questions and privacy-related concerns:
 
-https://github.com/onlykushalll/MajestyGuard/issues
+the official project maintainers

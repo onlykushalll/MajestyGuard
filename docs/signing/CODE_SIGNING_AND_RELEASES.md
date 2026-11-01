@@ -75,7 +75,7 @@ Project name:
 MajestyGuard
 
 Repository:
-https://github.com/onlykushalll/MajestyGuard
+project-repository
 
 Short description:
 MajestyGuard is an open-source Windows 11 biometric presence-security project. It combines local webcam-based face recognition, multi-layer passive liveness checks, presence-aware lock behavior, and a Dynamic Island-style desktop UI. The project is intended to protect the user's own Windows session without cloud biometric processing.
@@ -168,7 +168,7 @@ The release approver must execute and complete this checklist before tagging a n
 ## 📦 Downloads & Release Notes Skeleton (v0.1.0-RC)
 
 Official MajestyGuard downloads are published via GitHub Releases:
-[https://github.com/onlykushalll/MajestyGuard/releases](https://github.com/onlykushalll/MajestyGuard/releases)
+[project-repository/releases](project-repository/releases)
 
 > [!WARNING]
 > MajestyGuard is currently an active research prototype. Until a signed production build is approved and released, it should be treated as an experimental utility and run in evaluation mode rather than a primary secure login provider.

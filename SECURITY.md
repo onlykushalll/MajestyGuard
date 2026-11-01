@@ -10,7 +10,7 @@ MajestyGuard is currently an active research prototype. There are no production-
 
 For now, report security concerns through GitHub issues with minimal public detail:
 
-https://github.com/onlykushalll/MajestyGuard/issues
+the official project security reporting channel
 
 If a report involves sensitive local data, credentials, or biometric artifacts, do not attach those files publicly.
 

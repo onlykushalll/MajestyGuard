@@ -664,9 +664,15 @@ class SoftLockOverlay(QWidget):
     def apply_state(self, state: IslandState) -> None:
         if state.name == self._state.name and self.isVisible():
             self._state = state
-            self._resume_lock_state(new_lock=False)
-            self._force_topmost()
-            self.raise_()
+            # Only a lock-family repeat re-asserts lock ownership. The daemon
+            # broadcasts "active" on every ACTIVE frame, and those repeats land
+            # while the 600ms unlock dissolve is still running; treating them
+            # as a lock refresh cancelled the dissolve and reinstalled the
+            # input hooks, re-locking the desktop after a successful unlock.
+            if state.name in _LOCK_NAMES:
+                self._resume_lock_state(new_lock=False)
+                self._force_topmost()
+                self.raise_()
             return
         self._state = state
         if state.name in _LOCK_NAMES:

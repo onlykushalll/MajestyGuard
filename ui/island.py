@@ -208,7 +208,13 @@ class IslandWidget(QWidget):
                 self.show()
 
         # If we transition from verifying to a lock state (rejection), show stranger shake first!
-        if self._state.name == "verifying_lock" and state.name in {"social_lock", "hostile_lock", "stranger"}:
+        # (Skipped under reduced motion: no shake runs there, so the parked
+        # target would never be consumed and the pill would stick on "stranger".)
+        if (
+            self._state.name == "verifying_lock"
+            and state.name in {"social_lock", "hostile_lock", "stranger"}
+            and not self._reduce_motion
+        ):
             if getattr(self, "_deferred_lock_state", None) is None or state.name != "stranger":
                 self._deferred_lock_state = state
             state = get_state("stranger")

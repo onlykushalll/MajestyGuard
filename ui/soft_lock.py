@@ -12,7 +12,7 @@ import ctypes
 import atexit
 import time
 
-from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
+from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import (
     QBrush,
     QColor,
@@ -27,10 +27,16 @@ from PyQt6.QtGui import (
     QPen,
     QPixmap,
     QRadialGradient,
+    QRegion,
 )
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
 
 from states import IslandState, get_state
+
+try:  # liquid-glass lenses are optional: any failure keeps the flat paint
+    import glass as _glass
+except Exception:  # pragma: no cover
+    _glass = None
 
 
 _LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed"}
@@ -531,12 +537,17 @@ atexit.register(_atexit_release_all)
 class SoftLockOverlay(QWidget):
     """Fullscreen, topmost, frameless glass shield for desktop soft-lock."""
     background_ready = pyqtSignal(QImage, int)
+    lens_source_ready = pyqtSignal(object, int)
     hook_space_pressed = pyqtSignal()
     hook_tab_pressed = pyqtSignal()
 
     def __init__(self, on_verify_requested=None, on_windows_lock_used=None):
         super().__init__()
         self.background_ready.connect(self._on_background_ready)
+        self.lens_source_ready.connect(self._on_lens_source_ready)
+        self._lens_src = None          # BGR uint8, half-res, logical px * 0.5
+        self._lens_cache: dict = {}
+        self._tick_count = 0
         self.hook_space_pressed.connect(lambda: self._request_verification("overlay_key"))
         self.hook_tab_pressed.connect(self._use_windows_lock)
         self._state: IslandState = get_state("idle")
@@ -732,6 +743,8 @@ class SoftLockOverlay(QWidget):
 
     def _capture_background(self) -> None:
         capture_generation = self._lock_generation
+        self._lens_src = None          # never refract a previous lock's desktop
+        self._lens_cache.clear()
         self._set_capture_protection(False)
         screen = QGuiApplication.primaryScreen()
         if screen is None:
@@ -763,6 +776,20 @@ class SoftLockOverlay(QWidget):
                 # everything past this point only needs the downscaled copy.
                 shot_image.fill(QColor(0, 0, 0))
                 del shot_image
+                lens_src = None
+                if _glass is not None and _glass.glass_enabled():
+                    try:
+                        # Backdrop the glass lenses refract: the desktop at half
+                        # resolution, softened and lifted toward the frosted wash.
+                        bgr = _glass.qimage_to_bgr(half)
+                        bgr = _glass.cv2.GaussianBlur(bgr, (0, 0), 2.2)
+                        lens_src = _glass.np.clip(
+                            bgr.astype(_glass.np.float32) * 0.74 + 64.0, 0.0, 255.0
+                        ).astype(_glass.np.uint8)
+                    except Exception as lens_exc:
+                        import logging
+                        logging.getLogger("MajestyGuard.UI").warning("Glass backdrop unavailable: %s", lens_exc)
+                        lens_src = None
                 first = half.scaled(
                     max(1, rect.width() // 8),
                     max(1, rect.height() // 8),
@@ -857,6 +884,8 @@ class SoftLockOverlay(QWidget):
                     painter.restore()
 
                 painter.end()
+                if lens_src is not None:
+                    self.lens_source_ready.emit(lens_src, capture_generation)
                 self.background_ready.emit(cache, capture_generation)
             except Exception as e:
                 import logging
@@ -876,6 +905,60 @@ class SoftLockOverlay(QWidget):
             return
         self._background = QPixmap.fromImage(image)
         self.update()
+
+    def _on_lens_source_ready(self, src, capture_generation: int) -> None:
+        if (
+            capture_generation != self._lock_generation
+            or self._state.name not in _LOCK_NAMES
+            or self._dissolve_anim.state() != QAbstractAnimation.State.Stopped
+        ):
+            return
+        self._lens_src = src
+        self._lens_cache.clear()
+        self.update()
+        for child in self.findChildren(QWidget):   # the island repaints with glass
+            if child.isWindow():
+                child.update()
+
+    def lens_backdrop_for(self, global_pos):
+        """(backdrop, local_x, local_y) for a child window's top-left, or None
+        when there is no lock backdrop to refract (not locked / not ready)."""
+        if (
+            self._lens_src is None
+            or not self.isVisible()
+            or self._state.name not in _LOCK_NAMES
+        ):
+            return None
+        p = self.mapFromGlobal(global_pos)
+        return self._lens_src, p.x(), p.y()
+
+    def _lens_image(self, rect: QRectF, radius: float, **kw):
+        """Cached refractive lens QImage for ``rect`` (integer-snapped), or None."""
+        if self._lens_src is None or _glass is None or not _glass.glass_enabled():
+            return None
+        x, y = int(round(rect.left())), int(round(rect.top()))
+        w, h = int(round(rect.width())), int(round(rect.height()))
+        if w < 4 or h < 4:
+            return None
+        key = (x, y, w, h, round(radius, 1), tuple(sorted(kw.items())))
+        img = self._lens_cache.get(key)
+        if img is None:
+            try:
+                arr = _glass.render_lens(self._lens_src, x, y, w, h, radius, scale=0.5, **kw)
+                img = _glass.bgra_to_qimage(arr)
+            except Exception:
+                return None
+            if len(self._lens_cache) >= 12:
+                self._lens_cache.clear()
+            self._lens_cache[key] = img
+        return img
+
+    def _draw_lens(self, painter: QPainter, rect: QRectF, radius: float, **kw) -> bool:
+        img = self._lens_image(rect, radius, **kw)
+        if img is None:
+            return False
+        painter.drawImage(int(round(rect.left())), int(round(rect.top())), img)
+        return True
 
     @staticmethod
     def _build_noise_texture() -> QImage:
@@ -958,7 +1041,27 @@ class SoftLockOverlay(QWidget):
                 self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_PROMINENT)
 
         if self.isVisible():
-            self.update()
+            # Only the animated HUD regions change between frames (clock, aura,
+            # scan sweep, corner pills); repainting the whole virtual desktop
+            # at 30 fps was pure waste. A full repaint every second is a safety
+            # net so nothing can stay stale.
+            self._tick_count += 1
+            if self._tick_count % 30 == 0 or self._opacity_value < 1.0:
+                self.update()
+            else:
+                self.update(self._dynamic_region())
+
+    def _dynamic_region(self) -> QRegion:
+        hud = self._hud_rect()
+        cx = hud.left() + hud.width() / 2.0
+        cy = hud.top() + hud.height() * 0.35
+        region = QRegion(QRect(int(cx - 340), int(cy - 225), 680, 410))
+        margin = max(24, min(42, hud.width() // 48))
+        region = region.united(QRegion(QRect(hud.left() + margin - 3, hud.top() + margin - 3, 182, 40)))
+        region = region.united(
+            QRegion(QRect(hud.right() - margin - 222, hud.bottom() - margin - 38, 226, 42))
+        )
+        return region
 
     def _use_windows_lock(self) -> None:
         import ctypes
@@ -1013,6 +1116,16 @@ class SoftLockOverlay(QWidget):
         # Center in the upper-middle region of the primary screen
         center_x = rect.left() + rect.width() / 2.0
         center_y = rect.top() + rect.height() * 0.35
+
+        # Refractive glass card the clock and prompt sit on (no-op until the
+        # desktop backdrop is ready, or when MG_UI_GLASS=0).
+        self._draw_lens(
+            painter,
+            QRectF(center_x - 280.0, center_y - 96.0, 560.0, 228.0),
+            44.0,
+            tint_alpha=0.30,
+            saturation=1.12,
+        )
 
         # Subtle state-responsive biometric / security aura behind the clock
         if self._state.name in {"verifying_lock", "social_lock", "hostile_lock", "verify_failed"}:
@@ -1216,7 +1329,20 @@ class SoftLockOverlay(QWidget):
         align: Qt.AlignmentFlag,
         brand: bool = False,
     ) -> None:
-        if brand:
+        glass_ok = self._draw_lens(
+            painter, rect, rect.height() / 2.0, tint_alpha=0.34, spec_gain=0.9
+        )
+        if glass_ok:
+            if brand:
+                text_rect = rect.adjusted(14, 0, -14, 0)
+            else:
+                dot = QColor(self._state.accent_color)
+                dot.setAlpha(190)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(dot)
+                painter.drawEllipse(QRectF(rect.left() + 14, rect.center().y() - 3, 6, 6))
+                text_rect = rect.adjusted(29, 0, -14, 0)
+        elif brand:
             path = QPainterPath()
             path.addRoundedRect(rect, 17, 17)
 
@@ -1266,7 +1392,10 @@ class SoftLockOverlay(QWidget):
             painter.drawEllipse(QRectF(rect.left() + 14, rect.center().y() - 3, 6, 6))
             text_rect = rect.adjusted(29, 0, -14, 0)
 
-        color = QColor(82, 86, 94, 118 if brand else 174)
+        if glass_ok:
+            color = QColor(46, 50, 58, 170 if brand else 215)
+        else:
+            color = QColor(82, 86, 94, 118 if brand else 174)
         painter.setPen(color)
         painter.setFont(QFont("Segoe UI Variable Text", 9, QFont.Weight.Medium))
         painter.drawText(

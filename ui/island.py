@@ -17,6 +17,11 @@ from PyQt6.QtWidgets import QWidget, QApplication
 
 from states import IslandState, get_state
 
+try:  # liquid-glass body is optional: any failure keeps the flat paint
+    import glass as _glass
+except Exception:  # pragma: no cover
+    _glass = None
+
 log = logging.getLogger("MajestyGuard.Island")
 
 _SCREEN_TOP_MARGIN = 8
@@ -783,13 +788,54 @@ class IslandWidget(QWidget):
                                 radius + offset, radius + offset)
             painter.fillPath(path, glow)
 
+    def _lens_body(self, rect: QRect, radius: float, state: IslandState):
+        """Smoked refractive lens for the pill body while the lock overlay is
+        up (it owns the desktop backdrop); None -> caller paints the flat body."""
+        if _glass is None or not _glass.glass_enabled():
+            return None
+        provider = getattr(self.parentWidget(), "lens_backdrop_for", None)
+        if provider is None or rect.width() < 8 or rect.height() < 8:
+            return None
+        try:
+            backdrop = provider(self.mapToGlobal(rect.topLeft()))
+            if backdrop is None:
+                return None
+            src, lx, ly = backdrop
+            tint = QColor(state.bg_color)
+            key = (lx, ly, rect.width(), rect.height(), round(radius, 1), tint.rgb())
+            cache = getattr(self, "_lens_cache", None)
+            if cache is None or getattr(self, "_lens_cache_src", None) is not src:
+                cache = self._lens_cache = {}      # new lock backdrop -> new lenses
+                self._lens_cache_src = src
+            img = cache.get(key)
+            if img is None:
+                arr = _glass.render_lens(
+                    src, lx, ly, rect.width(), rect.height(), radius, scale=0.5,
+                    tint=(tint.red(), tint.green(), tint.blue()), tint_alpha=0.66,
+                    saturation=1.0, spec_gain=0.85,
+                )
+                img = _glass.bgra_to_qimage(arr)
+                if len(cache) >= 24:
+                    cache.clear()
+                cache[key] = img
+            return img
+        except Exception:
+            return None
+
     def _paint_body(self, painter: QPainter, rect: QRect, radius: float, state: IslandState) -> None:
         path = QPainterPath()
         path.addRoundedRect(float(rect.x()), float(rect.y()), float(rect.width()), float(rect.height()), radius, radius)
 
-        body = QColor(state.bg_color)
-        body.setAlphaF(self._alpha * 0.985)
-        painter.fillPath(path, body)
+        lens = self._lens_body(rect, radius, state)
+        if lens is not None:
+            painter.save()
+            painter.setOpacity(painter.opacity() * max(0.0, min(1.0, self._alpha)))
+            painter.drawImage(rect.x(), rect.y(), lens)
+            painter.restore()
+        else:
+            body = QColor(state.bg_color)
+            body.setAlphaF(self._alpha * 0.985)
+            painter.fillPath(path, body)
 
         top = QLinearGradient(QPointF(rect.left(), rect.top()), QPointF(rect.left(), rect.bottom()))
         rim_alpha = int(self._alpha * (42 + 24 * self._hover_progress))

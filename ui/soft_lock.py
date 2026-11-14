@@ -38,54 +38,71 @@ try:  # liquid-glass lenses are optional: any failure keeps the flat paint
 except Exception:  # pragma: no cover
     _glass = None
 
+try:
+    from fonts import ui_font as _ui_font
+except Exception:  # pragma: no cover
+    _ui_font = None
+
+
+def _font(size, weight=QFont.Weight.Normal, **kw) -> QFont:
+    """Segoe UI Variable via fonts.ui_font; plain Segoe UI if that is unavailable."""
+    if _ui_font is not None:
+        try:
+            return _ui_font(size, weight, **kw)
+        except Exception:
+            pass
+    return QFont("Segoe UI", int(size), weight)
+
 
 _LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed"}
 
 _FALLBACK_BTN_STYLE_DIM = """
     QPushButton {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.16),
-            stop:0.45 rgba(255,255,255,0.07),
-            stop:1 rgba(255,255,255,0.04));
-        color: rgba(255,255,255,0.55);
-        border: 1px solid rgba(255,255,255,0.10);
-        border-top: 1px solid rgba(255,255,255,0.28);
-        border-radius: 8px;
-        padding: 6px 14px;
+            stop:0 rgba(255,255,255,0.50),
+            stop:1 rgba(255,255,255,0.24));
+        color: rgba(40,44,52,0.80);
+        border: 1px solid rgba(255,255,255,0.65);
+        border-bottom: 1px solid rgba(120,130,150,0.24);
+        border-radius: 16px;
+        padding: 6px 16px;
         font-size: 12px;
         font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
     }
     QPushButton:hover {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.26),
-            stop:0.45 rgba(255,255,255,0.13),
-            stop:1 rgba(255,255,255,0.08));
-        border-top: 1px solid rgba(255,255,255,0.40);
-        color: rgba(255,255,255,0.90);
+            stop:0 rgba(255,255,255,0.72),
+            stop:1 rgba(255,255,255,0.40));
+        border: 1px solid rgba(255,255,255,0.90);
+        color: rgba(20,24,32,0.95);
+    }
+    QPushButton:pressed {
+        background: rgba(255,255,255,0.30);
     }
 """
 
 _FALLBACK_BTN_STYLE_PROMINENT = """
     QPushButton {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.22),
-            stop:0.45 rgba(255,255,255,0.10),
-            stop:1 rgba(255,255,255,0.06));
-        color: rgba(255,255,255,0.90);
-        border: 1px solid rgba(255,255,255,0.14);
-        border-top: 1px solid rgba(255,255,255,0.42);
-        border-radius: 8px;
-        padding: 6px 14px;
+            stop:0 rgba(255,255,255,0.66),
+            stop:1 rgba(255,255,255,0.36));
+        color: rgba(16,50,120,0.95);
+        border: 1px solid rgba(10,132,255,0.55);
+        border-radius: 16px;
+        padding: 6px 16px;
         font-size: 12px;
+        font-weight: 600;
         font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
     }
     QPushButton:hover {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.30),
-            stop:0.45 rgba(255,255,255,0.15),
-            stop:1 rgba(255,255,255,0.09));
-        border-top: 1px solid rgba(255,255,255,0.55);
-        color: rgba(255,255,255,0.95);
+            stop:0 rgba(255,255,255,0.82),
+            stop:1 rgba(255,255,255,0.50));
+        border: 1px solid rgba(10,132,255,0.80);
+        color: rgba(8,36,96,1.0);
+    }
+    QPushButton:pressed {
+        background: rgba(255,255,255,0.40);
     }
 """
 
@@ -638,7 +655,7 @@ class SoftLockOverlay(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         hud = self._hud_rect()
-        btn_w = 180
+        btn_w = 208
         btn_h = 32
         margin = max(24, min(42, hud.width() // 48))
         self._fallback_btn.setGeometry(
@@ -741,25 +758,33 @@ class SoftLockOverlay(QWidget):
         if new_lock:
             _stop_background_media()
 
+    @staticmethod
+    def _ambient_image(w: int, h: int) -> QImage:
+        """Content-free lock backdrop (generated pastel field; solid fallback)."""
+        w, h = max(16, int(w)), max(16, int(h))
+        try:
+            if _glass is not None and _glass.glass_available():
+                arr = _glass.build_ambient(w, h)
+                return QImage(arr.tobytes(), w, h, w * 3, QImage.Format.Format_BGR888).copy()
+        except Exception:
+            pass
+        img = QImage(w, h, QImage.Format.Format_RGB32)
+        img.fill(QColor(233, 237, 243))
+        return img
+
     def _capture_background(self) -> None:
         capture_generation = self._lock_generation
         self._lens_src = None          # never refract a previous lock's desktop
         self._lens_cache.clear()
-        self._set_capture_protection(False)
         screen = QGuiApplication.primaryScreen()
         if screen is None:
-            self._set_capture_protection(True)
             self._background = QPixmap()
             return
         rect = screen.virtualGeometry()
-        shot = screen.grabWindow(0)
-        self._set_capture_protection(True)
-        if shot.isNull():
-            self._background = QPixmap()
-            return
-
-        shot_image = shot.toImage()
-        del shot
+        # Privacy: the real screen is never read. The lock backdrop is a
+        # generated light field, so nothing of the desktop behind it (colours,
+        # windows, layout) can show through. Apps keep running underneath.
+        shot_image = self._ambient_image(rect.width(), rect.height())
         noise_image = self._noise_image
         self._background = QPixmap()
 
@@ -779,12 +804,12 @@ class SoftLockOverlay(QWidget):
                 lens_src = None
                 if _glass is not None and _glass.glass_enabled():
                     try:
-                        # Backdrop the glass lenses refract: the desktop at half
-                        # resolution, softened and lifted toward the frosted wash.
+                        # Backdrop the glass lenses refract: the generated light
+                        # field at half resolution (never the real desktop).
                         bgr = _glass.qimage_to_bgr(half)
                         bgr = _glass.cv2.GaussianBlur(bgr, (0, 0), 2.2)
                         lens_src = _glass.np.clip(
-                            bgr.astype(_glass.np.float32) * 0.74 + 64.0, 0.0, 255.0
+                            bgr.astype(_glass.np.float32) * 0.90 + 22.0, 0.0, 255.0
                         ).astype(_glass.np.uint8)
                     except Exception as lens_exc:
                         import logging
@@ -820,14 +845,16 @@ class SoftLockOverlay(QWidget):
 
                 # 2. Paint glass atmosphere
                 r = QRect(0, 0, rect.width(), rect.height())
-                painter.fillRect(r, QColor(246, 248, 252, 119))
+                # The backdrop is generated (no screen content), so the old heavy
+                # privacy washes are not needed; keep a light veil for text contrast.
+                painter.fillRect(r, QColor(246, 248, 252, 36))
 
                 wash = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-                wash.setColorAt(0.0, QColor(255, 255, 255, 185))
-                wash.setColorAt(0.18, QColor(252, 254, 255, 129))
-                wash.setColorAt(0.54, QColor(244, 247, 252, 60))
-                wash.setColorAt(0.82, QColor(235, 239, 246, 75))
-                wash.setColorAt(1.0, QColor(218, 224, 235, 104))
+                wash.setColorAt(0.0, QColor(255, 255, 255, 96))
+                wash.setColorAt(0.18, QColor(252, 254, 255, 58))
+                wash.setColorAt(0.54, QColor(244, 247, 252, 24))
+                wash.setColorAt(0.82, QColor(235, 239, 246, 34))
+                wash.setColorAt(1.0, QColor(218, 224, 235, 56))
                 painter.fillRect(r, wash)
 
                 # Draw static glass glow overlays
@@ -1147,7 +1174,7 @@ class SoftLockOverlay(QWidget):
             painter.drawEllipse(QPointF(center_x, center_y - 18.0), aura_r, aura_r)
 
         # Draw Time with tight Apple lock-screen optical letter-spacing
-        time_font = QFont("Segoe UI Variable Display", 72, QFont.Weight.Light)
+        time_font = _font(72, QFont.Weight.Light, tabular=True)
         time_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         time_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -1.5)
         painter.setFont(time_font)
@@ -1164,7 +1191,7 @@ class SoftLockOverlay(QWidget):
         )
 
         # Draw Date
-        date_font = QFont("Segoe UI Variable Text", 16, QFont.Weight.Normal)
+        date_font = _font(16, QFont.Weight.Normal)
         date_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(date_font)
         painter.setPen(QColor(82, 86, 94, 168))
@@ -1196,7 +1223,7 @@ class SoftLockOverlay(QWidget):
         else:
             prompt = "Press SPACE to verify identity  ·  TAB for Windows Lock"
 
-        pill_font = QFont("Segoe UI Variable Text", 9, QFont.Weight.Medium)
+        pill_font = _font(9, QFont.Weight.Medium)
         pill_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(pill_font)
         text_advance = painter.fontMetrics().horizontalAdvance(prompt)
@@ -1397,7 +1424,7 @@ class SoftLockOverlay(QWidget):
         else:
             color = QColor(82, 86, 94, 118 if brand else 174)
         painter.setPen(color)
-        painter.setFont(QFont("Segoe UI Variable Text", 9, QFont.Weight.Medium))
+        painter.setFont(_font(9, QFont.Weight.Medium))
         painter.drawText(
             text_rect,
             align | Qt.AlignmentFlag.AlignVCenter,

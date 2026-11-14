@@ -22,6 +22,21 @@ try:  # liquid-glass body is optional: any failure keeps the flat paint
 except Exception:  # pragma: no cover
     _glass = None
 
+try:
+    from fonts import ui_font as _ui_font
+except Exception:  # pragma: no cover
+    _ui_font = None
+
+
+def _font(size, weight=QFont.Weight.Medium) -> QFont:
+    """Segoe UI Variable via fonts.ui_font; plain Segoe UI if that is unavailable."""
+    if _ui_font is not None:
+        try:
+            return _ui_font(size, weight)
+        except Exception:
+            pass
+    return QFont("Segoe UI", int(size), weight)
+
 log = logging.getLogger("MajestyGuard.Island")
 
 _SCREEN_TOP_MARGIN = 8
@@ -190,12 +205,12 @@ class IslandWidget(QWidget):
         if state.name == "active":
             if self._in_exit_sequence:
                 return
-            if self._state.name in {"idle_detected", "scanning", "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "locked"}:
+            if self._state.name in {"idle_detected", "scanning", "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed", "locked"}:
                 self._begin_exit_sequence(
                     state,
                     show_welcome=self._state.name in {
                         "locked_passive", "soft_locked", "verifying_lock",
-                        "social_lock", "hostile_lock", "locked",
+                        "social_lock", "hostile_lock", "verify_failed", "locked",
                     },
                 )
                 return
@@ -1431,7 +1446,7 @@ class IslandWidget(QWidget):
 
         label_color = QColor(160, 160, 166, int(self._alpha * self._content_alpha * 210))
         painter.setPen(label_color)
-        painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Medium))
+        painter.setFont(_font(6.5, QFont.Weight.Medium))
         painter.drawText(QRect(x, y - 12, width, 10), Qt.AlignmentFlag.AlignLeft, label)
 
     def _draw_scan_lens(self, painter: QPainter, rect: QRectF, quality: float, color: str) -> None:
@@ -1473,7 +1488,7 @@ class IslandWidget(QWidget):
         painter.drawRoundedRect(chip, 5, 5)
 
         painter.setPen(text)
-        painter.setFont(QFont("Segoe UI", 6, QFont.Weight.Medium))
+        painter.setFont(_font(6.5, QFont.Weight.Medium))
         painter.drawText(QRect(int(x + 6), int(y - 1), 32, 12), Qt.AlignmentFlag.AlignVCenter, label)
 
         fill = QColor(color)
@@ -1486,7 +1501,7 @@ class IslandWidget(QWidget):
         tc = QColor(color)
         tc.setAlphaF(self._alpha * self._content_alpha)
         painter.setPen(tc)
-        font = QFont("Segoe UI Variable Display", size, QFont.Weight.Medium)
+        font = _font(size, QFont.Weight.Medium)
         font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)

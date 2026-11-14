@@ -50,7 +50,9 @@ def test_soft_lock_overlay_source_is_fullscreen_glass_input_shield():
     assert "SetWindowPos" in text
     assert "WindowDeactivate" in text
     assert "WindowStateChange" in text
-    assert "grabWindow(0)" in text
+    # Privacy: the lock backdrop is generated; the real screen is never captured.
+    assert "grabWindow(0)" not in text
+    assert "_ambient_image" in text
     assert "WindowTransparentForInput" not in text
     assert "#F5F7FA" not in text
     assert "Secured by MajestyGuard" in text

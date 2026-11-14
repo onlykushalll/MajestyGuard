@@ -163,6 +163,51 @@ def render_lens(
     return out
 
 
+# (cx, cy, radius, RGB, strength) in unit coordinates; soft pastel light field.
+_AMBIENT_ORBS = (
+    (0.20, 0.20, 0.34, (255, 255, 255), 0.70),
+    (0.78, 0.24, 0.30, (140, 200, 255), 0.62),
+    (0.72, 0.78, 0.32, (255, 170, 205), 0.58),
+    (0.16, 0.82, 0.26, (190, 170, 255), 0.55),
+    (0.50, 0.55, 0.22, (150, 232, 205), 0.42),
+    (0.52, 0.06, 0.20, (255, 214, 160), 0.38),
+)
+
+
+@functools.lru_cache(maxsize=4)
+def _ambient_cached(w: int, h: int) -> np.ndarray:
+    sw, sh = max(8, w // 6), max(8, h // 6)
+    ys, xs = np.mgrid[0:sh, 0:sw].astype(np.float32)
+    u = xs / max(1, sw - 1)
+    v = ys / max(1, sh - 1)
+    aspect = w / float(h)
+    top = np.array((250.0, 251.0, 255.0), np.float32)
+    bottom = np.array((228.0, 235.0, 247.0), np.float32)
+    img = top[None, None, :] * (1.0 - v[:, :, None]) + bottom[None, None, :] * v[:, :, None]
+    for cx, cy, radius, rgb, strength in _AMBIENT_ORBS:
+        d2 = ((u - cx) * aspect) ** 2 + (v - cy) ** 2
+        a = (strength * np.exp(-d2 / (radius * radius)))[:, :, None]
+        img = img * (1.0 - a) + np.array(rgb, np.float32)[None, None, :] * a
+    vig = 1.0 - 0.07 * (((u - 0.5) * 1.6) ** 2 + ((v - 0.5) * 1.6) ** 2)
+    img = np.clip(img * vig[:, :, None], 0.0, 255.0).astype(np.uint8)
+    img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
+    out = np.ascontiguousarray(img[:, :, ::-1])            # RGB -> BGR
+    out.setflags(write=False)
+    return out
+
+
+def build_ambient(w: int, h: int) -> np.ndarray:
+    """Procedural pastel light field (BGR uint8, h x w, read-only).
+
+    The lock backdrop never contains anything from the real screen: the
+    overlay and the glass lenses refract this instead, so the desktop
+    behind a lock leaks no colours, shapes or layout hints.
+    """
+    if cv2 is None:
+        raise RuntimeError("cv2 unavailable")
+    return _ambient_cached(max(16, int(w)), max(16, int(h)))
+
+
 def bgra_to_qimage(arr: np.ndarray):
     """Premultiplied BGRA (h, w, 4) -> QImage that owns its memory."""
     from PyQt6.QtGui import QImage

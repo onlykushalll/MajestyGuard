@@ -54,8 +54,11 @@ class PipeReader(threading.Thread):
     def __init__(self, signal_obj: StateSignal, stop_event: threading.Event):
         super().__init__(name="mg-ui-pipe", daemon=True)
         self._sig  = signal_obj
-        self._stop = stop_event
+        # NOT ``_stop``: that name belongs to threading.Thread internals and
+        # shadowing it breaks Thread.join().
+        self._stop_event = stop_event
         self._last_state_dict = {}
+        self._pending = b""
 
     def run(self) -> None:
         GENERIC_READ  = 0x80000000
@@ -65,7 +68,7 @@ class PipeReader(threading.Thread):
 
         log.info("Pipe reader started — connecting to %s", PIPE_NAME)
 
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             # Wait up to 2s for pipe to become available
             available = k32.WaitNamedPipeW(ctypes.create_unicode_buffer(PIPE_NAME), 2000)
             if not available:
@@ -81,27 +84,41 @@ class PipeReader(threading.Thread):
                 continue
 
 
+            self._pending = b""
             try:
-                while not self._stop.is_set():
+                while not self._stop_event.is_set():
                     buf        = ctypes.create_string_buffer(4096)
                     bytes_read = ctypes.wintypes.DWORD(0)
                     ok = k32.ReadFile(handle, buf, ctypes.sizeof(buf) - 1,
                                       ctypes.byref(bytes_read), None)
                     if not ok or bytes_read.value == 0:
                         break  # Server disconnected or pipe closed
-                    raw = buf.raw[:bytes_read.value].decode("utf-8", errors="replace").strip()
-                    for line in raw.split("\n"):
-                        line = line.strip()
-                        if line:
-                            self._parse_and_emit(line)
+                    self.feed(buf.raw[:bytes_read.value])
             except Exception as e:
                 log.debug("Pipe connection error: %s", e)
             finally:
                 k32.CloseHandle(handle)
 
+    def feed(self, chunk: bytes) -> None:
+        """Accept raw pipe bytes; emit one state per complete newline-
+        terminated line. A line split across two reads (or a UTF-8 character
+        split at a read boundary) is held until its remainder arrives."""
+        self._pending += chunk
+        if len(self._pending) > 65536 and b"\n" not in self._pending:
+            self._pending = b""  # runaway/garbage guard; resync on next line
+            return
+        *lines, self._pending = self._pending.split(b"\n")
+        for line in lines:
+            text = line.decode("utf-8", errors="replace").strip()
+            if text:
+                self._parse_and_emit(text)
+
     def _parse_and_emit(self, raw: str) -> None:
         try:
             data = json.loads(raw)
+            if not isinstance(data, dict):
+                log.warning("Ignoring non-object state payload: %r", raw[:80])
+                return
             if data == self._last_state_dict:
                 return
             self._last_state_dict = data
@@ -119,6 +136,9 @@ class PipeReader(threading.Thread):
             log.debug("State: %s", data.get("state"))
         except json.JSONDecodeError as e:
             log.warning("Bad JSON from pipe: %r — %s", raw[:80], e)
+        except (TypeError, ValueError) as e:
+            # e.g. a non-numeric metric: drop this one update, keep the pipe.
+            log.warning("Unusable state payload %r — %s", raw[:80], e)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

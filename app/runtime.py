@@ -181,10 +181,8 @@ class Supervisor:
         if self._enrollment_process is not None and self._enrollment_process.poll() is None:
             return False
 
-        if self.status() in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING):
-            self._resume_after_enrollment = True
-            self.stop()
-
+        # Resolve what to launch BEFORE touching the running daemon, so a
+        # missing enrollment tool cannot leave protection switched off.
         packaged_daemon = self._packaged_daemon_executable()
         if packaged_daemon is not None and packaged_daemon.is_file():
             cmd = [str(packaged_daemon), "--enroll"]
@@ -193,6 +191,11 @@ class Supervisor:
             if not entrypoint.is_file():
                 return False
             cmd = [str(self._python), str(entrypoint)]
+
+        was_running = self.status() in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING)
+        if was_running:
+            self._resume_after_enrollment = True
+            self.stop()
 
         environment = dict(os.environ)
         environment.update(
@@ -210,6 +213,10 @@ class Supervisor:
             )
         except OSError:
             self._enrollment_process = None
+            if was_running:
+                # Nothing will ever signal completion; put protection back now.
+                self._resume_after_enrollment = False
+                self.start()
             return False
         return True
 

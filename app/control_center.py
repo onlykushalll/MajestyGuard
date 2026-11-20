@@ -393,7 +393,11 @@ class ControlCenter(QMainWindow):
         perf_text = "Engine: Ready"
         if log_file.is_file():
             try:
-                tail = log_file.read_text(encoding="utf-8", errors="replace")[-4096:]
+                # Only the last 4 KB matters; never slurp a multi-MB log every 2 s.
+                with log_file.open("rb") as handle:
+                    handle.seek(0, os.SEEK_END)
+                    handle.seek(max(0, handle.tell() - 4096))
+                    tail = handle.read().decode("utf-8", errors="replace")
                 for line in reversed(tail.splitlines()):
                     if "total=" in line and "Cold start complete:" in line:
                         total_part = line.split("total=", 1)[1].split()[0]

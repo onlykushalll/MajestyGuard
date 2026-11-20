@@ -315,24 +315,31 @@ def _disable_accessibility_shortcuts() -> None:
     global _saved_stickykeys, _saved_togglekeys, _saved_filterkeys
     user32 = ctypes.windll.user32
     try:
+        # Save the user's ORIGINAL state only once per lock. A repeat call
+        # (lock re-engaged while hooks are still up) would otherwise read the
+        # already-disabled values and save those, so unlock could never
+        # restore the real settings.
         sk = _STICKYKEYS(cbSize=ctypes.sizeof(_STICKYKEYS))
         user32.SystemParametersInfoW(SPI_GETSTICKYKEYS, ctypes.sizeof(sk), ctypes.byref(sk), 0)
-        _saved_stickykeys = _STICKYKEYS(cbSize=sk.cbSize, dwFlags=sk.dwFlags)
+        if _saved_stickykeys is None:
+            _saved_stickykeys = _STICKYKEYS(cbSize=sk.cbSize, dwFlags=sk.dwFlags)
         sk.dwFlags &= ~_HOTKEYACTIVE_BIT
         user32.SystemParametersInfoW(SPI_SETSTICKYKEYS, ctypes.sizeof(sk), ctypes.byref(sk), _SPIF_SENDCHANGE)
 
         tk = _TOGGLEKEYS(cbSize=ctypes.sizeof(_TOGGLEKEYS))
         user32.SystemParametersInfoW(SPI_GETTOGGLEKEYS, ctypes.sizeof(tk), ctypes.byref(tk), 0)
-        _saved_togglekeys = _TOGGLEKEYS(cbSize=tk.cbSize, dwFlags=tk.dwFlags)
+        if _saved_togglekeys is None:
+            _saved_togglekeys = _TOGGLEKEYS(cbSize=tk.cbSize, dwFlags=tk.dwFlags)
         tk.dwFlags &= ~_HOTKEYACTIVE_BIT
         user32.SystemParametersInfoW(SPI_SETTOGGLEKEYS, ctypes.sizeof(tk), ctypes.byref(tk), _SPIF_SENDCHANGE)
 
         fk = _FILTERKEYS(cbSize=ctypes.sizeof(_FILTERKEYS))
         user32.SystemParametersInfoW(SPI_GETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), 0)
-        _saved_filterkeys = _FILTERKEYS(
-            cbSize=fk.cbSize, dwFlags=fk.dwFlags, iWaitMSec=fk.iWaitMSec,
-            iDelayMSec=fk.iDelayMSec, iRepeatMSec=fk.iRepeatMSec, iBounceMSec=fk.iBounceMSec,
-        )
+        if _saved_filterkeys is None:
+            _saved_filterkeys = _FILTERKEYS(
+                cbSize=fk.cbSize, dwFlags=fk.dwFlags, iWaitMSec=fk.iWaitMSec,
+                iDelayMSec=fk.iDelayMSec, iRepeatMSec=fk.iRepeatMSec, iBounceMSec=fk.iBounceMSec,
+            )
         fk.dwFlags &= ~_HOTKEYACTIVE_BIT
         user32.SystemParametersInfoW(SPI_SETFILTERKEYS, ctypes.sizeof(fk), ctypes.byref(fk), _SPIF_SENDCHANGE)
     except Exception:

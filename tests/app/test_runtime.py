@@ -257,3 +257,39 @@ def test_start_enrollment_stops_running_daemon_and_resumes_after_completion(tmp_
     # Simulate enrollment finishing -> next status() poll auto-resumes protection
     enroll_proc.returncode = 0
     assert supervisor.status() is RuntimeStatus.RUNNING
+
+
+def test_start_enrollment_failure_does_not_leave_daemon_stopped(tmp_path, monkeypatch):
+    """No enrollment script: the running daemon must be left alone."""
+    daemon_entry = tmp_path / "daemon" / "main.py"
+    daemon_entry.parent.mkdir(parents=True)
+    daemon_entry.write_text("# daemon", encoding="utf-8")  # no enroll_v2.py
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    running_daemon = FakeProcess(returncode=None)
+    supervisor._process = running_daemon
+
+    assert supervisor.start_enrollment() is False
+    assert running_daemon.terminated is False
+    assert supervisor.status() is RuntimeStatus.RUNNING
+
+
+def test_start_enrollment_spawn_failure_restores_the_daemon(tmp_path, monkeypatch):
+    daemon_entry = tmp_path / "daemon" / "main.py"
+    enroll_entry = tmp_path / "daemon" / "enroll_v2.py"
+    daemon_entry.parent.mkdir(parents=True)
+    daemon_entry.write_text("# daemon", encoding="utf-8")
+    enroll_entry.write_text("# enroll", encoding="utf-8")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    old_daemon = FakeProcess(returncode=None)
+    supervisor._process = old_daemon
+
+    def _boom(*_args):
+        raise OSError("cannot spawn")
+
+    monkeypatch.setattr(supervisor, "_spawn_enrollment", _boom)
+    monkeypatch.setattr(supervisor, "_spawn", lambda *_args: FakeProcess(returncode=None))
+
+    assert supervisor.start_enrollment() is False
+    assert old_daemon.terminated is True
+    assert supervisor.status() is RuntimeStatus.RUNNING  # protection restored
+    assert supervisor._resume_after_enrollment is False

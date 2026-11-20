@@ -149,3 +149,32 @@ def test_control_center_timeout_preset_updates_spinbox_and_saves(qapp, tmp_path)
     assert view._timeout_input.value() == 120
     assert supervisor.idle_timeout == 120
     view.close()
+
+
+def test_perf_chip_reads_only_the_log_tail(qapp, tmp_path):
+    log_file = tmp_path / "daemon.log"
+    junk = ("x" * 99 + "\n") * 5000  # ~500 KB of unrelated lines
+    log_file.write_text(
+        "Cold start complete: total=9.99s\n" + junk + "Cold start complete: total=1.23s\n",
+        encoding="utf-8",
+    )
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+
+    view.refresh()
+
+    assert view._perf_chip.text() == "Cold start: 1.23s"
+    view.close()
+
+
+def test_perf_chip_ignores_a_cold_start_line_outside_the_tail(qapp, tmp_path):
+    log_file = tmp_path / "daemon.log"
+    log_file.write_text(
+        "Cold start complete: total=9.99s\n" + ("y" * 99 + "\n") * 5000,
+        encoding="utf-8",
+    )
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+
+    view.refresh()
+
+    assert view._perf_chip.text() == "Engine: Ready"
+    view.close()

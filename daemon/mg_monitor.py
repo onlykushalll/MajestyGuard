@@ -138,13 +138,40 @@ def _read_pid(path: pathlib.Path) -> int:
 
 
 def _is_pid_alive(pid: int) -> bool:
-    """Check if a process with given PID exists."""
+    """Check whether a process with this PID exists, WITHOUT touching it.
+
+    ``os.kill`` with signal 0 must never be used for this on Windows: CPython maps
+    every signal other than CTRL_C/CTRL_BREAK to TerminateProcess, so the
+    "probe" would kill a live (possibly unrelated, PID-reused) process.
+    """
     if pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, SystemError):
+    if not hasattr(ctypes, "windll"):
+        try:  # POSIX: signal 0 is a pure existence probe there
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True
+        except (OSError, SystemError):
+            return False
+    try:  # query-only handle; never terminates anything
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.DWORD)]
+        kernel32.GetExitCodeProcess.restype = ctypes.wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        try:
+            code = ctypes.wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
         return False
 
 
@@ -260,7 +287,12 @@ class MonitorDaemon:
 
     def _loop(self) -> None:
         while not self._stop:
-            self._tick()
+            try:
+                self._tick()
+            except Exception:
+                # A transient OSError (file in use, Popen failure) must not
+                # end the watchdog: nothing would relaunch the monitor.
+                log.exception("Monitor tick failed; continuing")
             time.sleep(POLL_INTERVAL_S)
 
     def _tick(self) -> None:

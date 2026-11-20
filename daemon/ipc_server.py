@@ -259,13 +259,15 @@ class IPCServer:
                 with self._lock:
                     self._client_handle = handle
                     self._client_connected.set()
-                    # Send current state immediately
                     payload = json.dumps(self._state) + "\n"
-                    win32file.WriteFile(handle, payload.encode("utf-8"))
-                    try:
-                        win32file.FlushFileBuffers(handle)
-                    except pywintypes.error:
-                        pass
+                # Pipe I/O happens OUTSIDE the lock: a stalled UI client fills the
+                # pipe buffer and blocks WriteFile, and broadcast_state() (called
+                # from the camera/state loop) needs this same lock.
+                win32file.WriteFile(handle, payload.encode("utf-8"))
+                try:
+                    win32file.FlushFileBuffers(handle)
+                except pywintypes.error:
+                    pass
 
                 # Keep connection open and push new states
                 self._has_new_state.clear()
@@ -277,12 +279,12 @@ class IPCServer:
                         self._has_new_state.clear()
                         with self._lock:
                             payload = json.dumps(self._state) + "\n"
-                            try:
-                                win32file.WriteFile(handle, payload.encode("utf-8"))
-                                win32file.FlushFileBuffers(handle)
-                            except pywintypes.error:
-                                # Client disconnected
-                                break
+                        try:
+                            win32file.WriteFile(handle, payload.encode("utf-8"))
+                            win32file.FlushFileBuffers(handle)
+                        except pywintypes.error:
+                            # Client disconnected
+                            break
                     else:
                         # Periodically check if client disconnected
                         try:

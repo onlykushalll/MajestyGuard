@@ -1163,8 +1163,12 @@ class MajestyGuardDaemon:
                         pid = 0
                     if pid > 0:
                         try:
-                            os.kill(pid, 0)
-                        except (OSError, SystemError):
+                            import psutil
+
+                            monitor_alive = psutil.pid_exists(pid)  # existence check only: os.kill with signal 0 terminates on Windows
+                        except ImportError:
+                            monitor_alive = True
+                        if not monitor_alive:
                             log.warning("[Watchdog] Monitor daemon (PID %d) died while locked — relaunching", pid)
                             subprocess.Popen(
                                 [sys.executable, str(monitor_script)],

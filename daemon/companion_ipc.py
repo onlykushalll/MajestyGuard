@@ -225,12 +225,12 @@ def _serve_one_connection_sync() -> None:
         assert key is not None
 
         # Compute HMAC-SHA256(MutualAuthKey, serviceNonce || deviceNonce || sessionNonce)
-        try:
-            msg = bytes.fromhex(service_nonce_hex) + bytes.fromhex(device_nonce_hex) + bytes.fromhex(session_nonce_hex)
-        except ValueError as e:
-            log.error("WHCDF: nonce parse error — %s", e)
-            _reply(handle, f"HMAC_DENIED\nnonce-parse-error: {e}")
+        msg, nonce_error = _build_nonce_message(service_nonce_hex, device_nonce_hex, session_nonce_hex)
+        if nonce_error:
+            log.error("WHCDF: nonce rejected — %s", nonce_error)
+            _reply(handle, f"HMAC_DENIED\n{nonce_error}")
             return
+        assert msg is not None
 
         mac = hmac.new(key, msg, hashlib.sha256).hexdigest()
         log.info("WHCDF: authorized — sending HMAC")
@@ -248,6 +248,25 @@ def _serve_one_connection_sync() -> None:
         except pywintypes.error:
             pass
         win32file.CloseHandle(handle)
+
+
+def _build_nonce_message(*nonce_hexes: str):
+    """Concatenate the three hex nonces into the HMAC input.
+
+    Returns ``(message, None)`` on success or ``(None, reason)`` when a nonce is
+    malformed or empty. An empty nonce would let a caller obtain a MAC over a
+    predictable, attacker-controlled message, so it is refused outright.
+    """
+    parts = []
+    for name, value in zip(("service", "device", "session"), nonce_hexes):
+        try:
+            raw = bytes.fromhex(value)
+        except ValueError as exc:
+            return None, f"nonce-parse-error: {exc}"
+        if not raw:
+            return None, f"empty-nonce: {name}"
+        parts.append(raw)
+    return b"".join(parts), None
 
 
 def _reply(handle, text: str) -> None:

@@ -87,3 +87,25 @@ def test_whcdf_authorizes_only_after_client_key_and_face_gates(monkeypatch):
     assert key == bytes.fromhex("aa" * 32)
     assert reason is None
     companion_ipc.FaceState.clear()
+
+
+def test_whcdf_nonce_message_concatenates_valid_nonces():
+    msg, error = companion_ipc._build_nonce_message("0a0b", "0c", "0d0e")
+
+    assert error is None
+    assert msg == bytes.fromhex("0a0b0c0d0e")
+
+
+def test_whcdf_nonce_message_rejects_empty_nonce():
+    for args in (("", "0c", "0d"), ("0a", "", "0d"), ("0a", "0c", "")):
+        msg, error = companion_ipc._build_nonce_message(*args)
+
+        assert msg is None
+        assert error.startswith("empty-nonce")
+
+
+def test_whcdf_nonce_message_rejects_non_hex():
+    msg, error = companion_ipc._build_nonce_message("0a", "zz", "0d")
+
+    assert msg is None
+    assert error.startswith("nonce-parse-error")

@@ -826,8 +826,8 @@ class IslandWidget(QWidget):
             if img is None:
                 arr = _glass.render_lens(
                     src, lx, ly, rect.width(), rect.height(), radius, scale=0.5,
-                    tint=(tint.red(), tint.green(), tint.blue()), tint_alpha=0.66,
-                    saturation=1.0, spec_gain=0.85,
+                    tint=(tint.red(), tint.green(), tint.blue()), tint_alpha=0.80,
+                    saturation=1.35, spec_gain=0.95, bulge=0.04,
                 )
                 img = _glass.bgra_to_qimage(arr)
                 if len(cache) >= 24:
@@ -1384,13 +1384,14 @@ class IslandWidget(QWidget):
         accent.setAlphaF(self._alpha * self._content_alpha)
         label = state.label
         detail = {
-            "locked_passive": "Click or Space",
-            "soft_locked": "Click or Space",
+            "locked_passive": "Press Space",
+            "soft_locked": "Press Space",
             "social_lock": "Owner only",
-            "hostile_lock": "Windows lock",
+            "hostile_lock": "Tab for Windows",
+            "camera_fault": "Space to retry",
         }.get(state.name, state.detail)
 
-        content_w = 174 if state.name in {"locked_passive", "soft_locked"} else 214
+        content_w = 174 if state.name in {"locked_passive", "soft_locked", "camera_fault"} else 214
         start_x = rect.center().x() - content_w / 2
         badge = QRectF(start_x, rect.center().y() - 16, 32, 32)
         painter.setPen(QPen(accent, 1.8))
@@ -1504,4 +1505,6 @@ class IslandWidget(QWidget):
         font = _font(size, QFont.Weight.Medium)
         font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
         painter.setFont(font)
+        # Never clip mid-glyph: a label wider than its slot gets an ellipsis.
+        text = painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, max(1, rect.width()))
         painter.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)

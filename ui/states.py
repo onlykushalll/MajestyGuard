@@ -47,7 +47,7 @@ STATES: dict[str, IslandState] = {
     ),
     "idle_detected": IslandState(
         name="idle_detected",
-        width=180,
+        width=204,
         height=34,
         bg_color="#0A0A0A",
         border_color="#3A3A3C",

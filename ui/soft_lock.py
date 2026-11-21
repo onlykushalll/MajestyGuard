@@ -29,9 +29,11 @@ from PyQt6.QtGui import (
     QRadialGradient,
     QRegion,
 )
-from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from states import IslandState, get_state
+import lock_layout as _layout
+import tokens as _tok
 from tab_confirm import ACTION_LOCK, TabConfirmGate
 
 try:  # liquid-glass lenses are optional: any failure keeps the flat paint
@@ -59,56 +61,6 @@ _LOCK_NAMES = {
     "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
     "verify_failed", "camera_fault",
 }
-
-_FALLBACK_BTN_STYLE_DIM = """
-    QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.50),
-            stop:1 rgba(255,255,255,0.24));
-        color: rgba(40,44,52,0.80);
-        border: 1px solid rgba(255,255,255,0.65);
-        border-bottom: 1px solid rgba(120,130,150,0.24);
-        border-radius: 16px;
-        padding: 6px 16px;
-        font-size: 12px;
-        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
-    }
-    QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.72),
-            stop:1 rgba(255,255,255,0.40));
-        border: 1px solid rgba(255,255,255,0.90);
-        color: rgba(20,24,32,0.95);
-    }
-    QPushButton:pressed {
-        background: rgba(255,255,255,0.30);
-    }
-"""
-
-_FALLBACK_BTN_STYLE_PROMINENT = """
-    QPushButton {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.66),
-            stop:1 rgba(255,255,255,0.36));
-        color: rgba(16,50,120,0.95);
-        border: 1px solid rgba(10,132,255,0.55);
-        border-radius: 16px;
-        padding: 6px 16px;
-        font-size: 12px;
-        font-weight: 600;
-        font-family: 'Segoe UI Variable', 'Segoe UI', sans-serif;
-    }
-    QPushButton:hover {
-        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-            stop:0 rgba(255,255,255,0.82),
-            stop:1 rgba(255,255,255,0.50));
-        border: 1px solid rgba(10,132,255,0.80);
-        color: rgba(8,36,96,1.0);
-    }
-    QPushButton:pressed {
-        background: rgba(255,255,255,0.40);
-    }
-"""
 
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
@@ -595,11 +547,11 @@ class SoftLockOverlay(QWidget):
         self._dissolve_generation = -1
         self._last_win32_reassert_at = 0.0
 
-        self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
-        self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
-        self._fallback_btn.setFixedHeight(32)
-        self._fallback_btn.clicked.connect(self._on_tab_pressed)
-        self._fallback_btn.hide()
+        # The mouse is pinned while locked, so there are no buttons: the SPACE and
+        # TAB key caps are painted and driven by the keyboard hook alone.
+        self._key_flash: dict = {}
+        self._state_changed_at = time.monotonic()
+        self._layout_cache = None
 
         self._setup_window()
         self._setup_motion()
@@ -668,15 +620,7 @@ class SoftLockOverlay(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        hud = self._hud_rect()
-        btn_w = 264
-        btn_h = 32
-        margin = max(24, min(42, hud.width() // 48))
-        self._fallback_btn.setGeometry(
-            hud.left() + margin,
-            hud.bottom() - btn_h - margin,
-            btn_w, btn_h
-        )
+        self._layout_cache = None
 
     def _force_topmost(self) -> None:
         try:
@@ -706,11 +650,8 @@ class SoftLockOverlay(QWidget):
     def apply_state(self, state: IslandState) -> None:
         if state.name != "camera_fault":
             self._tab_gate.reset()
-        self._fallback_btn.setText(
-            "Press TAB twice → Windows password"
-            if state.name == "camera_fault"
-            else "Press TAB → Windows lock"
-        )
+        if state.name != self._state.name:
+            self._state_changed_at = time.monotonic()
         if state.name == self._state.name and self.isVisible():
             self._state = state
             # Only a lock-family repeat re-asserts lock ownership. The daemon
@@ -748,10 +689,7 @@ class SoftLockOverlay(QWidget):
                 QTimer.singleShot(0, self._capture_background)
 
                 self._lock_shown_at = time.monotonic()
-                self._fallback_prominent = False
-                self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
-                self._fallback_btn.show()
-                self._fallback_btn.raise_()
+                self._state_changed_at = self._lock_shown_at
             else:
                 self._force_topmost()
                 self.raise_()
@@ -810,134 +748,56 @@ class SoftLockOverlay(QWidget):
         self._background = QPixmap()
 
         def _worker():
-            nonlocal shot_image
             try:
-                half = shot_image.scaled(
-                    max(1, rect.width() // 2),
-                    max(1, rect.height() // 2),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                # Release the unblurred screenshot from memory immediately —
-                # everything past this point only needs the downscaled copy.
-                shot_image.fill(QColor(0, 0, 0))
-                del shot_image
                 lens_src = None
                 if _glass is not None and _glass.glass_enabled():
                     try:
-                        # Backdrop the glass lenses refract: the generated light
-                        # field at half resolution (never the real desktop).
+                        # What the glass lenses refract: the generated field at half
+                        # resolution, lightly softened so rims stay crisp.
+                        half = shot_image.scaled(
+                            max(1, rect.width() // 2),
+                            max(1, rect.height() // 2),
+                            Qt.AspectRatioMode.IgnoreAspectRatio,
+                            Qt.TransformationMode.SmoothTransformation,
+                        )
                         bgr = _glass.qimage_to_bgr(half)
-                        bgr = _glass.cv2.GaussianBlur(bgr, (0, 0), 2.2)
+                        bgr = _glass.cv2.GaussianBlur(bgr, (0, 0), 1.1)
                         lens_src = _glass.np.clip(
-                            bgr.astype(_glass.np.float32) * 0.90 + 22.0, 0.0, 255.0
+                            bgr.astype(_glass.np.float32) * 0.96 + 8.0, 0.0, 255.0
                         ).astype(_glass.np.uint8)
                     except Exception as lens_exc:
                         import logging
                         logging.getLogger("MajestyGuard.UI").warning("Glass backdrop unavailable: %s", lens_exc)
                         lens_src = None
-                first = half.scaled(
-                    max(1, rect.width() // 8),
-                    max(1, rect.height() // 8),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                second = first.scaled(
-                    max(1, rect.width() // 3),
-                    max(1, rect.height() // 3),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-                blurred = second.scaled(
-                    rect.width(),
-                    rect.height(),
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
 
-                # Pre-render atmosphere and noise on a QImage off-thread
-                cache = QImage(blurred.size(), QImage.Format.Format_ARGB32)
+                # Static layer: the generated field, a light veil for text
+                # contrast, a top highlight, a bottom shade and film grain.
+                cache = QImage(shot_image.size(), QImage.Format.Format_ARGB32)
                 cache.fill(Qt.GlobalColor.transparent)
                 painter = QPainter(cache)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-                # 1. Paint blurred background screenshot
-                painter.drawImage(0, 0, blurred)
-
-                # 2. Paint glass atmosphere
-                r = QRect(0, 0, rect.width(), rect.height())
-                # The backdrop is generated (no screen content), so the old heavy
-                # privacy washes are not needed; keep a light veil for text contrast.
-                painter.fillRect(r, QColor(246, 248, 252, 36))
-
-                wash = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-                wash.setColorAt(0.0, QColor(255, 255, 255, 96))
-                wash.setColorAt(0.18, QColor(252, 254, 255, 58))
-                wash.setColorAt(0.54, QColor(244, 247, 252, 24))
-                wash.setColorAt(0.82, QColor(235, 239, 246, 34))
-                wash.setColorAt(1.0, QColor(218, 224, 235, 56))
-                painter.fillRect(r, wash)
-
-                # Draw static glass glow overlays
-                for x, y, radius, color, alpha in (
-                    (r.width() * 0.22, r.height() * 0.22, r.width() * 0.44, QColor(255, 255, 255), 66),
-                    (r.width() * 0.77, r.height() * 0.26, r.width() * 0.34, QColor(205, 235, 255), 38),
-                    (r.width() * 0.72, r.height() * 0.76, r.width() * 0.38, QColor(255, 226, 238), 31),
-                    (r.width() * 0.18, r.height() * 0.82, r.width() * 0.30, QColor(222, 233, 255), 25),
-                ):
-                    glow = QRadialGradient(float(x), float(y), float(radius))
-                    color.setAlpha(alpha)
-                    glow.setColorAt(0.0, color)
-                    glow.setColorAt(0.62, QColor(color.red(), color.green(), color.blue(), max(0, alpha // 5)))
-                    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-                    painter.fillRect(r, glow)
-
-                sheen = QLinearGradient(0.0, 0.0, float(r.width()), 0.0)
-                sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
-                sheen.setColorAt(0.20, QColor(255, 255, 255, 48))
-                sheen.setColorAt(0.50, QColor(255, 255, 255, 25))
-                sheen.setColorAt(0.80, QColor(255, 255, 255, 44))
-                sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-                painter.fillRect(r, sheen)
-
-                band = QLinearGradient(0.0, r.height() * 0.44, 0.0, r.height() * 0.60)
-                band.setColorAt(0.0, QColor(255, 255, 255, 0))
-                band.setColorAt(0.48, QColor(255, 255, 255, 35))
-                band.setColorAt(1.0, QColor(255, 255, 255, 0))
-                painter.fillRect(r, band)
-
-                edge = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-                edge.setColorAt(0.0, QColor(255, 255, 255, 106))
-                edge.setColorAt(0.09, QColor(255, 255, 255, 0))
-                edge.setColorAt(0.88, QColor(255, 255, 255, 0))
-                edge.setColorAt(1.0, QColor(255, 255, 255, 69))
-                painter.fillRect(r, edge)
-
+                painter.drawImage(0, 0, shot_image)
+                r = QRect(0, 0, cache.width(), cache.height())
+                painter.fillRect(r, QColor(248, 250, 255, 30))
+                top = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
+                top.setColorAt(0.0, QColor(255, 255, 255, 84))
+                top.setColorAt(0.20, QColor(255, 255, 255, 0))
+                top.setColorAt(0.80, QColor(40, 50, 80, 0))
+                top.setColorAt(1.0, QColor(40, 50, 80, 38))
+                painter.fillRect(r, top)
                 painter.fillRect(QRectF(0.0, 0.0, float(r.width()), 1.5), QColor(255, 255, 255, 150))
-                painter.fillRect(QRectF(0.0, 0.0, 1.5, float(r.height())), QColor(255, 255, 255, 73))
-                painter.fillRect(QRectF(r.width() - 1.5, 0.0, 1.5, float(r.height())), QColor(255, 255, 255, 44))
-                painter.fillRect(QRectF(0.0, r.height() - 1.5, float(r.width()), 1.5), QColor(84, 88, 96, 31))
-
-                shade = QLinearGradient(0.0, 0.0, 0.0, float(r.height()))
-                shade.setColorAt(0.0, QColor(0, 0, 0, 0))
-                shade.setColorAt(0.72, QColor(0, 0, 0, 0))
-                shade.setColorAt(1.0, QColor(44, 52, 64, 35))
-                painter.fillRect(r, shade)
-
-                # 3. Paint noise texture
                 if noise_image is not None and not noise_image.isNull():
                     painter.save()
-                    painter.setOpacity(0.11)
+                    painter.setOpacity(0.08)
                     painter.fillRect(r, QBrush(noise_image))
                     painter.restore()
-
                 painter.end()
                 if lens_src is not None:
                     self.lens_source_ready.emit(lens_src, capture_generation)
                 self.background_ready.emit(cache, capture_generation)
             except Exception as e:
                 import logging
-                logging.getLogger("MajestyGuard.UI").error("Asynchronous background blur failed: %s", e)
+                logging.getLogger("MajestyGuard.UI").error("Asynchronous background render failed: %s", e)
 
         import threading
         threading.Thread(target=_worker, name="mg-bg-blur", daemon=True).start()
@@ -1055,7 +915,6 @@ class SoftLockOverlay(QWidget):
             return
         self._timer.stop()
         self.hide()
-        self._fallback_btn.hide()
         self._lock_shown_at = None
         self.setWindowOpacity(1.0)  # reset for next show
         self._set_capture_protection(False)
@@ -1083,11 +942,6 @@ class SoftLockOverlay(QWidget):
             self.raise_()
             self.activateWindow()
 
-        if self._lock_shown_at and (now - self._lock_shown_at) > 5.0:
-            if not getattr(self, "_fallback_prominent", False):
-                self._fallback_prominent = True
-                self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_PROMINENT)
-
         if self.isVisible():
             # Only the animated HUD regions change between frames (clock, aura,
             # scan sweep, corner pills); repainting the whole virtual desktop
@@ -1100,21 +954,16 @@ class SoftLockOverlay(QWidget):
                 self.update(self._dynamic_region())
 
     def _dynamic_region(self) -> QRegion:
-        hud = self._hud_rect()
-        cx = hud.left() + hud.width() / 2.0
-        cy = hud.top() + hud.height() * 0.35
-        region = QRegion(QRect(int(cx - 340), int(cy - 225), 680, 410))
-        margin = max(24, min(42, hud.width() // 48))
-        region = region.united(QRegion(QRect(hud.left() + margin - 3, hud.top() + margin - 3, 182, 40)))
-        region = region.united(
-            QRegion(QRect(hud.right() - margin - 222, hud.bottom() - margin - 38, 226, 42))
-        )
+        region = QRegion()
+        for x, y, w, h in _layout.animated_bounds(self._layout()):
+            region = region.united(QRegion(QRect(int(x), int(y), int(w) + 1, int(h) + 1)))
         return region
 
     def _camera_fault_active(self) -> bool:
         return self._state.name == "camera_fault"
 
     def _on_tab_pressed(self) -> None:
+        self._mark_key("TAB")
         action = self._tab_gate.press(confirmation_required=self._camera_fault_active())
         if action == ACTION_LOCK:
             self._use_windows_lock()
@@ -1133,7 +982,6 @@ class SoftLockOverlay(QWidget):
         if self._on_windows_lock_used:
             self._on_windows_lock_used()
         self.hide()
-        self._fallback_btn.hide()
         self._lock_shown_at = None
         ctypes.windll.user32.LockWorkStation()
 
@@ -1162,326 +1010,223 @@ class SoftLockOverlay(QWidget):
         self._paint_brand_signature(painter)
         painter.end()
 
+    # ------------------------------------------------------------------ layout
+    def _layout(self):
+        hud = self._hud_rect()
+        key = (hud.x(), hud.y(), hud.width(), hud.height())
+        cached = getattr(self, "_layout_cache", None)
+        if cached is None or cached[0] != key:
+            cached = (key, _layout.compute(*key))
+            self._layout_cache = cached
+        return cached[1]
+
+    def _accent(self, alpha: int = 255) -> QColor:
+        r, g, b = _tok.accent_for(self._state.name)
+        return QColor(r, g, b, alpha)
+
+    def _ink(self, alpha: int = 255, soft: int = 0) -> QColor:
+        r, g, b = (_tok.INK, _tok.INK_SOFT, _tok.INK_FAINT)[soft]
+        return QColor(r, g, b, alpha)
+
+    def _content_alpha(self) -> float:
+        """0 -> 1 over 220 ms after the state changes, so copy fades in."""
+        return max(0.0, min(1.0, (time.monotonic() - self._state_changed_at) / 0.22))
+
+    def _mark_key(self, key: str) -> None:
+        self._key_flash[key] = time.monotonic()
+        self.update()
+
+    def _draw_text(self, painter, rect, text, font, color, align=Qt.AlignmentFlag.AlignHCenter):
+        painter.setFont(font)
+        painter.setPen(color)
+        text = painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, int(rect.width()))
+        painter.drawText(rect, align | Qt.AlignmentFlag.AlignVCenter, text)
+
+    # -------------------------------------------------------------------- card
     def _paint_clock(self, painter: QPainter) -> None:
         from datetime import datetime
-        now = datetime.now()
-        time_str = now.strftime("%H:%M")
-        date_str = now.strftime("%A, %B %d")
 
-        rect = self._hud_rect()
+        lay = self._layout()
+        s = lay.scale
+        name = self._state.name
+        now = datetime.now()
+        card = QRectF(*lay.card)
+        cx = lay.cx
+        pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
         painter.save()
 
-        # Center in the upper-middle region of the primary screen
-        center_x = rect.left() + rect.width() / 2.0
-        center_y = rect.top() + rect.height() * 0.35
-
-        # Refractive glass card the clock and prompt sit on (no-op until the
-        # desktop backdrop is ready, or when MG_UI_GLASS=0).
-        self._draw_lens(
-            painter,
-            QRectF(center_x - 280.0, center_y - 96.0, 560.0, 228.0),
-            44.0,
-            tint_alpha=0.30,
-            saturation=1.12,
-        )
-
-        # Subtle state-responsive biometric / security aura behind the clock
-        if self._state.name in {"verifying_lock", "social_lock", "hostile_lock", "verify_failed"}:
-            pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
-            aura_r = 165.0 + 18.0 * pulse
-            aura = QRadialGradient(QPointF(center_x, center_y - 18.0), aura_r)
-            if self._state.name == "verifying_lock":
-                aura.setColorAt(0.0, QColor(52, 199, 89, int(34 + 22 * pulse)))
-                aura.setColorAt(0.6, QColor(100, 210, 255, int(16 + 10 * pulse)))
-            elif self._state.name == "social_lock":
-                aura.setColorAt(0.0, QColor(255, 179, 64, int(36 + 20 * pulse)))
-                aura.setColorAt(0.6, QColor(255, 149, 0, int(14 + 10 * pulse)))
-            else:
-                aura.setColorAt(0.0, QColor(255, 69, 58, int(38 + 24 * pulse)))
-                aura.setColorAt(0.6, QColor(255, 105, 97, int(16 + 10 * pulse)))
+        # State aura: a soft coloured glow behind the card in every non-idle state.
+        if name not in {"locked_passive", "soft_locked"}:
+            aura_r = card.width() * (0.66 + 0.03 * pulse)
+            centre = QPointF(cx, card.center().y())
+            aura = QRadialGradient(centre, aura_r)
+            strong = int((46 + 26 * pulse) * self._content_alpha())
+            aura.setColorAt(0.0, self._accent(strong))
+            aura.setColorAt(0.62, self._accent(strong // 4))
             aura.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(aura)
-            painter.drawEllipse(QPointF(center_x, center_y - 18.0), aura_r, aura_r)
+            painter.drawEllipse(centre, aura_r, aura_r * 0.78)
 
-        # Draw Time with tight Apple lock-screen optical letter-spacing
-        time_font = _font(72, QFont.Weight.Light, tabular=True)
-        time_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
-        time_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -1.5)
+        radius = _tok.RADIUS_CARD * s
+        tint = (255, 255, 255)
+        if name not in {"locked_passive", "soft_locked"}:
+            ar, ag, ab = _tok.accent_for(name)
+            tint = (255 - int((255 - ar) * 0.22), 255 - int((255 - ag) * 0.22), 255 - int((255 - ab) * 0.22))
+        if not self._draw_lens(painter, card, radius, tint=tint, tint_alpha=0.42, saturation=1.10, bulge=0.07):
+            path = QPainterPath()
+            path.addRoundedRect(card, radius, radius)
+            body = QLinearGradient(card.left(), card.top(), card.left(), card.bottom())
+            body.setColorAt(0.0, QColor(255, 255, 255, 150))
+            body.setColorAt(1.0, QColor(240, 244, 252, 112))
+            painter.fillPath(path, body)
+            painter.setPen(QPen(QColor(255, 255, 255, 190), 1.0))
+            painter.drawPath(path)
+
+        # Time and date.
+        time_font = _font(76 * s, QFont.Weight.Light, tabular=True, spacing=-2.0)
         painter.setFont(time_font)
-        painter.setPen(QColor(30, 30, 34, 215))
+        painter.setPen(self._ink(235))
+        time_str = now.strftime("%H:%M")
+        tw = painter.fontMetrics().horizontalAdvance(time_str)
+        painter.drawText(QPointF(cx - tw / 2.0, lay.time_baseline), time_str)
 
-        time_metrics = painter.fontMetrics()
-        time_rect = time_metrics.boundingRect(time_str)
-        time_w = time_rect.width()
+        date_rect = QRectF(card.left(), lay.date_baseline - 20.0 * s, card.width(), 26.0 * s)
+        self._draw_text(painter, date_rect, now.strftime("%A, %B %d"), _font(15 * s, QFont.Weight.Medium),
+                        self._ink(190, 1))
 
-        painter.drawText(
-            int(center_x - time_w / 2.0),
-            int(center_y),
-            time_str
-        )
+        # Divider and the state message.
+        mx, my, mw, mh = lay.message
+        painter.setPen(QPen(self._ink(26), 1.0))
+        painter.drawLine(QPointF(card.left() + 36.0 * s, lay.divider_y), QPointF(card.right() - 36.0 * s, lay.divider_y))
+        headline, sub = _layout.message_for(name, self._state.detail or "", self._tab_gate.armed)
+        fade = self._content_alpha()
+        self._draw_text(painter, QRectF(mx, my, mw, mh * 0.52), headline,
+                        _font(16.5 * s, QFont.Weight.DemiBold), self._ink(int(240 * fade)))
+        self._draw_text(painter, QRectF(mx, my + mh * 0.50, mw, mh * 0.40), sub,
+                        _font(10.5 * s, QFont.Weight.Normal), self._ink(int(176 * fade), 1))
 
-        # Draw Date
-        date_font = _font(16, QFont.Weight.Normal)
-        date_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
-        painter.setFont(date_font)
-        painter.setPen(QColor(82, 86, 94, 168))
+        # Key caps: the only actions on this screen (the mouse is pinned).
+        space, tab = _layout.key_models(name, self._state.detail or "", self._tab_gate.armed)
+        self._paint_key(painter, QRectF(*lay.space_key), space, s)
+        self._paint_key(painter, QRectF(*lay.tab_key), tab, s)
+        painter.restore()
 
-        date_metrics = painter.fontMetrics()
-        date_rect = date_metrics.boundingRect(date_str)
-        date_w = date_rect.width()
-        date_y = int(center_y + time_metrics.descent() + 28)
+    def _paint_key(self, painter: QPainter, rect: QRectF, model, s: float) -> None:
+        mode = model.mode
+        radius = rect.height() / 2.0
+        tint = _tok.AMBER if mode == "armed" else (255, 255, 255)
+        alpha = {"idle": 0.36, "busy": 0.34, "armed": 0.36, "dim": 0.20}.get(mode, 0.36)
+        if not self._draw_lens(painter, rect, radius, tint=tint, tint_alpha=alpha, saturation=1.10,
+                               bulge=0.05, spec_gain=0.9):
+            path = QPainterPath()
+            path.addRoundedRect(rect, radius, radius)
+            painter.fillPath(path, QColor(255, 255, 255, 70 if mode == "dim" else 125))
+            painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
+            painter.drawPath(path)
 
-        painter.drawText(
-            int(center_x - date_w / 2.0),
-            date_y,
-            date_str
-        )
+        k = 0.45 if mode == "dim" else 1.0
+        fade = self._content_alpha()
+        cap_h = rect.height() * 0.56
+        cap_font = _font(9 * s, QFont.Weight.DemiBold, spacing=0.6)
+        painter.setFont(cap_font)
+        cap_w = max(cap_h * 1.25, painter.fontMetrics().horizontalAdvance(model.key) + 24.0 * s)
+        cap = QRectF(rect.left() + radius * 0.55, rect.center().y() - cap_h / 2.0, cap_w, cap_h)
+        painter.setBrush(QColor(255, 255, 255, int(238 * k)))
+        painter.setPen(QPen(self._ink(int(52 * k)), 1.0))
+        painter.drawRoundedRect(cap, 9.0 * s, 9.0 * s)
+        painter.setPen(QPen(self._ink(int(84 * k)), 1.6))
+        painter.drawLine(QPointF(cap.left() + 9.0 * s, cap.bottom() - 0.8), QPointF(cap.right() - 9.0 * s, cap.bottom() - 0.8))
+        self._draw_text(painter, cap, model.key, cap_font, self._ink(int(215 * k), 1))
 
-        # State-specific center guidance capsule below the date (DPI-safe width)
-        detail_text = (self._state.detail or "").strip()
-        if self._state.name == "verifying_lock":
-            prompt = "Verifying face identity — hold steady..."
-        elif self._state.name == "hostile_lock":
-            prompt = "Security hold active — press TAB for Windows Lock"
-        elif self._state.name == "verify_failed":
-            if "cooldown" in detail_text.lower():
-                prompt = f"{detail_text}  ·  Press TAB for Windows Lock"
-            else:
-                prompt = "Face not recognized — press SPACE to retry  ·  TAB for Windows Lock"
-        elif self._state.name == "social_lock":
-            prompt = "Privacy lock active — press SPACE for owner check  ·  TAB for Windows Lock"
-        elif self._state.name == "camera_fault":
-            if self._tab_gate.armed:
-                prompt = "Press TAB again to confirm — Windows password"
-            else:
-                headline = (detail_text.split(". ")[0] or "Camera unavailable").strip()
-                prompt = f"{headline}  ·  SPACE to retry  ·  TAB twice for Windows password"
-        else:
-            prompt = "Press SPACE to verify identity  ·  TAB for Windows Lock"
+        pad_r = radius * 0.62 + (26.0 * s if mode == "busy" else 0.0)
+        tx = cap.right() + 14.0 * s
+        tw = max(10.0, rect.right() - pad_r - tx)
+        self._draw_text(painter, QRectF(tx, rect.top() + rect.height() * 0.15, tw, rect.height() * 0.38), model.label,
+                        _font(11.5 * s, QFont.Weight.DemiBold), self._ink(int(238 * k * fade)),
+                        Qt.AlignmentFlag.AlignLeft)
+        self._draw_text(painter, QRectF(tx, rect.top() + rect.height() * 0.52, tw, rect.height() * 0.30), model.sub,
+                        _font(9 * s, QFont.Weight.Normal), self._ink(int(170 * k * fade), 1),
+                        Qt.AlignmentFlag.AlignLeft)
 
-        pill_font = _font(9, QFont.Weight.Medium)
-        pill_font.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
-        painter.setFont(pill_font)
-        text_advance = painter.fontMetrics().horizontalAdvance(prompt)
-        pill_w = float(max(340, min(520, text_advance + 48)))
-        pill_h = 34.0
-        pill_rect = QRectF(center_x - pill_w / 2.0, date_y + 26.0, pill_w, pill_h)
-        self._paint_corner_pill(
-            painter,
-            pill_rect,
-            prompt,
-            align=Qt.AlignmentFlag.AlignHCenter,
-            brand=True,
-        )
-
-        if self._state.name == "verifying_lock":
-            scan_path = QPainterPath()
-            scan_path.addRoundedRect(pill_rect.adjusted(-1.5, -1.5, 1.5, 1.5), 18.5, 18.5)
-            sweep_x = pill_rect.left() + pill_rect.width() * ((self._phase * 1.8) % 1.0)
-            sweep_grad = QLinearGradient(sweep_x - 55.0, pill_rect.top(), sweep_x + 55.0, pill_rect.top())
-            sweep_grad.setColorAt(0.0, QColor(52, 199, 89, 0))
-            sweep_grad.setColorAt(0.5, QColor(52, 199, 89, 185))
-            sweep_grad.setColorAt(1.0, QColor(100, 210, 255, 0))
-            painter.setPen(QPen(sweep_grad, 2.0))
+        if mode == "busy":
+            d = 18.0 * s
+            arc = QRectF(rect.right() - radius * 0.62 - d, rect.center().y() - d / 2.0, d, d)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(scan_path)
+            painter.setPen(QPen(self._accent(70), 2.4 * s))
+            painter.drawEllipse(arc)
+            pen = QPen(self._accent(230), 2.4 * s)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawArc(arc, int(-((self._phase * 1080.0) % 360.0) * 16), 100 * 16)
+            # Scan sweep along the key's rim.
+            path = QPainterPath()
+            path.addRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), radius + 1.5, radius + 1.5)
+            sweep_x = rect.left() + rect.width() * ((self._phase * 1.8) % 1.0)
+            sweep = QLinearGradient(sweep_x - 55.0, rect.top(), sweep_x + 55.0, rect.top())
+            sweep.setColorAt(0.0, self._accent(0))
+            sweep.setColorAt(0.5, self._accent(190))
+            sweep.setColorAt(1.0, QColor(100, 210, 255, 0))
+            painter.setPen(QPen(sweep, 2.0))
+            painter.drawPath(path)
+        elif mode == "armed":
+            ring = 0.5 + 0.5 * math.sin(self._phase * math.tau * 3.0)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setPen(QPen(QColor(*_tok.AMBER, int(110 + 120 * ring)), 2.2))
+            painter.drawRoundedRect(rect.adjusted(-1.0, -1.0, 1.0, 1.0), radius + 1.0, radius + 1.0)
 
-        painter.restore()
-
-    def _paint_blurred_desktop(self, painter: QPainter) -> None:
-        if not self._background.isNull():
-            painter.drawPixmap(self.rect(), self._background)
-        else:
-            painter.fillRect(self.rect(), QColor("#E9EDF3"))
-
-    def _paint_glass_atmosphere(self, painter: QPainter) -> None:
-        rect = self.rect()
-        painter.fillRect(rect, QColor(246, 248, 252, 119))
-
-        wash = QLinearGradient(0, 0, 0, rect.height())
-        wash.setColorAt(0.0, QColor(255, 255, 255, 185))
-        wash.setColorAt(0.18, QColor(252, 254, 255, 129))
-        wash.setColorAt(0.54, QColor(244, 247, 252, 60))
-        wash.setColorAt(0.82, QColor(235, 239, 246, 75))
-        wash.setColorAt(1.0, QColor(218, 224, 235, 104))
-        painter.fillRect(rect, wash)
-
-        pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau)
-        for x, y, radius, color, alpha in (
-            (rect.width() * 0.22, rect.height() * 0.22, rect.width() * 0.44, QColor(255, 255, 255), 60 + int(12 * pulse)),
-            (rect.width() * 0.77, rect.height() * 0.26, rect.width() * 0.34, QColor(205, 235, 255), 38),
-            (rect.width() * 0.72, rect.height() * 0.76, rect.width() * 0.38, QColor(255, 226, 238), 31),
-            (rect.width() * 0.18, rect.height() * 0.82, rect.width() * 0.30, QColor(222, 233, 255), 25),
-        ):
-            glow = QRadialGradient(float(x), float(y), float(radius))
-            color.setAlpha(alpha)
-            glow.setColorAt(0.0, color)
-            glow.setColorAt(0.62, QColor(color.red(), color.green(), color.blue(), max(0, alpha // 5)))
-            glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.fillRect(rect, glow)
-
-        sheen = QLinearGradient(0, 0, rect.width(), 0)
-        sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
-        sheen.setColorAt(0.20, QColor(255, 255, 255, 48))
-        sheen.setColorAt(0.50, QColor(255, 255, 255, 25))
-        sheen.setColorAt(0.80, QColor(255, 255, 255, 44))
-        sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(rect, sheen)
-
-        band = QLinearGradient(0, rect.height() * 0.44, 0, rect.height() * 0.60)
-        band.setColorAt(0.0, QColor(255, 255, 255, 0))
-        band.setColorAt(0.48, QColor(255, 255, 255, 35))
-        band.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.fillRect(rect, band)
-
-        edge = QLinearGradient(0, 0, 0, rect.height())
-        edge.setColorAt(0.0, QColor(255, 255, 255, 106))
-        edge.setColorAt(0.09, QColor(255, 255, 255, 0))
-        edge.setColorAt(0.88, QColor(255, 255, 255, 0))
-        edge.setColorAt(1.0, QColor(255, 255, 255, 69))
-        painter.fillRect(rect, edge)
-
-        painter.fillRect(QRectF(0, 0, rect.width(), 1.5), QColor(255, 255, 255, 150))
-        painter.fillRect(QRectF(0, 0, 1.5, rect.height()), QColor(255, 255, 255, 73))
-        painter.fillRect(QRectF(rect.width() - 1.5, 0, 1.5, rect.height()), QColor(255, 255, 255, 44))
-        painter.fillRect(QRectF(0, rect.height() - 1.5, rect.width(), 1.5), QColor(84, 88, 96, 31))
-
-        shade = QLinearGradient(0, 0, 0, rect.height())
-        shade.setColorAt(0.0, QColor(0, 0, 0, 0))
-        shade.setColorAt(0.72, QColor(0, 0, 0, 0))
-        shade.setColorAt(1.0, QColor(44, 52, 64, 35))
-        painter.fillRect(rect, shade)
-
-    def _paint_noise_texture(self, painter: QPainter) -> None:
-        if self._noise.isNull():
-            return
-        painter.save()
-        painter.setOpacity(self._opacity_value * 0.11)
-        painter.drawTiledPixmap(self.rect(), self._noise)
-        painter.restore()
+        flashed = self._key_flash.get(model.key)
+        if flashed is not None:
+            elapsed = time.monotonic() - flashed
+            if elapsed < 0.22:
+                path = QPainterPath()
+                path.addRoundedRect(rect, radius, radius)
+                painter.fillPath(path, QColor(255, 255, 255, int(150 * (1.0 - elapsed / 0.22))))
 
     def _paint_corner_status(self, painter: QPainter) -> None:
-        rect = self._hud_rect()
-        margin = max(24, min(42, rect.width() // 48))
-        pill = QRectF(rect.left() + margin, rect.top() + margin, 176, 34)
-        self._paint_corner_pill(painter, pill, self._status_label(), align=Qt.AlignmentFlag.AlignLeft)
+        lay = self._layout()
+        s = lay.scale
+        rect = QRectF(*lay.status)
+        painter.save()
+        if not self._draw_lens(painter, rect, rect.height() / 2.0, tint_alpha=0.52, spec_gain=0.9, bulge=0.04):
+            path = QPainterPath()
+            path.addRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
+            painter.fillPath(path, QColor(255, 255, 255, 120))
+            painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
+            painter.drawPath(path)
+        label = self._status_label()
+        font = _font(8.5 * s, QFont.Weight.DemiBold, spacing=1.1)
+        painter.setFont(font)
+        text_w = painter.fontMetrics().horizontalAdvance(label)
+        dot_d = 7.0 * s
+        gap = 10.0 * s
+        left = lay.cx - (dot_d + gap + text_w) / 2.0
+        pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
+        halo = QRadialGradient(QPointF(left + dot_d / 2.0, rect.center().y()), dot_d * 1.9)
+        halo.setColorAt(0.0, self._accent(int(90 + 70 * pulse)))
+        halo.setColorAt(1.0, self._accent(0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(halo)
+        painter.drawEllipse(QPointF(left + dot_d / 2.0, rect.center().y()), dot_d * 1.9, dot_d * 1.9)
+        painter.setBrush(self._accent(235))
+        painter.drawEllipse(QRectF(left, rect.center().y() - dot_d / 2.0, dot_d, dot_d))
+        self._draw_text(painter, QRectF(left + dot_d + gap, rect.top(), text_w + 4.0, rect.height()), label, font,
+                        self._ink(215, 1), Qt.AlignmentFlag.AlignLeft)
+        painter.restore()
 
     def _paint_brand_signature(self, painter: QPainter) -> None:
-        rect = self._hud_rect()
-        margin = max(24, min(42, rect.width() // 48))
-        pill = QRectF(
-            rect.right() - margin - 218,
-            rect.bottom() - margin - 34,
-            218,
-            34,
-        )
-        self._paint_corner_pill(
-            painter,
-            pill,
-            "Secured by MajestyGuard",
-            align=Qt.AlignmentFlag.AlignHCenter,
-            brand=True,
-        )
-
-    def _paint_corner_pill(
-        self,
-        painter: QPainter,
-        rect: QRectF,
-        text: str,
-        *,
-        align: Qt.AlignmentFlag,
-        brand: bool = False,
-    ) -> None:
-        glass_ok = self._draw_lens(
-            painter, rect, rect.height() / 2.0, tint_alpha=0.34, spec_gain=0.9
-        )
-        if glass_ok:
-            if brand:
-                text_rect = rect.adjusted(14, 0, -14, 0)
-            else:
-                dot = QColor(self._state.accent_color)
-                dot.setAlpha(190)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(dot)
-                painter.drawEllipse(QRectF(rect.left() + 14, rect.center().y() - 3, 6, 6))
-                text_rect = rect.adjusted(29, 0, -14, 0)
-        elif brand:
-            path = QPainterPath()
-            path.addRoundedRect(rect, 17, 17)
-
-            body = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-            body.setColorAt(0.0, QColor(255, 255, 255, 58))
-            body.setColorAt(0.5, QColor(240, 244, 250, 34))
-            body.setColorAt(1.0, QColor(225, 231, 240, 46))
-            painter.fillPath(path, body)
-
-            # Subtle drifting sheen — reuses the phase clock already driving
-            # the ambient background glow, so this costs nothing extra per
-            # frame. Liquid Glass communicates depth mainly through edge
-            # highlights and layered translucency even at rest; the drift
-            # here is a light touch on top of that, not the main effect.
-            sheen_x = rect.left() + rect.width() * (0.5 + 0.5 * math.sin(self._phase * math.tau))
-            sheen = QLinearGradient(sheen_x - 40, rect.top(), sheen_x + 40, rect.top())
-            sheen.setColorAt(0.0, QColor(255, 255, 255, 0))
-            sheen.setColorAt(0.5, QColor(255, 255, 255, 30))
-            sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.save()
-            painter.setClipPath(path)
-            painter.fillRect(rect, sheen)
-            painter.restore()
-
-            border = QColor(255, 255, 255, 90)
-            painter.setPen(QPen(border, 1.0))
-            painter.drawPath(path)
-            painter.fillRect(QRectF(rect.left() + 4, rect.top(), rect.width() - 8, 1.0), QColor(255, 255, 255, 120))
-
-            text_rect = rect.adjusted(14, 0, -14, 0)
-        else:
-            path = QPainterPath()
-            path.addRoundedRect(rect, 17, 17)
-            body = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-            body.setColorAt(0.0, QColor(255, 255, 255, 62))
-            body.setColorAt(1.0, QColor(238, 241, 247, 42))
-            painter.fillPath(path, body)
-
-            border = QColor(172, 182, 194, 80)
-            painter.setPen(QPen(border, 1.0))
-            painter.drawPath(path)
-
-            dot = QColor(self._state.accent_color)
-            dot.setAlpha(128)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(dot)
-            painter.drawEllipse(QRectF(rect.left() + 14, rect.center().y() - 3, 6, 6))
-            text_rect = rect.adjusted(29, 0, -14, 0)
-
-        if glass_ok:
-            color = QColor(46, 50, 58, 170 if brand else 215)
-        else:
-            color = QColor(82, 86, 94, 118 if brand else 174)
-        painter.setPen(color)
-        painter.setFont(_font(9, QFont.Weight.Medium))
-        painter.drawText(
-            text_rect,
-            align | Qt.AlignmentFlag.AlignVCenter,
-            text,
-        )
+        lay = self._layout()
+        painter.save()
+        self._draw_text(painter, QRectF(*lay.brand), "Secured by MajestyGuard",
+                        _font(8.5 * lay.scale, QFont.Weight.Medium, spacing=0.5), self._ink(165, 2))
+        painter.restore()
 
     def _status_label(self) -> str:
-        if self._state.name == "verifying_lock":
-            return "VERIFYING"
-        if self._state.name == "verify_failed":
-            return "FAILED"
-        if self._state.name == "social_lock":
-            return "PRIVACY LOCK"
-        if self._state.name == "hostile_lock":
-            return "SECURITY HOLD"
-        if self._state.name == "camera_fault":
-            return "CAMERA FAULT"
-        return "LOCKED"
+        return _layout.status_label(self._state.name)
+
 
     def _request_verification(self, source: str) -> None:
+        self._mark_key("SPACE")
         if self._state.name not in {"locked_passive", "soft_locked", "social_lock", "camera_fault"}:
             return
         if self._on_verify_requested is not None:

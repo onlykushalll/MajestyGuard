@@ -105,17 +105,19 @@ def test_paint_works_with_and_without_glass(overlay):
 
 
 def test_dynamic_region_covers_animated_hud(overlay):
+    from PyQt6.QtCore import QPoint
+
     overlay.resize(800, 600)
-    hud = overlay._hud_rect()
+    lay = overlay._layout()
     region = overlay._dynamic_region()
-    cx = hud.left() + hud.width() // 2
-    cy = int(hud.top() + hud.height() * 0.35)
-    assert region.contains(__import__("PyQt6.QtCore", fromlist=["QPoint"]).QPoint(cx, cy))
-    # corner status pill and brand signature
-    margin = max(24, min(42, hud.width() // 48))
-    QPoint = __import__("PyQt6.QtCore", fromlist=["QPoint"]).QPoint
-    assert region.contains(QPoint(hud.left() + margin + 10, hud.top() + margin + 10))
-    assert region.contains(QPoint(hud.right() - margin - 10, hud.bottom() - margin - 10))
+
+    def centre(rect):
+        x, y, w, h = rect
+        return QPoint(int(x + w / 2), int(y + h / 2))
+
+    # clock card, both key caps, the status chip and the brand line all animate
+    for rect in (lay.card, lay.space_key, lay.tab_key, lay.status, lay.brand):
+        assert region.contains(centre(rect)), rect
 
 
 def test_tick_updates_partially_then_fully(overlay, monkeypatch):

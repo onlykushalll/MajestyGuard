@@ -24,6 +24,7 @@ paint when ``glass_enabled()`` is false or no backdrop is available.
 from __future__ import annotations
 
 import functools
+import math
 import os
 
 import numpy as np
@@ -46,7 +47,7 @@ def glass_enabled() -> bool:
 
 
 @functools.lru_cache(maxsize=64)
-def lens_maps(w: int, h: int, radius: float, bezel: float, strength: float):
+def lens_maps(w: int, h: int, radius: float, bezel: float, strength: float, bulge: float = 0.0):
     """Size-only maps for a lens: (grid_x, grid_y, dx, dy, edge, spec, coverage).
 
     All arrays are float32 (h, w), read-only. dx/dy are the refraction
@@ -79,8 +80,13 @@ def lens_maps(w: int, h: int, radius: float, bezel: float, strength: float):
     t = np.clip(depth / bezel, 0.0, 1.0)
     edge = (1.0 - t) ** 2.2                      # 1 at the rim, 0 past the bezel
     shift = strength * edge
-    dx = (nx * shift).astype(np.float32)
-    dy = (ny * shift).astype(np.float32)
+    # ``bulge`` > 0 magnifies the whole body of the lens (samples are pulled
+    # toward the centre), so the scene visibly bends across the entire card and
+    # not only along its rim. The pull fades to zero at the very edge, where the
+    # rim refraction takes over.
+    inner = (1.0 - edge) * float(bulge)
+    dx = (nx * shift - px * inner).astype(np.float32)
+    dy = (ny * shift - py * inner).astype(np.float32)
 
     rim = (1.0 - t) ** 3.6
     key = np.maximum(nx * _KEY_LIGHT[0] * -1.0 + ny * _KEY_LIGHT[1] * -1.0, 0.0) ** 2.4
@@ -117,6 +123,7 @@ def render_lens(
     tint_alpha: float = 0.12,
     saturation: float = 1.18,
     spec_gain: float = 1.0,
+    bulge: float = 0.0,
 ) -> np.ndarray:
     """Render one lens to premultiplied BGRA uint8, shape (h, w, 4).
 
@@ -130,7 +137,7 @@ def render_lens(
     h = max(2, int(h))
     bz = default_bezel(w, h) if bezel is None else float(bezel)
     st = bz * 0.78 if strength is None else float(strength)
-    gx, gy, dx, dy, _edge, spec, cov = lens_maps(w, h, float(radius), bz, st)
+    gx, gy, dx, dy, _edge, spec, cov = lens_maps(w, h, float(radius), bz, st, float(bulge))
 
     base_x = gx + float(ox)
     base_y = gy + float(oy)
@@ -163,32 +170,58 @@ def render_lens(
     return out
 
 
-# (cx, cy, radius, RGB, strength) in unit coordinates; soft pastel light field.
+# (cx, cy, radius, RGB, strength) in unit coordinates: a saturated, luminous
+# colour field. Flat pastel washes made the lenses look like frosted plastic
+# because refraction of a smooth field is invisible; this field has real
+# colour contrast and crisp-edged ribbons (below) for the glass to bend.
 _AMBIENT_ORBS = (
-    (0.20, 0.20, 0.34, (255, 255, 255), 0.70),
-    (0.78, 0.24, 0.30, (140, 200, 255), 0.62),
-    (0.72, 0.78, 0.32, (255, 170, 205), 0.58),
-    (0.16, 0.82, 0.26, (190, 170, 255), 0.55),
-    (0.50, 0.55, 0.22, (150, 232, 205), 0.42),
-    (0.52, 0.06, 0.20, (255, 214, 160), 0.38),
+    (0.10, 0.16, 0.42, (112, 168, 255), 0.88),
+    (0.84, 0.14, 0.38, (186, 138, 255), 0.84),
+    (0.72, 0.84, 0.44, (255, 126, 178), 0.80),
+    (0.12, 0.88, 0.36, (104, 214, 232), 0.76),
+    (0.48, 0.52, 0.30, (255, 206, 150), 0.58),
+    (0.96, 0.56, 0.26, (138, 236, 190), 0.58),
+    (0.40, 0.04, 0.22, (255, 232, 170), 0.50),
 )
+
+# (centre v, amplitude, frequency, phase, half-width, RGB start, RGB end, alpha)
+_AMBIENT_RIBBONS = (
+    (0.34, 0.16, 1.15, 0.05, 0.050, (92, 150, 255), (200, 120, 255), 0.62),
+    (0.62, 0.13, 0.85, 0.52, 0.060, (255, 120, 190), (255, 190, 120), 0.56),
+    (0.80, 0.09, 1.60, 0.20, 0.038, (110, 225, 235), (150, 160, 255), 0.58),
+)
+
+
+def _smoothstep(edge0: float, edge1: float, x):
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 @functools.lru_cache(maxsize=4)
 def _ambient_cached(w: int, h: int) -> np.ndarray:
-    sw, sh = max(8, w // 6), max(8, h // 6)
+    sw, sh = max(16, w // 3), max(16, h // 3)
     ys, xs = np.mgrid[0:sh, 0:sw].astype(np.float32)
     u = xs / max(1, sw - 1)
     v = ys / max(1, sh - 1)
     aspect = w / float(h)
-    top = np.array((250.0, 251.0, 255.0), np.float32)
-    bottom = np.array((228.0, 235.0, 247.0), np.float32)
+    top = np.array((248.0, 249.0, 255.0), np.float32)
+    bottom = np.array((218.0, 226.0, 246.0), np.float32)
     img = top[None, None, :] * (1.0 - v[:, :, None]) + bottom[None, None, :] * v[:, :, None]
     for cx, cy, radius, rgb, strength in _AMBIENT_ORBS:
         d2 = ((u - cx) * aspect) ** 2 + (v - cy) ** 2
         a = (strength * np.exp(-d2 / (radius * radius)))[:, :, None]
         img = img * (1.0 - a) + np.array(rgb, np.float32)[None, None, :] * a
-    vig = 1.0 - 0.07 * (((u - 0.5) * 1.6) ** 2 + ((v - 0.5) * 1.6) ** 2)
+    for centre, amp, freq, phase, half, c0, c1, alpha in _AMBIENT_RIBBONS:
+        curve = centre + amp * np.sin(np.float32(math.tau) * (freq * u + phase))
+        dist = np.abs(v - curve) * (1.0 / max(half, 1e-3))
+        body = 1.0 - _smoothstep(0.55, 1.0, dist)          # crisp-ish edge
+        core = (1.0 - _smoothstep(0.0, 0.50, dist)) * 0.26   # bright spine
+        grad = (np.array(c0, np.float32)[None, None, :] * (1.0 - u[:, :, None])
+                + np.array(c1, np.float32)[None, None, :] * u[:, :, None])
+        a = (alpha * body)[:, :, None]
+        img = img * (1.0 - a) + grad * a
+        img = img + (255.0 - img) * core[:, :, None]
+    vig = 1.0 - 0.09 * (((u - 0.5) * 1.7) ** 2 + ((v - 0.5) * 1.7) ** 2)
     img = np.clip(img * vig[:, :, None], 0.0, 255.0).astype(np.uint8)
     img = cv2.resize(img, (w, h), interpolation=cv2.INTER_CUBIC)
     out = np.ascontiguousarray(img[:, :, ::-1])            # RGB -> BGR

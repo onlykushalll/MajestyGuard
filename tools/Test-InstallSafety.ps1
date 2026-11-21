@@ -3,7 +3,7 @@ param(
         (Join-Path $PSScriptRoot "..\Install.ps1"),
         (Join-Path $PSScriptRoot "..\build\staged\Install.ps1")
     ),
-    [string]$BuildScriptPath = (Join-Path $PSScriptRoot "..\Build.ps1")
+    [string]$BuildScriptPath = (Join-Path $PSScriptRoot "..\scripts\Build.ps1")
 )
 
 Set-StrictMode -Version Latest
@@ -56,6 +56,11 @@ function Test-TopLevelTokenBeforeCopyOnly {
 }
 
 foreach ($path in $InstallerPaths) {
+    # The staged copy only exists after a bundle build; skip it when absent.
+    if (-not (Test-Path -LiteralPath $path) -and $path -like "*\build\staged\*") {
+        Write-Host "Skipping (not built yet): $path"
+        continue
+    }
     $resolved = (Resolve-Path -LiteralPath $path).ProviderPath
     $text = Get-Content -Raw -LiteralPath $resolved
     $lines = Get-Content -LiteralPath $resolved

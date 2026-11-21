@@ -32,6 +32,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import QApplication, QWidget, QPushButton
 
 from states import IslandState, get_state
+from tab_confirm import ACTION_LOCK, TabConfirmGate
 
 try:  # liquid-glass lenses are optional: any failure keeps the flat paint
     import glass as _glass
@@ -54,7 +55,10 @@ def _font(size, weight=QFont.Weight.Normal, **kw) -> QFont:
     return QFont("Segoe UI", int(size), weight)
 
 
-_LOCK_NAMES = {"locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock", "verify_failed"}
+_LOCK_NAMES = {
+    "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
+    "verify_failed", "camera_fault",
+}
 
 _FALLBACK_BTN_STYLE_DIM = """
     QPushButton {
@@ -573,7 +577,10 @@ class SoftLockOverlay(QWidget):
         self._lens_cache: dict = {}
         self._tick_count = 0
         self.hook_space_pressed.connect(lambda: self._request_verification("overlay_key"))
-        self.hook_tab_pressed.connect(self._use_windows_lock)
+        # Tab hands over to Windows at once while the camera works; during a
+        # camera fault it needs a deliberate second press (see tab_confirm).
+        self._tab_gate = TabConfirmGate()
+        self.hook_tab_pressed.connect(self._on_tab_pressed)
         self._state: IslandState = get_state("idle")
         self._on_verify_requested = on_verify_requested
         self._on_windows_lock_used = on_windows_lock_used
@@ -591,7 +598,7 @@ class SoftLockOverlay(QWidget):
         self._fallback_btn = QPushButton("Press TAB → Windows lock", self)
         self._fallback_btn.setStyleSheet(_FALLBACK_BTN_STYLE_DIM)
         self._fallback_btn.setFixedHeight(32)
-        self._fallback_btn.clicked.connect(self._use_windows_lock)
+        self._fallback_btn.clicked.connect(self._on_tab_pressed)
         self._fallback_btn.hide()
 
         self._setup_window()
@@ -662,7 +669,7 @@ class SoftLockOverlay(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         hud = self._hud_rect()
-        btn_w = 208
+        btn_w = 264
         btn_h = 32
         margin = max(24, min(42, hud.width() // 48))
         self._fallback_btn.setGeometry(
@@ -697,6 +704,13 @@ class SoftLockOverlay(QWidget):
             pass
 
     def apply_state(self, state: IslandState) -> None:
+        if state.name != "camera_fault":
+            self._tab_gate.reset()
+        self._fallback_btn.setText(
+            "Press TAB twice → Windows password"
+            if state.name == "camera_fault"
+            else "Press TAB → Windows lock"
+        )
         if state.name == self._state.name and self.isVisible():
             self._state = state
             # Only a lock-family repeat re-asserts lock ownership. The daemon
@@ -1097,6 +1111,16 @@ class SoftLockOverlay(QWidget):
         )
         return region
 
+    def _camera_fault_active(self) -> bool:
+        return self._state.name == "camera_fault"
+
+    def _on_tab_pressed(self) -> None:
+        action = self._tab_gate.press(confirmation_required=self._camera_fault_active())
+        if action == ACTION_LOCK:
+            self._use_windows_lock()
+        else:
+            self.update()
+
     def _use_windows_lock(self) -> None:
         import ctypes
         _uninstall_hooks()
@@ -1227,6 +1251,12 @@ class SoftLockOverlay(QWidget):
                 prompt = "Face not recognized — press SPACE to retry  ·  TAB for Windows Lock"
         elif self._state.name == "social_lock":
             prompt = "Privacy lock active — press SPACE for owner check  ·  TAB for Windows Lock"
+        elif self._state.name == "camera_fault":
+            if self._tab_gate.armed:
+                prompt = "Press TAB again to confirm — Windows password"
+            else:
+                headline = (detail_text.split(". ")[0] or "Camera unavailable").strip()
+                prompt = f"{headline}  ·  SPACE to retry  ·  TAB twice for Windows password"
         else:
             prompt = "Press SPACE to verify identity  ·  TAB for Windows Lock"
 
@@ -1447,10 +1477,12 @@ class SoftLockOverlay(QWidget):
             return "PRIVACY LOCK"
         if self._state.name == "hostile_lock":
             return "SECURITY HOLD"
+        if self._state.name == "camera_fault":
+            return "CAMERA FAULT"
         return "LOCKED"
 
     def _request_verification(self, source: str) -> None:
-        if self._state.name not in {"locked_passive", "soft_locked", "social_lock"}:
+        if self._state.name not in {"locked_passive", "soft_locked", "social_lock", "camera_fault"}:
             return
         if self._on_verify_requested is not None:
             self._on_verify_requested(source)
@@ -1469,7 +1501,7 @@ class SoftLockOverlay(QWidget):
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
         key = event.key()
         if key == Qt.Key.Key_Tab:
-            self._use_windows_lock()
+            self._on_tab_pressed()
             event.accept()
             return
         if key == Qt.Key.Key_Space:

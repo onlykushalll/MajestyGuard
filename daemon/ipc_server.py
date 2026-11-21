@@ -56,6 +56,7 @@ VALID_STATES = frozenset({
     "idle",
     "enrolling",
     "calibrating",
+    "camera_fault",
     "exit",
 })
 

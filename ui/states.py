@@ -211,6 +211,18 @@ STATES: dict[str, IslandState] = {
         mode="diagnostic",
         pulse=True,
     ),
+    "camera_fault": IslandState(
+        name="camera_fault",
+        width=286,
+        height=66,
+        bg_color="#050302",
+        border_color="#4A3418",
+        accent_color="#FF9F0A",
+        label="Camera unavailable",
+        label_color="#FFE3B0",
+        mode="shield",
+        pulse=True,
+    ),
     "exit": IslandState(
         name="exit",
         width=120,
@@ -227,6 +239,7 @@ STATES: dict[str, IslandState] = {
 _STATIC_LABEL_OVERRIDES: dict[str, str] = {
     "soft_locked": "Locked",
     "locked_passive": "Locked",
+    "camera_fault": "Camera unavailable",
     "verifying_lock": "Verifying",
     "social_lock": "Privacy lock",
     "hostile_lock": "Security lock",

@@ -62,6 +62,16 @@ _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
 from cmd_server import CMDServer
+from camera_health import (
+    BACKEND_ANY,
+    BACKEND_DSHOW,
+    BACKEND_MSMF,
+    CameraFault,
+    CameraHealth,
+    frame_brightness,
+    frame_signature,
+    windows_camera_privacy_blocked,
+)
 from idle_monitor import get_idle_seconds, read_idle_timeout
 from ipc_server import IPCServer, ServiceIPCServer
 from presence import MotionFilter, PresenceDetector
@@ -695,6 +705,98 @@ class MajestyGuardDaemon:
             raise result["exc"]
         log.warning("No embeddings result produced (unexpected state: %r)", kind)
 
+    def _camera_health_tracker(self) -> CameraHealth:
+        """Lazily created so bare/partially-constructed daemons (tests) work."""
+        health = getattr(self, "_camera_health", None)
+        if health is None:
+            health = CameraHealth(privacy_probe=windows_camera_privacy_blocked)
+            self._camera_health = health
+        return health
+
+    @staticmethod
+    def _new_capture(backend: str):
+        if backend == BACKEND_ANY:
+            return cv2.VideoCapture(CAMERA_INDEX)
+        constant = cv2.CAP_DSHOW if backend == BACKEND_DSHOW else getattr(cv2, "CAP_MSMF", 1400)
+        return cv2.VideoCapture(CAMERA_INDEX, constant)
+
+    def _write_camera_health_snapshot(self) -> None:
+        try:
+            self._camera_health_tracker().write_snapshot(_MG_STATE_DIR / "camera_health.json")
+        except Exception:
+            pass
+
+    def _adopt_camera(self, cap, backend: str) -> None:
+        self._cap = cap
+        self._camera_read_failures = 0
+        self._cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self._last_camera_retry_at = time.monotonic()
+        log.info(
+            "Camera opened (%s): %dx%d @ %.1f FPS",
+            backend,
+            self._cap.get(cv2.CAP_PROP_FRAME_WIDTH),
+            self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
+            self._cap.get(cv2.CAP_PROP_FPS),
+        )
+        self._camera_health_tracker().record_open_success(backend)
+        self._clear_camera_fault()
+        if self.state == State.CAMERA_UNAVAILABLE:
+            self._transition(State.IDLE)
+
+    def _clear_camera_fault(self) -> None:
+        if getattr(self, "_camera_fault_active", False):
+            self._camera_fault_active = False
+            log.info("[Camera] recovered - normal verification resumes")
+        self._write_camera_health_snapshot()
+
+    def _enter_camera_fault(self) -> None:
+        """Camera cannot be used. Never auto-locks Windows.
+
+        While locked the overlay stays up and shows what is wrong; only a
+        deliberate Tab-then-confirm hands over to the Windows password. While
+        unlocked, the daemon waits in CAMERA_UNAVAILABLE and soft-locks if the
+        user goes input-idle. Healing continues in the background either way.
+        """
+        diagnosis = self._camera_health_tracker().diagnosis()
+        self._camera_fault_active = True
+        self._soft_lock_verify_until = 0.0
+        self._write_camera_health_snapshot()
+        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
+            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text())
+            return
+        if self.state == State.SYSTEM_LOCKED:
+            return
+        if getattr(self, "_idle_check_mode", False) and self.state in (State.IDLE, State.SCANNING):
+            # The idle probe could not verify the owner: lock, but with the
+            # overlay (Tab twice for Windows) rather than a forced Windows lock.
+            self._enter_soft_lock("camera_unavailable")
+            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text())
+            return
+        if self.state != State.CAMERA_UNAVAILABLE:
+            self._transition(State.CAMERA_UNAVAILABLE)
+
+    def _heal_camera_if_faulted(self) -> None:
+        if not getattr(self, "_camera_fault_active", False):
+            return
+        if not self._camera_health_tracker().ready_to_retry():
+            return
+        log.info("[Camera] heal attempt (backends=%s)", self._camera_health_tracker().backends())
+        self._open_camera(max_attempts=1, retry_delay_s=0)
+
+    def _observe_frame_health(self, frame) -> bool:
+        """Track frame-level faults; True when the camera must be reopened."""
+        health = self._camera_health_tracker()
+        health.record_read_success()
+        fault = health.observe_frame(frame_brightness(frame), frame_signature(frame))
+        if fault is CameraFault.FROZEN_FRAMES:
+            log.warning("[Camera] identical frames - driver looks hung, reopening")
+            self._release_camera()
+            self._enter_camera_fault()
+            return True
+        return False
+
     def _open_camera(
         self,
         *,
@@ -702,51 +804,28 @@ class MajestyGuardDaemon:
         retry_delay_s: float = CAMERA_RETRY_DELAY_S,
     ) -> bool:
         self._release_camera()
+        health = self._camera_health_tracker()
         max_attempts = max(1, max_attempts)
         for attempt in range(1, max_attempts + 1):
             log.info("Opening camera index %d (attempt %d/%d)", CAMERA_INDEX, attempt, max_attempts)
-            cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
-            if not cap.isOpened():
+            for backend in health.backends():
+                cap = self._new_capture(backend)
+                if cap.isOpened():
+                    self._adopt_camera(cap, backend)
+                    return True
                 cap.release()
-                cap = cv2.VideoCapture(CAMERA_INDEX)
-            if cap.isOpened():
-                self._cap = cap
-                self._camera_read_failures = 0
-                self._cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
-                self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                self._last_camera_retry_at = time.monotonic()
-                log.info(
-                    "Camera opened: %dx%d @ %.1f FPS",
-                    self._cap.get(cv2.CAP_PROP_FRAME_WIDTH),
-                    self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT),
-                    self._cap.get(cv2.CAP_PROP_FPS),
-                )
-                if self.state == State.CAMERA_UNAVAILABLE:
-                    self._transition(State.IDLE)
-                return True
-            cap.release()
             if attempt < max_attempts and retry_delay_s > 0:
                 time.sleep(retry_delay_s)
         self._last_camera_retry_at = time.monotonic()
-        log.error("[Camera] Camera occupied or unavailable after %d attempts — executing straight lock", max_attempts)
-        if getattr(self, "_idle_check_mode", False):
-            self._write_idle_check_result("CAMERA_OCCUPIED")
-            _atomic_write_file(_MG_STATE_DIR / "lock_state.txt", "LOCKED\n")
-            lock_workstation()
-            return False
-
-        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
-            lock_workstation()
-            self._transition(State.HOSTILE_LOCK)
-            return False
-
-        if self.state != State.SYSTEM_LOCKED:
-            _atomic_write_file(_MG_STATE_DIR / "lock_state.txt", "LOCKED\n")
-            lock_workstation()
-            self._transition(State.HOSTILE_LOCK)
+        health.record_open_failure(f"after {max_attempts} attempt(s)")
+        log.error(
+            "[Camera] unavailable after %d attempt(s): %s (next retry in %.0fs)",
+            max_attempts,
+            health.diagnosis().overlay_text(),
+            health.seconds_until_retry(),
+        )
+        self._enter_camera_fault()
         return False
-
 
     def _release_camera(self) -> None:
         if self._cap:
@@ -820,6 +899,12 @@ class MajestyGuardDaemon:
         if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK):
             log.debug("Ignoring verify_requested while state=%s", self.state.name)
             return
+        if getattr(self, "_camera_fault_active", False):
+            log.info("[CMD] verify_requested while camera faulted - retrying camera now")
+            self._camera_health_tracker().request_retry_now()
+            self._heal_camera_if_faulted()
+            if getattr(self, "_camera_fault_active", False):
+                return
         if self._is_soft_lock_verifying():
             log.info("[CMD] verify_requested ignored — verification already active")
             return
@@ -972,8 +1057,10 @@ class MajestyGuardDaemon:
                 time.sleep(0.5)
                 continue
             if self.state == State.CAMERA_UNAVAILABLE:
-                now = time.monotonic()
-                if now - self._last_camera_retry_at >= CAMERA_UNAVAILABLE_RETRY_S:
+                if self._maybe_enter_soft_lock_for_input_idle():
+                    self._pace(loop_start)
+                    continue
+                if self._camera_health_tracker().ready_to_retry():
                     self._open_camera(max_attempts=1, retry_delay_s=0)
                 time.sleep(0.5)
                 continue
@@ -997,6 +1084,9 @@ class MajestyGuardDaemon:
                 time.sleep(0.5)
                 continue
             self._camera_read_failures = 0
+            if self._observe_frame_health(frame):
+                time.sleep(0.5)
+                continue
 
             frame_no += 1
 
@@ -1072,7 +1162,13 @@ class MajestyGuardDaemon:
 
     def _handle_passive_soft_lock(self, loop_start: float) -> None:
         now = time.monotonic()
-        if now < getattr(self, "_verify_failed_until", 0.0):
+        self._heal_camera_if_faulted()
+        if getattr(self, "_camera_fault_active", False):
+            self.ipc.broadcast_state(
+                "camera_fault",
+                detail=self._camera_health_tracker().diagnosis().overlay_text(),
+            )
+        elif now < getattr(self, "_verify_failed_until", 0.0):
             self.ipc.broadcast_state("verify_failed")
         else:
             self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
@@ -1207,7 +1303,7 @@ class MajestyGuardDaemon:
         return float(SOFT_LOCK_IDLE_SECONDS)
 
     def _maybe_enter_soft_lock_for_input_idle(self) -> bool:
-        if getattr(self, "state", None) != State.ACTIVE:
+        if getattr(self, "state", None) not in (State.ACTIVE, State.CAMERA_UNAVAILABLE):
             return False
         idle_seconds = get_idle_seconds()
         if not getattr(self, "_input_idle_soft_lock_armed", True):
@@ -1231,28 +1327,15 @@ class MajestyGuardDaemon:
         )
         if self._camera_read_failures < CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE:
             return
-        log.warning("Camera read failure threshold reached - entering CAMERA_UNAVAILABLE")
+        log.warning("Camera read failure threshold reached - self-healing")
         self._camera_read_failures = 0
         self._release_camera()
-        # MG-D-14/M: camera loss must fail closed while protection is
-        # active. CAMERA_UNAVAILABLE broadcasts "idle" and only retries
-        # every 30s, which dissolves the soft-lock overlay while the
-        # camera is dead -- the documented "camera occupied -> fail-closed
-        # lock" case. _camera_read_failures is the consecutive-failure
-        # counter (default 3, reset on every successful read/open, so
-        # camera recovery resumes normal flow automatically). While
-        # locked, engage the same LockWorkStation fail-closed path the
-        # startup camera failure uses (a HOSTILE_LOCK transition here
-        # would stop the 30s retry loop because that state is camera-cold
-        # passive, so lock + CRITICAL log instead).
-        if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
-            log.critical(
-                "[Camera] %d consecutive read failures while locked - "
-                "locking workstation (fail-closed)",
-                CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE,
-            )
-            lock_workstation()
-        self._transition(State.CAMERA_UNAVAILABLE)
+        self._camera_health_tracker().record_no_frames()
+        # Camera loss never forces a Windows lock. While locked the overlay
+        # stays up with a diagnosis (Tab twice -> Windows password); while
+        # unlocked the daemon waits in CAMERA_UNAVAILABLE and soft-locks on
+        # input idle. Reopen attempts follow the health module's backoff.
+        self._enter_camera_fault()
 
     def _tick_idle(self, frame: np.ndarray) -> None:
         if self.presence.has_face(frame):

@@ -287,10 +287,20 @@ def test_tab_triggers_windows_lock():
         elif in_method:
             if "Key_Tab" in line:
                 found_tab = True
-            if "_use_windows_lock" in line and found_tab:
+            if ("_use_windows_lock" in line or "_on_tab_pressed" in line) and found_tab:
                 found_windows_lock = True
     assert found_tab, "Key_Tab not checked in keyPressEvent"
-    assert found_windows_lock, "_use_windows_lock not called on Tab"
+    assert found_windows_lock, "Tab must reach the Windows-lock path"
+
+
+def test_tab_handler_hands_over_to_windows_through_the_confirm_gate():
+    """Tab goes through TabConfirmGate: instant when healthy, twice on a camera fault."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    start = source.index("def _on_tab_pressed")
+    body = source[start:start + 400]
+    assert "_tab_gate.press" in body
+    assert "camera_fault" in source[source.index("def _camera_fault_active"):start]
+    assert "_use_windows_lock()" in body
 
 
 def test_fallback_button_mentions_tab():

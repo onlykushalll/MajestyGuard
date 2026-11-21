@@ -10,3 +10,12 @@ def test_ipc_server_accepts_verify_failed_state():
     state = server.get_state()
     assert state["state"] == "verify_failed"
     assert state["detail"] == "Retry cooldown (4s)"
+
+
+def test_ipc_server_accepts_camera_fault_state():
+    """camera_fault drives the overlay's Tab-twice Windows fallback."""
+    server = IPCServer()
+    server.broadcast_state("camera_fault", detail="Camera unavailable. Retrying automatically")
+    state = server.get_state()
+    assert state["state"] == "camera_fault"
+    assert "Retrying" in state["detail"]

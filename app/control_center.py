@@ -41,14 +41,16 @@ from app.runtime import RuntimeStatus
 class SupervisorProtocol(Protocol):
     def status(self) -> RuntimeStatus: ...
     def start(self) -> bool: ...
-    def stop(self) -> None: ...
+    def stop(self) -> bool: ...
     def enrollment_present(self) -> bool: ...
     def start_enrollment(self) -> bool: ...
     def open_log_directory(self) -> Path: ...
-    def pause(self) -> None: ...
+    def pause(self) -> bool: ...
     def resume(self) -> bool: ...
     def set_idle_timeout(self, seconds: int) -> bool: ...
 
+
+_LOCKED_NOTE = "Session is locked. Controls are disabled until you unlock."
 
 _STATUS_COPY = {
     RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "#7f8b9c"),
@@ -299,10 +301,12 @@ class ControlCenter(QMainWindow):
         preset_label = QLabel("Presets:", root)
         preset_label.setObjectName("detail")
         preset_row.addWidget(preset_label)
+        self._preset_buttons: list[QPushButton] = []
         for label_text, secs in (("30s", 30), ("1m", 60), ("2m", 120), ("5m", 300)):
             btn = QPushButton(label_text, root)
             btn.setObjectName("secondary")
             btn.setFixedHeight(26)
+            self._preset_buttons.append(btn)
             btn.clicked.connect(lambda _checked=False, s=secs: self.apply_timeout_preset(s))
             preset_row.addWidget(btn)
         preset_row.addStretch(1)
@@ -353,6 +357,32 @@ class ControlCenter(QMainWindow):
 
     def enrollment_present(self) -> bool:
         return self._supervisor.enrollment_present()
+
+    def _controls_locked(self) -> bool:
+        check = getattr(self._supervisor, "controls_locked", None)
+        try:
+            return bool(check()) if callable(check) else False
+        except Exception:
+            return False
+
+    def _apply_lock_state(self, locked: bool) -> None:
+        for widget in (
+            self._reenroll_btn,
+            self._timeout_input,
+            self._save_timeout_button,
+            *self._preset_buttons,
+        ):
+            widget.setEnabled(not locked)
+        if locked:
+            self._primary_button.setEnabled(False)
+            self._tray_primary_action.setEnabled(False)
+            self._detail_label.setText(_LOCKED_NOTE)
+
+    def _refuse_while_locked(self) -> bool:
+        if not self._controls_locked():
+            return False
+        self._timeout_note.setText(_LOCKED_NOTE)
+        return True
 
     def timeout_note_text(self) -> str:
         return self._timeout_note.text()
@@ -429,6 +459,7 @@ class ControlCenter(QMainWindow):
             animated=status in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING),
         )
         self._tray.setIcon(_create_tray_icon(color))
+        self._apply_lock_state(self._controls_locked())
         self._refresh_telemetry_chips(enrolled)
 
     def start_protection(self) -> None:
@@ -436,10 +467,14 @@ class ControlCenter(QMainWindow):
         self.refresh()
 
     def apply_timeout_preset(self, seconds: int) -> None:
+        if self._refuse_while_locked():
+            return
         self._timeout_input.setValue(int(seconds))
         self.save_idle_timeout()
 
     def save_idle_timeout(self) -> None:
+        if self._refuse_while_locked():
+            return
         seconds = self._timeout_input.value()
         if self._supervisor.set_idle_timeout(seconds):
             if self._supervisor.status() is RuntimeStatus.RUNNING:
@@ -450,6 +485,8 @@ class ControlCenter(QMainWindow):
             self._timeout_note.setText("That timeout is outside the permitted range.")
 
     def start_reenrollment(self) -> None:
+        if self._refuse_while_locked():
+            return
         if self._supervisor.start_enrollment():
             self._timeout_note.setText("Enrollment opened in a separate window.")
         else:
@@ -460,6 +497,8 @@ class ControlCenter(QMainWindow):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     def _run_primary_action(self) -> None:
+        if self._refuse_while_locked():
+            return
         if not self._supervisor.enrollment_present():
             enrollment = getattr(self._supervisor, "start_enrollment", None)
             if callable(enrollment):
@@ -483,6 +522,9 @@ class ControlCenter(QMainWindow):
         self._tray.show()
 
     def quit_application(self) -> None:
+        if self._refuse_while_locked():
+            self.show_center()
+            return
         self._quitting = True
         self._refresh_timer.stop()
         self._supervisor.stop()

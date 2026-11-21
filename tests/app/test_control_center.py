@@ -178,3 +178,40 @@ def test_perf_chip_ignores_a_cold_start_line_outside_the_tail(qapp, tmp_path):
 
     assert view._perf_chip.text() == "Engine: Ready"
     view.close()
+
+
+class LockedSupervisor(FakeSupervisor):
+    def controls_locked(self):
+        return True
+
+
+def test_control_center_disables_every_control_while_locked(qapp, tmp_path):
+    supervisor = LockedSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    view.refresh()
+
+    assert not view._primary_button.isEnabled()
+    assert not view._reenroll_btn.isEnabled()
+    assert not view._timeout_input.isEnabled()
+    assert not view._save_timeout_button.isEnabled()
+    assert view._preset_buttons and not any(b.isEnabled() for b in view._preset_buttons)
+    assert "locked" in view._detail_label.text().lower()
+    view.close()
+
+
+def test_control_center_actions_are_noops_while_locked(qapp, tmp_path):
+    supervisor = LockedSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+
+    view._run_primary_action()
+    view.start_reenrollment()
+    view.apply_timeout_preset(300)
+    view.save_idle_timeout()
+    view.quit_application()
+
+    assert supervisor.stop_calls == 0
+    assert supervisor.enrollment_calls == 0
+    assert not hasattr(supervisor, "idle_timeout")
+    assert view._quitting is False
+    view.close()

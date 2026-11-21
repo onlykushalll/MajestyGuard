@@ -293,3 +293,65 @@ def test_start_enrollment_spawn_failure_restores_the_daemon(tmp_path, monkeypatc
     assert old_daemon.terminated is True
     assert supervisor.status() is RuntimeStatus.RUNNING  # protection restored
     assert supervisor._resume_after_enrollment is False
+
+
+def _locked_supervisor(tmp_path, *, alive=True):
+    state_file = tmp_path / "lock_state.txt"
+    state_file.write_text("LOCKED\n", encoding="utf-8")
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    process = FakeProcess(returncode=None if alive else 1)
+    supervisor._process = process
+    return supervisor, process, state_file
+
+
+def test_pause_is_refused_while_the_session_is_locked(tmp_path):
+    supervisor, process, _ = _locked_supervisor(tmp_path)
+
+    assert supervisor.controls_locked() is True
+    assert supervisor.pause() is False
+    assert process.terminated is False
+    assert supervisor._process is process
+    assert load_settings(tmp_path / "settings.json").paused is False
+
+
+def test_stop_and_settings_changes_are_refused_while_locked(tmp_path):
+    supervisor, process, _ = _locked_supervisor(tmp_path)
+
+    assert supervisor.stop() is False
+    assert supervisor.set_idle_timeout(300) is False
+    assert supervisor.set_windows_lock_enabled(True) is False
+    assert process.terminated is False and process.killed is False
+    settings = load_settings(tmp_path / "settings.json")
+    assert settings.idle_timeout_seconds == 60
+    assert settings.enable_windows_lock is False
+
+
+def test_enrollment_does_not_stop_a_locked_daemon(tmp_path, monkeypatch):
+    supervisor, process, _ = _locked_supervisor(tmp_path)
+    (tmp_path / "daemon").mkdir()
+    (tmp_path / "daemon" / "enroll_v2.py").write_text("# enroll", encoding="utf-8")
+    spawned = []
+    monkeypatch.setattr(supervisor, "_spawn_enrollment", lambda *a: spawned.append(a) or FakeProcess())
+
+    assert supervisor.start_enrollment() is False
+    assert spawned == []
+    assert process.terminated is False
+
+
+def test_pause_when_unlocked_stops_the_daemon_and_clears_stale_lock_state(tmp_path):
+    supervisor, process, state_file = _locked_supervisor(tmp_path, alive=True)
+    state_file.write_text("UNLOCKED\n", encoding="utf-8")
+
+    assert supervisor.controls_locked() is False
+    assert supervisor.pause() is True
+    assert process.terminated is True
+    assert load_settings(tmp_path / "settings.json").paused is True
+    assert state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"
+
+
+def test_stale_locked_marker_with_a_dead_daemon_does_not_strand_controls(tmp_path):
+    supervisor, _, state_file = _locked_supervisor(tmp_path, alive=False)
+
+    assert supervisor.controls_locked() is False
+    assert supervisor.pause() is True
+    assert state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"

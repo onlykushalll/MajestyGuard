@@ -105,18 +105,59 @@ class Supervisor:
             return False
         return True
 
-    def stop(self, timeout_seconds: float = 5.0) -> None:
+    def session_locked(self) -> bool:
+        """True while the daemon reports the overlay lock as engaged."""
+        try:
+            text = (self._settings_path.parent / "lock_state.txt").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        return text.strip().upper() == "LOCKED"
+
+    def controls_locked(self) -> bool:
+        """Lifecycle and settings controls are unavailable while locked.
+
+        A lock that can be paused, stopped or reconfigured from the unlocked
+        desktop tools is not a lock, so every control that could weaken
+        protection refuses while the session is locked. A daemon this
+        supervisor knows is dead cannot be holding a lock, so a stale
+        LOCKED file does not strand the user.
+        """
+        if not self.session_locked():
+            return False
+        process = self._process
+        if process is not None and process.poll() is not None:
+            return False
+        return True
+
+    def stop(self, timeout_seconds: float = 5.0) -> bool:
+        """Stop the daemon. Returns False (and does nothing) while locked."""
+        if self.controls_locked():
+            return False
         process = self._process
         self._process = None
         if process is None or process.poll() is not None:
-            return
+            return True
         process.terminate()
         try:
             process.wait(timeout=max(0.1, float(timeout_seconds)))
         except subprocess.TimeoutExpired:
             process.kill()
+        return True
 
-    def pause(self) -> None:
+    def _clear_lock_state(self) -> None:
+        """After an allowed pause nothing can enforce a stale LOCKED marker."""
+        path = self._settings_path.parent / "lock_state.txt"
+        try:
+            if path.is_file():
+                tmp_path = path.with_name(path.name + ".tmp")
+                tmp_path.write_text("UNLOCKED\n", encoding="utf-8")
+                os.replace(tmp_path, path)
+        except OSError:
+            pass
+
+    def pause(self) -> bool:
+        if self.controls_locked():
+            return False
         settings = load_settings(self._settings_path)
         save_settings(
             self._settings_path,
@@ -127,6 +168,8 @@ class Supervisor:
             ),
         )
         self.stop()
+        self._clear_lock_state()
+        return True
 
     def resume(self) -> bool:
         settings = load_settings(self._settings_path)
@@ -141,6 +184,8 @@ class Supervisor:
         return self.start()
 
     def set_idle_timeout(self, seconds: int) -> bool:
+        if self.controls_locked():
+            return False
         if not isinstance(seconds, int) or isinstance(seconds, bool):
             return False
         if not MIN_IDLE_TIMEOUT_SECONDS <= seconds <= MAX_IDLE_TIMEOUT_SECONDS:
@@ -160,6 +205,8 @@ class Supervisor:
         return load_settings(self._settings_path).enable_windows_lock
 
     def set_windows_lock_enabled(self, enabled: bool) -> bool:
+        if self.controls_locked():
+            return False
         if not isinstance(enabled, bool):
             return False
         settings = load_settings(self._settings_path)
@@ -192,10 +239,13 @@ class Supervisor:
                 return False
             cmd = [str(self._python), str(entrypoint)]
 
+        if self.controls_locked():
+            return False
         was_running = self.status() in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING)
         if was_running:
+            if not self.stop():
+                return False
             self._resume_after_enrollment = True
-            self.stop()
 
         environment = dict(os.environ)
         environment.update(

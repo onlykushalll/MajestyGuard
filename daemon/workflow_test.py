@@ -123,7 +123,7 @@ def run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Supervised MajestyGuard soft-lock timing test.")
-    parser.add_argument("--idle-timeout", type=int, default=30, help="Idle timeout for test runs, clamped by daemon to 30-600 seconds.")
+    parser.add_argument("--idle-timeout", type=int, default=30, help="Idle timeout for test runs, clamped by daemon to 3-1800 seconds.")
     parser.add_argument("--runs", type=int, default=3, help="Number of supervised runs to perform.")
     parser.add_argument("--max-seconds", type=int, default=0, help="Hard bound for daemon lifetime.")
     parser.add_argument("--dry-run", action="store_true", help="Print instructions/env without starting camera/UI.")

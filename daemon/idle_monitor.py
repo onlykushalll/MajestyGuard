@@ -18,7 +18,10 @@ from typing import Callable, Mapping, Optional
 log = logging.getLogger(__name__)
 
 MIN_IDLE_TIMEOUT_S = 3.0
-MAX_IDLE_TIMEOUT_S = 600.0
+# Keep in step with app/config.py (Control Center allows 15-1800 s) and the
+# daemon's settings.json hot-reload; a lower ceiling here silently rewrote
+# a valid saved setting to 600 s whenever the daemon restarted.
+MAX_IDLE_TIMEOUT_S = 1800.0
 DEFAULT_IDLE_TIMEOUT_S = 60.0
 
 
@@ -46,7 +49,7 @@ def get_idle_seconds() -> float:
 
 
 def clamp_idle_timeout(value: float) -> float:
-    """Clamp idle timeout to the supported 30-600 second range."""
+    """Clamp idle timeout to the supported 3-1800 second range."""
     return max(MIN_IDLE_TIMEOUT_S, min(MAX_IDLE_TIMEOUT_S, float(value)))
 
 
@@ -68,7 +71,7 @@ def read_idle_timeout(
         return DEFAULT_IDLE_TIMEOUT_S
     clamped = clamp_idle_timeout(value)
     if clamped != value:
-        emit(f"MG_IDLE_TIMEOUT={value:.0f}s outside 30-600s; using {clamped:.0f}s")
+        emit(f"MG_IDLE_TIMEOUT={value:.0f}s outside {MIN_IDLE_TIMEOUT_S:.0f}-{MAX_IDLE_TIMEOUT_S:.0f}s; using {clamped:.0f}s")
     return clamped
 
 

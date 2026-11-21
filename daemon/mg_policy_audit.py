@@ -131,7 +131,7 @@ def audit_policy(
         "liveness": _env_float(env, "MG_LIVENESS_THRESHOLD", 0.70),
         "active_liveness_jitter_floor": _env_float(env, "MG_ACTIVE_LIVENESS_JITTER_FLOOR", 0.55),
         "stranger_min_frame_quality": _env_float(env, "MG_STRANGER_MIN_FRAME_QUALITY", 0.42),
-        "soft_lock_idle_seconds": _env_float(env, "MG_IDLE_TIMEOUT", 60.0, 15.0, 600.0),
+        "soft_lock_idle_seconds": _env_float(env, "MG_IDLE_TIMEOUT", 60.0, 15.0, 1800.0),
         "passive_fps": _env_float(env, "MG_PASSIVE_FPS", 0.0, 0.0, 5.0),
         "soft_lock_idle_rearm_seconds": _env_float(env, "MG_SOFT_LOCK_IDLE_REARM_SECONDS", 1.0, 0.0, 10.0),
         "soft_lock_release_grace_seconds": _env_float(env, "MG_SOFT_LOCK_RELEASE_GRACE_SECONDS", 15.0, 0.0, 300.0),

@@ -7,7 +7,8 @@ def test_idle_timeout_env_clamps_to_safe_range():
     warnings = []
 
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "15"}, warn=warnings.append) == 15.0
-    assert read_idle_timeout({"MG_IDLE_TIMEOUT": "900"}, warn=warnings.append) == 600.0
+    assert read_idle_timeout({"MG_IDLE_TIMEOUT": "900"}, warn=warnings.append) == 900.0
+    assert read_idle_timeout({"MG_IDLE_TIMEOUT": "5000"}, warn=warnings.append) == 1800.0
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "120"}, warn=warnings.append) == 120.0
     assert read_idle_timeout({"MG_IDLE_TIMEOUT": "bad"}, warn=warnings.append) == 60.0
     assert len(warnings) == 2
@@ -16,6 +17,7 @@ def test_idle_timeout_env_clamps_to_safe_range():
 def test_clamp_idle_timeout_accepts_boundaries():
     assert clamp_idle_timeout(15) == 15.0
     assert clamp_idle_timeout(600) == 600.0
+    assert clamp_idle_timeout(1800) == 1800.0
 
 
 def test_idle_monitor_emits_after_configured_idle_time():

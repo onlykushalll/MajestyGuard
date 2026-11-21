@@ -33,7 +33,7 @@ logging.basicConfig(
 
 MIN_IDLE_TIMEOUT_S = 3.0
 
-MAX_IDLE_TIMEOUT_S = 600.0
+MAX_IDLE_TIMEOUT_S = 1800.0  # matches idle_monitor.py / app/config.py
 DEFAULT_IDLE_TIMEOUT_S = 60.0
 MIN_PREWARM_LEAD_S = 5.0
 MAX_PREWARM_LEAD_S = 60.0
@@ -75,7 +75,7 @@ def get_idle_seconds() -> float:
 
 
 def read_idle_timeout() -> float:
-    """Read MG_IDLE_TIMEOUT from environment, clamped to 15-600s."""
+    """Read MG_IDLE_TIMEOUT from environment, clamped to 3-1800s."""
     raw = os.environ.get("MG_IDLE_TIMEOUT") or os.environ.get("MG_SOFT_LOCK_IDLE_SECONDS")
     if raw is None or raw.strip() == "":
         return DEFAULT_IDLE_TIMEOUT_S
@@ -86,7 +86,7 @@ def read_idle_timeout() -> float:
         return DEFAULT_IDLE_TIMEOUT_S
     clamped = max(MIN_IDLE_TIMEOUT_S, min(MAX_IDLE_TIMEOUT_S, value))
     if clamped != value:
-        log.warning("MG_IDLE_TIMEOUT=%.0fs outside 15-600s; using %.0fs", value, clamped)
+        log.warning("MG_IDLE_TIMEOUT=%.0fs outside %.0f-%.0fs; using %.0fs", value, MIN_IDLE_TIMEOUT_S, MAX_IDLE_TIMEOUT_S, clamped)
     return clamped
 
 

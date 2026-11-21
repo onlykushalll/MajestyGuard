@@ -6,7 +6,9 @@ cardiac signal in the 0.67-4 Hz band; photos and masks should not.
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
+import threading
 import time
 from collections import deque
 from typing import Any
@@ -14,11 +16,38 @@ from typing import Any
 import cv2
 import numpy as np
 
-try:
-    from scipy import signal as scipy_signal
-    _SCIPY_OK = True
-except ImportError:
-    _SCIPY_OK = False
+# scipy.signal costs ~1.5 s to import and is only needed once rPPG has enough
+# frames, so it is loaded lazily (and pre-warmed on a background thread by
+# FaceEngine.warmup_fast) instead of delaying daemon start-up.
+_SCIPY_OK = importlib.util.find_spec("scipy") is not None
+
+
+class _LazyScipySignal:
+    _module = None
+    _lock = threading.Lock()
+
+    def _load(self):
+        if self._module is None:
+            with self._lock:
+                if self._module is None:
+                    from scipy import signal as real_signal
+
+                    type(self)._module = real_signal
+        return self._module
+
+    def __getattr__(self, name):
+        return getattr(self._load(), name)
+
+
+scipy_signal = _LazyScipySignal()
+
+
+def preload_scipy_signal() -> bool:
+    """Import scipy.signal on a background thread. True if a load was started."""
+    if not _SCIPY_OK or _LazyScipySignal._module is not None:
+        return False
+    threading.Thread(target=scipy_signal._load, name="mg-scipy-preload", daemon=True).start()
+    return True
 
 logger = logging.getLogger("MajestyGuard.rPPG")
 
@@ -152,7 +181,7 @@ class CHROMrPPGDetector:
                 btype="band",
             )
             chrom_signal = scipy_signal.filtfilt(b, a, chrom_signal)
-        except (ValueError, TypeError, FloatingPointError) as e:
+        except (ValueError, TypeError, FloatingPointError, ImportError) as e:
             logger.debug("rPPG filter failed: %s", e)
             return 0.5
 

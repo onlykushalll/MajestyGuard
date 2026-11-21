@@ -84,6 +84,7 @@ _VIRTUAL_CAMERA_CLSIDS = frozenset([
 
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 class VirtualCameraDetector:
     """
@@ -96,43 +97,57 @@ class VirtualCameraDetector:
         self._cache_ttl: float = 30.0
         self._lock = threading.Lock()
         self._updating: set[int] = set()
+        self._cond = threading.Condition(self._lock)
+        # How long a caller waits for an in-flight refresh before failing closed.
+        self._inflight_wait_s: float = 5.0
+        self._pnp_memo = None  # (monotonic, entries) -- 2 s memo, see _enumerate_pnputil_cameras
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="mg-vcam")
+        self._warm_lock = threading.Lock()
+        self._warm_thread = None
+        self._warm_stop = None
+        self._warm_index = None
 
     def is_virtual(self, camera_index: int) -> bool:
         """
         Returns True if the selected camera appears to be a virtual/software device.
         Call this before starting face recognition. Block if True.
 
-        Always returns a freshly-verified result once the cache TTL has
-        elapsed. An earlier version returned the stale cached value
-        immediately while refreshing in the background once the 30s TTL
-        expired, meaning a camera source that changed right after a
-        refresh could keep reading as "physical" for up to the entire TTL
-        window. This function runs on every frame (~15/sec), so
-        re-verifying synchronously once per TTL interval costs one brief
-        blocking check roughly every 30 seconds, not one per call -- there
-        was no real reason to trade that security margin for a
-        background-refresh pattern.
+        A cached verdict younger than the TTL is returned immediately. Past the
+        TTL the result is re-verified before it is returned -- never served
+        stale -- but a refresh that is already running (for example the
+        keep-warm thread) is *joined* rather than failed: callers wait for it
+        and fail closed only if it does not finish within ``_inflight_wait_s``.
         """
-        now = time.monotonic()
         with self._lock:
             cached = self._cache.get(camera_index)
-            if cached is not None and (now - cached[0]) < self._cache_ttl:
+            if cached is not None and (time.monotonic() - cached[0]) < self._cache_ttl:
                 return cached[1]
+        return self._refresh(camera_index, wait_if_busy=True)
 
+    def _refresh(self, camera_index: int, *, wait_if_busy: bool) -> bool:
+        with self._cond:
             if camera_index in self._updating:
-                logger.warning(
-                    "Camera identity refresh still in progress for index %d; blocking until verified",
-                    camera_index,
-                )
-                return True
-
+                if not wait_if_busy:
+                    cached = self._cache.get(camera_index)
+                    return cached[1] if cached is not None else True
+                deadline = time.monotonic() + self._inflight_wait_s
+                while camera_index in self._updating:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.warning(
+                            "Camera identity refresh still in progress for index %d; blocking until verified",
+                            camera_index,
+                        )
+                        return True
+                    self._cond.wait(remaining)
+                cached = self._cache.get(camera_index)
+                if cached is not None and (time.monotonic() - cached[0]) < self._cache_ttl:
+                    return cached[1]
             self._updating.add(camera_index)
 
-        # Detection runs outside the lock -- the underlying subprocess calls
-        # can take a few seconds combined, and there's no reason to block a
-        # concurrent check for a *different* camera_index on this one's I/O.
-        # The per-index _updating guard above still prevents duplicate
-        # concurrent work for the *same* index.
+        # Detection runs outside the lock: the subprocess calls can take a few
+        # seconds and must not block a check for a different camera index.
+        result = True
         try:
             result = self._detect(camera_index)
         except Exception as e:
@@ -141,17 +156,66 @@ class VirtualCameraDetector:
             )
             result = True
         finally:
-            with self._lock:
+            with self._cond:
+                self._cache[camera_index] = (time.monotonic(), result)
                 self._updating.discard(camera_index)
-
-        with self._lock:
-            self._cache[camera_index] = (time.monotonic(), result)
+                self._cond.notify_all()
 
         if result:
             logger.warning("SECURITY: Virtual camera detected at index %d — blocking", camera_index)
         else:
             logger.debug("Camera at index %d appears to be physical hardware", camera_index)
         return result
+
+    def keep_warm(self, camera_index: int, enabled: bool = True, interval_s: float = 20.0) -> None:
+        """Re-verify the camera in the background so a verdict is never stale.
+
+        The identity check shells out (pnputil / PowerShell) and takes seconds.
+        Running it lazily on the first frame of a verification burst made unlock
+        wait for it. While locked the daemon keeps the verdict fresh instead:
+        a refresh runs before the cache can expire, so the first frame is a
+        cache hit. The freshness guarantee is unchanged (never older than the
+        TTL). It never opens the camera.
+        """
+        with self._warm_lock:
+            if not enabled:
+                if self._warm_stop is not None:
+                    self._warm_stop.set()
+                self._warm_stop = None
+                return
+            alive = self._warm_thread is not None and self._warm_thread.is_alive()
+            running = (
+                alive
+                and self._warm_index == camera_index
+                and self._warm_stop is not None
+                and not self._warm_stop.is_set()
+            )
+            if running:
+                return
+            if self._warm_stop is not None:
+                self._warm_stop.set()
+            stop = threading.Event()
+            self._warm_stop = stop
+            self._warm_index = camera_index
+            self._warm_thread = threading.Thread(
+                target=self._warm_loop,
+                args=(camera_index, max(5.0, float(interval_s)), stop),
+                name="mg-vcam-warm",
+                daemon=True,
+            )
+            self._warm_thread.start()
+
+    def _warm_loop(self, camera_index: int, interval_s: float, stop: threading.Event) -> None:
+        while not stop.is_set():
+            try:
+                with self._lock:
+                    cached = self._cache.get(camera_index)
+                age = None if cached is None else time.monotonic() - cached[0]
+                if age is None or age >= self._cache_ttl - interval_s:
+                    self._refresh(camera_index, wait_if_busy=False)
+            except Exception as exc:  # never let the keep-warm thread die noisily
+                logger.debug("Virtual camera keep-warm pass failed: %s", exc)
+            stop.wait(interval_s)
 
     def invalidate_cache(self):
         """Force re-check on next call."""
@@ -163,6 +227,9 @@ class VirtualCameraDetector:
 
         # Method 1: Device name check via DirectShow / WMI (resolve name first
         # so CLSID check can cross-reference the active camera, not system-wide)
+        # The MF/WinRT PowerShell probe is by far the slowest step (seconds), so it
+        # runs concurrently with the quick pnputil/registry steps below.
+        mf_future = self._pool.submit(self._check_mf_hardware_source, camera_index)
         camera_name = self._get_camera_name(camera_index)
         if camera_name:
             name_lower = camera_name.lower()
@@ -176,7 +243,10 @@ class VirtualCameraDetector:
             return True
 
         # Method 2: MF hardware source attribute (Windows 11 definitive check)
-        mf_result = self._check_mf_hardware_source(camera_index)
+        try:
+            mf_result = mf_future.result()
+        except Exception:
+            mf_result = None
         if mf_result is False:  # Explicitly software (None = unknown, skip)
             logger.warning("MF hardware source check: software camera at index %d", camera_index)
             return True
@@ -293,6 +363,16 @@ class VirtualCameraDetector:
         return ["pnputil"]
 
     def _enumerate_pnputil_cameras(self):
+        """Memoised for 2 s: one detection used to run pnputil twice."""
+        memo = self._pnp_memo
+        now = time.monotonic()
+        if memo is not None and (now - memo[0]) < 2.0:
+            return list(memo[1])
+        entries = self._enumerate_pnputil_cameras_uncached()
+        self._pnp_memo = (time.monotonic(), entries)
+        return list(entries)
+
+    def _enumerate_pnputil_cameras_uncached(self):
         """Enumerate camera-class devices via pnputil (native, no PS/wmic).
 
         MG-D-06 live fix (2026-09-20): wmic is removed on current Win11 and
@@ -475,6 +555,11 @@ _detector = VirtualCameraDetector()
 def is_virtual_camera(camera_index: int) -> bool:
     """Public API — call this before initializing face recognition."""
     return _detector.is_virtual(camera_index)
+
+
+def keep_virtual_camera_check_warm(camera_index: int, enabled: bool = True) -> None:
+    """Start/stop background re-verification (see VirtualCameraDetector.keep_warm)."""
+    _detector.keep_warm(camera_index, enabled)
 
 
 def invalidate_camera_cache():

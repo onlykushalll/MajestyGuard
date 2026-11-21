@@ -21,6 +21,10 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 from diagnostic_common import resolve_resource_dir
+import model_prehash
+
+# Start hashing the ONNX packs now so it overlaps with the heavy imports below.
+model_prehash.start(resolve_resource_dir("models_insightface"), resolve_resource_dir("models"))
 
 import cv2
 import numpy as np
@@ -75,6 +79,7 @@ from camera_health import (
 from idle_monitor import get_idle_seconds, read_idle_timeout
 from ipc_server import IPCServer, ServiceIPCServer
 from presence import MotionFilter, PresenceDetector
+from virtual_camera_detector import keep_virtual_camera_check_warm
 from session_monitor import SessionEvent, SessionMonitor
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -323,6 +328,7 @@ class MajestyGuardDaemon:
         self.session_monitor = SessionMonitor(self._queue_session_event)
         self._session_events: "queue.Queue[SessionEvent]" = queue.Queue()
         self._ui_commands: "queue.Queue[tuple[str, str]]" = queue.Queue()
+        self._vcam_keepwarm_enabled = True
 
         self._absent_frames = 0
         self._stranger_frames = 0
@@ -719,6 +725,17 @@ class MajestyGuardDaemon:
             return cv2.VideoCapture(CAMERA_INDEX)
         constant = cv2.CAP_DSHOW if backend == BACKEND_DSHOW else getattr(cv2, "CAP_MSMF", 1400)
         return cv2.VideoCapture(CAMERA_INDEX, constant)
+
+    def _set_vcam_keepwarm(self, enabled: bool) -> None:
+        """While locked, keep the virtual-camera verdict fresh so unlock never
+        waits on the slow identity check. Opt-in per instance (bare test
+        daemons never start the thread)."""
+        if not getattr(self, "_vcam_keepwarm_enabled", False):
+            return
+        try:
+            keep_virtual_camera_check_warm(CAMERA_INDEX, enabled)
+        except Exception as exc:
+            log.debug("virtual-camera keep-warm toggle failed: %s", exc)
 
     def _write_camera_health_snapshot(self) -> None:
         try:
@@ -1162,6 +1179,7 @@ class MajestyGuardDaemon:
 
     def _handle_passive_soft_lock(self, loop_start: float) -> None:
         now = time.monotonic()
+        self._set_vcam_keepwarm(True)
         self._heal_camera_if_faulted()
         if getattr(self, "_camera_fault_active", False):
             self.ipc.broadcast_state(
@@ -2094,6 +2112,7 @@ class MajestyGuardDaemon:
             self._soft_lock_owner_candidate_frames = 0
             self._soft_lock_fast_pass_frames = 0
             self._defer_input_idle_soft_lock()
+            self._set_vcam_keepwarm(False)
         elif new_state == State.SOCIAL_LOCK:
             self._absent_frames = 0
             self._stranger_frames = 0

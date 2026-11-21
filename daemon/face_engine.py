@@ -163,6 +163,11 @@ class _PureOnnxBuffaloApp:
             return []
 
 # InsightFace — install: pip install insightface onnxruntime
+import model_prehash
+from import_speedups import skip_unused_insightface_modules
+
+# Must run before insightface is imported: skips matplotlib/albumentations/skimage.
+skip_unused_insightface_modules()
 try:
     from insightface.app import FaceAnalysis
     INSIGHTFACE_AVAILABLE = True
@@ -203,11 +208,8 @@ def _verify_model_tofu(model_path: str) -> bool:
     if key in _TOFU_VERIFIED:
         return True
     try:
-        digest = hashlib.sha256()
-        with open(model_path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                digest.update(chunk)
-        actual = digest.hexdigest()
+        # Usually already computed by model_prehash's background threads.
+        actual = model_prehash.digest_for(model_path)
     except OSError as exc:
         logger.critical(
             "Model integrity check failed to read %s: %s - refusing to load",
@@ -286,6 +288,7 @@ def _verify_model_pack_tofu(model_dir: str) -> bool:
     insightface buffalo_l pack (det_10g.onnx / w600k_r50.onnx / ...)."""
     if not model_dir or not os.path.isdir(model_dir):
         return True  # nothing to verify yet; loader behaves as before
+    model_prehash.start(model_dir)  # hash every file in parallel (no-op if already queued)
     for dirpath, _dirnames, filenames in os.walk(model_dir):
         for filename in sorted(filenames):
             if not filename.lower().endswith(".onnx"):
@@ -620,6 +623,12 @@ class FaceEngine:
                 self._liveness._onnx_score_history.clear()
             except Exception as exc:
                 logger.debug("Anti-spoof warmup skipped: %s", exc)
+        try:
+            from rppg_detector import preload_scipy_signal
+
+            preload_scipy_signal()  # background thread; keeps the first rPPG frame fast
+        except Exception as exc:
+            logger.debug("scipy preload skipped: %s", exc)
         if hasattr(self._liveness, "start_background_heavy_load"):
             self._liveness.start_background_heavy_load()
 

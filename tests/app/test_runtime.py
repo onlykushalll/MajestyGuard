@@ -355,3 +355,26 @@ def test_stale_locked_marker_with_a_dead_daemon_does_not_strand_controls(tmp_pat
     assert supervisor.controls_locked() is False
     assert supervisor.pause() is True
     assert state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"
+
+
+def test_stop_rechecks_the_lock_right_before_terminating(tmp_path, monkeypatch):
+    """Lock engages between stop()'s first check and the terminate call: daemon must survive."""
+    supervisor, process, state_file = _locked_supervisor(tmp_path)
+    state_file.write_text("UNLOCKED\n", encoding="utf-8")
+    answers = iter([False, True])
+    monkeypatch.setattr(supervisor, "controls_locked", lambda: next(answers))
+
+    assert supervisor.stop() is False
+    assert process.terminated is False
+    assert supervisor._process is process
+
+
+def test_pause_that_loses_the_race_leaves_settings_unpaused(tmp_path, monkeypatch):
+    supervisor, process, state_file = _locked_supervisor(tmp_path)
+    state_file.write_text("UNLOCKED\n", encoding="utf-8")
+    answers = iter([False, False, True])      # pause check, stop check, stop re-check
+    monkeypatch.setattr(supervisor, "controls_locked", lambda: next(answers))
+
+    assert supervisor.pause() is False
+    assert process.terminated is False
+    assert load_settings(tmp_path / "settings.json").paused is False

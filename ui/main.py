@@ -316,7 +316,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
 
     # Exit when the daemon that launched this UI is gone (see parent_watch).
-    from parent_watch import OrphanGuard, configured_daemon_pid
+    from parent_watch import OrphanGuard, configured_daemon_pid, quit_flag_path, quit_requested
 
     guard = OrphanGuard(configured_daemon_pid())
     orphan_timer = QTimer()
@@ -328,6 +328,20 @@ def main() -> None:
             log.warning("Daemon %s is gone - UI exiting", guard.daemon_pid)
             _shutdown()
 
+    quit_path = quit_flag_path()
+
+    def _check_quit_request() -> None:
+        # Deliberate stop by the daemon (it is unlocking or exiting): shut down through the
+        # normal path so the taskbar, cursor clip and hooks are restored, unlike terminate().
+        if quit_requested(quit_path):
+            log.info("Daemon asked the UI to quit")
+            _shutdown()
+
+    if quit_path:
+        quit_timer = QTimer()
+        quit_timer.setInterval(250)
+        quit_timer.timeout.connect(_check_quit_request)
+        quit_timer.start()
     orphan_timer.timeout.connect(_check_orphan)
     if guard.daemon_pid is not None:
         orphan_timer.start()

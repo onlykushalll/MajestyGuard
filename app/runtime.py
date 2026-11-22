@@ -134,9 +134,14 @@ class Supervisor:
         if self.controls_locked():
             return False
         process = self._process
-        self._process = None
         if process is None or process.poll() is not None:
+            self._process = None
             return True
+        # The lock may have engaged between the check above and now; look again
+        # immediately before the irreversible step.
+        if self.controls_locked():
+            return False
+        self._process = None
         process.terminate()
         try:
             process.wait(timeout=max(0.1, float(timeout_seconds)))
@@ -167,7 +172,9 @@ class Supervisor:
                 enable_windows_lock=settings.enable_windows_lock,
             ),
         )
-        self.stop()
+        if not self.stop():
+            save_settings(self._settings_path, settings)   # lock engaged mid-pause: undo
+            return False
         self._clear_lock_state()
         return True
 

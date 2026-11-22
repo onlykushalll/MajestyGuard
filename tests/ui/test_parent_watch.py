@@ -39,3 +39,16 @@ def test_daemon_pid_comes_from_the_environment():
     assert configured_daemon_pid({"MG_DAEMON_PID": "abc"}) is None
     assert configured_daemon_pid({"MG_DAEMON_PID": "0"}) is None
     assert configured_daemon_pid({}) is None
+
+
+def test_quit_flag_is_consumed_once(tmp_path):
+    from parent_watch import QUIT_FLAG_ENV, quit_flag_path, quit_requested
+    flag = tmp_path / "ui_quit.flag"
+    assert quit_flag_path({QUIT_FLAG_ENV: str(flag)}) == str(flag)
+    assert quit_flag_path({}) is None
+    assert quit_requested(str(flag)) is False
+    flag.write_text("quit")
+    assert quit_requested(str(flag)) is True
+    assert not flag.exists()
+    assert quit_requested(str(flag)) is False
+    assert quit_requested(None) is False

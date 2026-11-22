@@ -1250,6 +1250,12 @@ class MajestyGuardDaemon:
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
         env["MG_DAEMON_PID"] = str(os.getpid())  # lets the UI exit if this daemon dies
+        quit_flag = _MG_STATE_DIR / "ui_quit.flag"
+        try:
+            quit_flag.unlink(missing_ok=True)       # a stale request must not kill the new UI
+        except OSError:
+            pass
+        env["MG_UI_QUIT_FLAG"] = str(quit_flag)
         packaged_ui = Path(env.get("MG_UI_EXECUTABLE", ""))
         command = [str(packaged_ui)] if packaged_ui.is_file() else [sys.executable, str(ui_path)]
         self._overlay_proc = subprocess.Popen(
@@ -1275,6 +1281,15 @@ class MajestyGuardDaemon:
         proc = getattr(self, "_overlay_proc", None)
         if proc is None or proc.poll() is not None:
             return
+        # Ask the UI to leave through its normal shutdown (restores taskbar, cursor clip,
+        # hooks, gestures). terminate() skips all of that, so it is only the fallback.
+        flag = _MG_STATE_DIR / "ui_quit.flag"
+        try:
+            flag.write_text("quit\n", encoding="utf-8")
+            proc.wait(timeout=2.5)
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
         proc.terminate()
         try:
             proc.wait(timeout=2.0)

@@ -69,3 +69,28 @@ class OrphanGuard:
             return False                      # never abandon a lock by exiting
         self._strikes += 1                    # require consecutive confirmations
         return self._strikes >= self._strikes_needed
+
+
+QUIT_FLAG_ENV = "MG_UI_QUIT_FLAG"
+
+
+def quit_flag_path(environ=None):
+    """Path of the file the daemon drops to ask this UI to shut down cleanly, or None."""
+    raw = (environ if environ is not None else os.environ).get(QUIT_FLAG_ENV, "").strip()
+    return raw or None
+
+
+def quit_requested(path) -> bool:
+    """True when the daemon asked this UI to exit (and consumes the request)."""
+    if not path:
+        return False
+    try:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return True
+    except OSError:
+        pass
+    return False

@@ -100,9 +100,9 @@ def test_copy_fits_its_boxes_with_real_font_metrics():
     for w, h in ((1280, 720), (1366, 768), (1920, 1080), (2560, 1440), (3840, 2160)):
         lay = L.compute(0, 0, w, h)
         s = lay.scale
-        status_font = QFontMetricsF(fonts.ui_font(8.5 * s, QFont.Weight.DemiBold, spacing=1.1))
-        head_font = QFontMetricsF(fonts.ui_font(16.5 * s, QFont.Weight.DemiBold))
-        sub_font = QFontMetricsF(fonts.ui_font(10.5 * s, QFont.Weight.Normal))
+        status_font = QFontMetricsF(fonts.ui_font_px(8.5 * s, QFont.Weight.DemiBold, spacing=1.1))
+        head_font = QFontMetricsF(fonts.ui_font_px(16.5 * s, QFont.Weight.DemiBold))
+        sub_font = QFontMetricsF(fonts.ui_font_px(10.5 * s, QFont.Weight.Normal))
         chip_room = lay.status[2] - (7.0 + 10.0) * s - 24.0 * s
         for name in states:
             label = L.status_label(name)

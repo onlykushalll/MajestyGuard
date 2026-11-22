@@ -42,7 +42,7 @@ except Exception:  # pragma: no cover
     _glass = None
 
 try:
-    from fonts import ui_font as _ui_font
+    from fonts import ui_font_px as _ui_font
 except Exception:  # pragma: no cover
     _ui_font = None
 
@@ -54,7 +54,10 @@ def _font(size, weight=QFont.Weight.Normal, **kw) -> QFont:
             return _ui_font(size, weight, **kw)
         except Exception:
             pass
-    return QFont("Segoe UI", int(size), weight)
+    fallback = QFont("Segoe UI")
+    fallback.setPixelSize(max(6, int(round(float(size) * 96.0 / 72.0))))
+    fallback.setWeight(weight)
+    return fallback
 
 
 _LOCK_NAMES = {

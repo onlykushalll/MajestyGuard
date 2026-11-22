@@ -46,3 +46,9 @@ def test_never_raises_if_variable_calls_fail(qapp, monkeypatch):
     monkeypatch.setattr(QFont, "setFeature", boom, raising=False)
     f = fonts.ui_font(9, QFont.Weight.Medium, tabular=True)
     assert f.pointSizeF() == 9.0
+
+
+def test_ui_font_px_is_pixel_sized_and_dpi_independent():
+    import fonts
+    f = fonts.ui_font_px(12.0)
+    assert f.pixelSize() == 16 and f.pointSizeF() < 0 or f.pixelSize() == 16

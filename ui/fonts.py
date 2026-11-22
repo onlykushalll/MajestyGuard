@@ -49,3 +49,18 @@ def ui_font(
         except Exception:
             pass
     return font
+
+
+def ui_font_px(size: float, weight: QFont.Weight = QFont.Weight.Normal, **kw) -> QFont:
+    """Like :func:`ui_font`, but ``size`` is a *design size at 96 dpi* converted to pixels.
+
+    Point sizes follow the display's logical DPI (150 % scaling makes every pt 1.5x
+    bigger) while the lock overlay's layout is in logical pixels, so text sized in
+    points overflows its boxes on scaled displays. Pixel sizes do not drift.
+    """
+    font = ui_font(size, weight, **kw)
+    try:
+        font.setPixelSize(max(6, int(round(float(size) * 96.0 / 72.0))))
+    except Exception:  # pragma: no cover - defensive
+        pass
+    return font

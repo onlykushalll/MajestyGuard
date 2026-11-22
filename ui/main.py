@@ -277,6 +277,12 @@ def main() -> None:
     widget.update()
     widget.hide()
 
+    try:
+        from soft_lock import recover_gestures_after_crash
+        recover_gestures_after_crash()
+    except Exception:
+        pass
+
     sig        = StateSignal()
     stop_event = threading.Event()
     reader     = PipeReader(sig, stop_event)
@@ -308,6 +314,23 @@ def main() -> None:
 
     signal.signal(signal.SIGINT,  _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
+
+    # Exit when the daemon that launched this UI is gone (see parent_watch).
+    from parent_watch import OrphanGuard, configured_daemon_pid
+
+    guard = OrphanGuard(configured_daemon_pid())
+    orphan_timer = QTimer()
+    orphan_timer.setInterval(3000)
+
+    def _check_orphan() -> None:
+        visible = bool(shield is not None and shield.isVisible())
+        if guard.should_exit(visible):
+            log.warning("Daemon %s is gone - UI exiting", guard.daemon_pid)
+            _shutdown()
+
+    orphan_timer.timeout.connect(_check_orphan)
+    if guard.daemon_pid is not None:
+        orphan_timer.start()
 
     # Let Ctrl+C propagate through Qt event loop
     timer = QTimer()

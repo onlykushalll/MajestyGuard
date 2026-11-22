@@ -48,7 +48,8 @@ def compute(x: float, y: float, w: float, h: float) -> Layout:
 
     message_h = 70.0 * s
     message = (card[0] + 36.0 * s, top + card_h - message_h - 22.0 * s, card_w - 72.0 * s, message_h)
-    status = (cx - 100.0 * s, y + margin, 200.0 * s, 36.0 * s)
+    # Top-left, so it never sits under the Dynamic Island (top-centre).
+    status = (x + margin, y + margin, 200.0 * s, 36.0 * s)
     brand = (cx - 140.0 * s, y + h - margin - 24.0 * s, 280.0 * s, 24.0 * s)
     return Layout(
         scale=s,

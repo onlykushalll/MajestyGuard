@@ -186,3 +186,11 @@ def test_write_snapshot_never_raises_on_bad_path(tmp_path):
     health, _ = _health()
 
     assert health.write_snapshot(tmp_path / "missing_dir" / "x.json") is False
+
+
+def test_dim_leaky_cover_still_counts_as_dark():
+    """A phone/finger over the lens leaks a little light; mean ~5 must still read as covered."""
+    health, _ = _health(black_frames_limit=3)
+    for _ in range(2):
+        health.observe_frame(5.0, 1)
+    assert health.observe_frame(5.0, 2) is CameraFault.BLACK_FRAMES

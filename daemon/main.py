@@ -819,7 +819,15 @@ class MajestyGuardDaemon:
         """Track frame-level faults; True when the camera must be reopened."""
         health = self._camera_health_tracker()
         health.record_read_success()
+        before = health.fault
         fault = health.observe_frame(frame_brightness(frame), frame_signature(frame))
+        if fault is not before:
+            # A covered lens / returning image changes camera_health.json right away,
+            # not only at the next open/close event.
+            if fault is CameraFault.BLACK_FRAMES:
+                log.warning("[Camera] sustained dark frames - lens covered or shutter closed")
+                audit_log.record("camera_fault", fault=fault.value)
+            self._write_camera_health_snapshot()
         if fault is CameraFault.FROZEN_FRAMES:
             log.warning("[Camera] identical frames - driver looks hung, reopening")
             self._release_camera()
@@ -1241,6 +1249,7 @@ class MajestyGuardDaemon:
             return
         env = dict(os.environ)
         env.setdefault("PYTHONUNBUFFERED", "1")
+        env["MG_DAEMON_PID"] = str(os.getpid())  # lets the UI exit if this daemon dies
         packaged_ui = Path(env.get("MG_UI_EXECUTABLE", ""))
         command = [str(packaged_ui)] if packaged_ui.is_file() else [sys.executable, str(ui_path)]
         self._overlay_proc = subprocess.Popen(

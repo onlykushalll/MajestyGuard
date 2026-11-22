@@ -22,8 +22,10 @@ def test_layout_stays_on_screen_and_in_order():
         screen = (0, 0, w, h)
         for name in ("card", "space_key", "tab_key", "status", "brand"):
             assert _inside(getattr(lay, name), screen), (w, h, name)
-        # status chip above the card, keys directly under it, brand at the very bottom
+        # status chip above the card (and clear of the island zone: top-centre), keys directly
+        # under it, brand at the very bottom
         assert lay.status[1] + lay.status[3] < lay.card[1]
+        assert lay.status[0] + lay.status[2] < w / 2.0 - 150.0 * lay.scale, (w, h)
         assert lay.space_key[1] >= lay.card[1] + lay.card[3]
         assert lay.brand[1] > lay.tab_key[1] + lay.tab_key[3]
         # keys sit side by side and together are exactly as wide as the card
@@ -80,3 +82,34 @@ def test_accents_cover_all_lock_states():
                  "verify_failed", "camera_fault"):
         assert name in tokens.ACCENT_BY_STATE
     assert tokens.accent_for("something_else") == tokens.BLUE
+
+
+def test_copy_fits_its_boxes_with_real_font_metrics():
+    """Every status label / headline / sub line must fit un-elided, at every screen size."""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtGui import QFont, QFontMetricsF
+    from PyQt6.QtWidgets import QApplication
+
+    import fonts
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    states = ("locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
+              "verify_failed", "camera_fault")
+    for w, h in ((1280, 720), (1366, 768), (1920, 1080), (2560, 1440), (3840, 2160)):
+        lay = L.compute(0, 0, w, h)
+        s = lay.scale
+        status_font = QFontMetricsF(fonts.ui_font(8.5 * s, QFont.Weight.DemiBold, spacing=1.1))
+        head_font = QFontMetricsF(fonts.ui_font(16.5 * s, QFont.Weight.DemiBold))
+        sub_font = QFontMetricsF(fonts.ui_font(10.5 * s, QFont.Weight.Normal))
+        chip_room = lay.status[2] - (7.0 + 10.0) * s - 24.0 * s
+        for name in states:
+            label = L.status_label(name)
+            # letter-spacing is applied by the paint code; metrics here are a lower bound, so allow 15%
+            assert status_font.horizontalAdvance(label) * 1.15 <= chip_room + 40.0 * s, (w, h, name, label)
+            for armed in (False, True):
+                headline, sub = L.message_for(name, "Camera is blocked. Details.", armed)
+                room = lay.message[2]
+                assert head_font.horizontalAdvance(headline) <= room, (w, h, name, headline)
+                assert sub_font.horizontalAdvance(sub) <= room, (w, h, name, sub)

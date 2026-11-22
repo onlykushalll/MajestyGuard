@@ -366,6 +366,13 @@ def _hook_thread_func():
         _hooks_ready.set()
 
     msg = ctypes.wintypes.MSG()
+    follower = None
+    try:
+        from vdesktop_guard import DesktopFollower
+        follower = DesktopFollower.create()
+    except Exception:
+        follower = None
+    _last_desktop_check = 0.0
     _last_taskmgr_check = 0.0
     _last_hook_refresh = _time.monotonic()
     while not _hook_thread_stop:
@@ -387,6 +394,13 @@ def _hook_thread_func():
                 hwnd_taskmgr = ctypes.windll.user32.FindWindowW("TaskManagerWindow", None)
                 if hwnd_taskmgr:
                     ctypes.windll.user32.PostMessageW(hwnd_taskmgr, WM_CLOSE, 0, 0)
+            except Exception:
+                pass
+
+        if follower is not None and _overlay_locked and _overlay_hwnd and (now - _last_desktop_check) >= 0.2:
+            _last_desktop_check = now
+            try:
+                follower.follow(_overlay_hwnd)
             except Exception:
                 pass
 
@@ -413,6 +427,51 @@ def _hook_thread_func():
                 pass
 
 
+_gesture_guard = None
+_overlay_hwnd = 0
+
+
+def _engage_gestures(overlay) -> None:
+    """Touchpad gestures bypass the input hooks (they are shell-level), so they are
+    switched off for the duration of the lock and the overlay follows desktop switches."""
+    global _gesture_guard, _overlay_hwnd
+    import logging
+    log = logging.getLogger("MajestyGuard.UI")
+    try:
+        if overlay is not None:
+            _overlay_hwnd = int(overlay.winId())
+    except Exception:
+        _overlay_hwnd = 0
+    try:
+        if _gesture_guard is None:
+            from gesture_guard import GestureGuard
+            _gesture_guard = GestureGuard()
+        if not _gesture_guard.engage():
+            log.warning("Touchpad gestures could not be disabled; Task View gestures may work while locked")
+    except Exception:
+        log.warning("Touchpad gesture lock failed", exc_info=True)
+
+
+def _restore_gestures() -> None:
+    global _overlay_hwnd
+    _overlay_hwnd = 0
+    try:
+        if _gesture_guard is not None:
+            _gesture_guard.restore()
+    except Exception:
+        import logging
+        logging.getLogger("MajestyGuard.UI").warning("Restoring touchpad gestures failed", exc_info=True)
+
+
+def recover_gestures_after_crash() -> None:
+    """UI start-up: undo a gesture lock left behind by a crashed previous lock."""
+    try:
+        from gesture_guard import GestureGuard
+        GestureGuard().recover_after_crash()
+    except Exception:
+        pass
+
+
 def _install_hooks(overlay=None) -> None:
     global _overlay_locked, _mouse_locked, _hook_thread, _hook_thread_stop, _hooks_ready, _active_overlay
     _overlay_locked = True
@@ -420,6 +479,7 @@ def _install_hooks(overlay=None) -> None:
     _active_overlay = overlay
     _engage_cursor_lock()
     _disable_accessibility_shortcuts()
+    _engage_gestures(overlay)
     if _kb_hook_id is not None:
         return
     _hook_thread_stop = False
@@ -454,6 +514,7 @@ def _uninstall_hooks() -> None:
     _active_overlay = None
     _release_cursor_lock()
     _restore_accessibility_shortcuts()
+    _restore_gestures()
     _hook_thread_stop = True
 
     # Unhook Windows hook handles first while Python callback references remain strongly held
@@ -1200,7 +1261,7 @@ class SoftLockOverlay(QWidget):
         text_w = painter.fontMetrics().horizontalAdvance(label)
         dot_d = 7.0 * s
         gap = 10.0 * s
-        left = lay.cx - (dot_d + gap + text_w) / 2.0
+        left = rect.left() + (rect.width() - (dot_d + gap + text_w)) / 2.0
         pulse = 0.5 + 0.5 * math.sin(self._phase * math.tau * 2.0)
         halo = QRadialGradient(QPointF(left + dot_d / 2.0, rect.center().y()), dot_d * 1.9)
         halo.setColorAt(0.0, self._accent(int(90 + 70 * pulse)))

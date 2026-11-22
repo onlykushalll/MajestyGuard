@@ -54,6 +54,7 @@ VALID_STATES = frozenset({
     "social_lock",
     "hostile_lock",
     "idle",
+    "idle_detected",
     "enrolling",
     "calibrating",
     "camera_fault",

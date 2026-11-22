@@ -129,7 +129,7 @@ class CameraHealth:
         clock: Callable[[], float] = time.monotonic,
         base_delay_s: float = 1.0,
         max_delay_s: float = 30.0,
-        black_mean_threshold: float = 3.0,
+        black_mean_threshold: float = 6.0,
         black_frames_limit: int = 45,
         frozen_frames_limit: int = 60,
         privacy_probe: Optional[Callable[[], Optional[bool]]] = None,

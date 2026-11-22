@@ -43,3 +43,13 @@ MOTION_FAST = 120
 MOTION_BASE = 220
 MOTION_SLOW = 420
 EASE_OUT = "OutCubic"
+
+
+def hex_of(rgb: tuple[int, int, int]) -> str:
+    """'#RRGGBB' for a token colour (Qt stylesheets and QColor(str))."""
+    return "#%02X%02X%02X" % tuple(int(c) for c in rgb)
+
+
+def shade(rgb: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    """Darken (<1) or lighten (>1) a token colour; used for hover/pressed states."""
+    return tuple(max(0, min(255, int(round(c * factor)))) for c in rgb)  # type: ignore[return-value]

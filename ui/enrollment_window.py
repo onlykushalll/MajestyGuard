@@ -50,6 +50,21 @@ except ImportError:
         target_pose_for_angle,
     )
 
+try:
+    from ui import tokens as _tok
+except ImportError:
+    import tokens as _tok
+
+# Colours come from the shared design tokens so the studio matches the overlay,
+# island and Control Center.
+BLUE_HEX = _tok.hex_of(_tok.BLUE)
+BLUE_HOVER_HEX = _tok.hex_of(_tok.shade(_tok.BLUE, 0.84))
+GREEN_HEX = _tok.hex_of(_tok.GREEN)
+GREEN_DEEP_HEX = _tok.hex_of(_tok.shade(_tok.GREEN, 0.82))
+GREEN_SOFT_HEX = _tok.hex_of(_tok.shade(_tok.GREEN, 1.18))
+AMBER_HEX = _tok.hex_of(_tok.AMBER)
+CYAN_HEX = _tok.hex_of(_tok.CYAN)
+
 _AUTO_DWELL_SECONDS = 0.55
 _RING_TICKS = 64
 
@@ -316,7 +331,7 @@ class FaceIdRingCanvas(QWidget):
 
         # 4. Optical glass rim around camera circle
         rim_color = (
-            QColor("#34C759")
+            QColor(GREEN_HEX)
             if (self._ready and self._aligned) or self._capture_flash > 0.1
             else QColor(255, 255, 255, 58)
         )
@@ -332,7 +347,7 @@ class FaceIdRingCanvas(QWidget):
                 (viewport_r + 4.0) * 2.0,
                 (viewport_r + 4.0) * 2.0,
             )
-            pen = QPen(QColor("#34C759"), 3.0)
+            pen = QPen(QColor(GREEN_HEX), 3.0)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawArc(arc_rect, 90 * 16, int(-360 * 16 * self._dwell_progress))
@@ -347,7 +362,7 @@ class FaceIdRingCanvas(QWidget):
         pitch_rad = self._pitch * 0.68
         roll_rad = math.radians(self._roll_deg * 0.5)
 
-        wire_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
+        wire_color = QColor(GREEN_HEX) if (self._ready and self._aligned) else QColor(CYAN_HEX)
         wire_color.setAlpha(36 if (self._ready and self._aligned) else 26)
         painter.setPen(QPen(wire_color, 1.0))
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -406,7 +421,7 @@ class FaceIdRingCanvas(QWidget):
         if len(pts) != 5:
             return
 
-        line_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
+        line_color = QColor(GREEN_HEX) if (self._ready and self._aligned) else QColor(CYAN_HEX)
         line_color.setAlpha(95)
         painter.setPen(QPen(line_color, 1.1))
         # Connect left_eye(0)-right_eye(1), eyes to nose(2), nose to mouth corners(3,4), mouth(3)-mouth(4)
@@ -446,12 +461,12 @@ class FaceIdRingCanvas(QWidget):
             painter.setBrush(QColor(255, 179, 64, 210))
             painter.drawPath(arrow)
 
-        target_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#FFB340")
+        target_color = QColor(GREEN_HEX) if (self._ready and self._aligned) else QColor(AMBER_HEX)
         painter.setPen(QPen(target_color, 2.0))
         painter.setBrush(QColor(target_color.red(), target_color.green(), target_color.blue(), 42))
         painter.drawEllipse(QPointF(tx, ty), 12.5, 12.5)
 
-        cursor_color = QColor("#34C759") if (self._ready and self._aligned) else QColor("#64D2FF")
+        cursor_color = QColor(GREEN_HEX) if (self._ready and self._aligned) else QColor(CYAN_HEX)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(cursor_color)
         painter.drawEllipse(QPointF(hx, hy), 5.5, 5.5)
@@ -464,10 +479,10 @@ class FaceIdRingCanvas(QWidget):
             tick_len = 8.0 + level * 8.5
 
             if completed:
-                color = QColor("#34C759")
+                color = QColor(GREEN_HEX)
                 width = 2.8
             elif level > 0.35:
-                color = QColor("#FFB340")
+                color = QColor(AMBER_HEX)
                 color.setAlpha(int(140 + 115 * min(1.0, level)))
                 width = 2.4
             else:
@@ -520,7 +535,7 @@ class FaceIdRingCanvas(QWidget):
             viewport_r * 0.94,
         )
         if self._ready and self._aligned:
-            guide_color = QColor("#54D68B")
+            guide_color = QColor(GREEN_SOFT_HEX)
         elif self._has_face:
             guide_color = QColor("#82B6FF")
         else:
@@ -538,9 +553,9 @@ class FaceIdRingCanvas(QWidget):
         )
         painter.setPen(QPen(QColor("#DDE3EA"), 3.0))
         painter.drawArc(progress_rect, 90 * 16, -360 * 16)
-        progress_color = QColor("#3478F6")
+        progress_color = QColor(BLUE_HEX)
         if self._ready and self._aligned or self._capture_flash > 0.15:
-            progress_color = QColor("#20A464")
+            progress_color = QColor(GREEN_DEEP_HEX)
         progress_pen = QPen(progress_color, 3.0)
         progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(progress_pen)
@@ -550,7 +565,7 @@ class FaceIdRingCanvas(QWidget):
             )
 
         if self._dwell_progress > 0.01:
-            dwell_pen = QPen(QColor("#20A464"), 2.5)
+            dwell_pen = QPen(QColor(GREEN_DEEP_HEX), 2.5)
             dwell_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(dwell_pen)
             painter.drawArc(
@@ -577,7 +592,7 @@ class FaceIdRingCanvas(QWidget):
 
         origin = QPointF(cx - dx * radius * 0.28, cy - dy * radius * 0.28)
         tip = QPointF(cx + dx * radius * 0.28, cy + dy * radius * 0.28)
-        pen = QPen(QColor("#3478F6"), 3.0)
+        pen = QPen(QColor(BLUE_HEX), 3.0)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawLine(origin, tip)
@@ -593,7 +608,7 @@ class FaceIdRingCanvas(QWidget):
         path.lineTo(tip.x() - ux * head - px * wing, tip.y() - uy * head - py * wing)
         path.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#3478F6"))
+        painter.setBrush(QColor(BLUE_HEX))
         painter.drawPath(path)
 
 
@@ -691,12 +706,12 @@ class EnrollmentStudioWindow(QMainWindow):
             "QLabel#status { color: #3F4B58; font: 500 13px 'Segoe UI'; }"
             "QLabel#privacy { color: #788391; font: 400 10px 'Segoe UI'; }"
             "QLabel#coverage { color: #677484; font: 500 11px 'Segoe UI'; }"
-            "QLabel#automation { color: #3478F6; font: 600 12px 'Segoe UI'; }"
+            "QLabel#automation { color: " + BLUE_HEX + "; font: 600 12px 'Segoe UI'; }"
             "QProgressBar { background: #DFE4EB; border: 0; border-radius: 2px; max-height: 4px; }"
-            "QProgressBar::chunk { background: #3478F6; border-radius: 2px; }"
-            "QPushButton#primary { background: #3478F6; color: white; border: 0; border-radius: 9px;"
+            "QProgressBar::chunk { background: " + BLUE_HEX + "; border-radius: 2px; }"
+            "QPushButton#primary { background: " + BLUE_HEX + "; color: white; border: 0; border-radius: 9px;"
             " padding: 11px 20px; font: 600 13px 'Segoe UI'; }"
-            "QPushButton#primary:hover { background: #2569E8; }"
+            "QPushButton#primary:hover { background: " + BLUE_HOVER_HEX + "; }"
             "QPushButton#primary:disabled { background: #DCE3ED; color: #8793A2; }"
             "QPushButton#secondary { background: transparent; color: #536171; border: 1px solid #D7DDE5;"
             " border-radius: 9px; padding: 10px 15px; font: 600 12px 'Segoe UI'; }"

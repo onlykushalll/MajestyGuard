@@ -12,6 +12,12 @@
 # 2. Install pinned dependencies from requirements.txt using:
 #    pip install --no-deps albucore==0.0.24 albumentations==2.0.8 insightface==0.7.3
 # 3. Install remaining requirements from requirements.txt.
+# MediaPipe's published metadata also includes JAX/JAXLIB/SentencePiece for
+# unrelated task APIs. MajestyGuard uses only the legacy FaceMesh path; its
+# import and synthetic frame smoke test pass without those unused packages.
+# protobuf 4.25.8 is required by MediaPipe's <5 constraint. OSV retains one
+# advisory (CVE-2026-0994) for ParseDict with deeply nested untrusted Any JSON;
+# the application does not use protobuf JSON parsing. Reassess on MP upgrade.
 #
 # Pinned packages:
 opencv-contrib-python==4.10.0.84
@@ -19,7 +25,9 @@ albucore==0.0.24
 albumentations==2.0.8
 insightface==0.7.3
 numpy==1.26.4
-onnx==1.17.0
+onnx==1.22.0
 onnxruntime==1.18.1
-mediapipe==0.10.9
+mediapipe==0.10.21
+protobuf==4.25.8
+ml_dtypes==0.5.4
 PyQt6==6.9.0

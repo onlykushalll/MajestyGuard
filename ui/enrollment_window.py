@@ -1,13 +1,4 @@
-"""
-enrollment_window.py — Apple Face ID-inspired 3D Circular Registration Studio.
-
-Provides a native PyQt6 circular biometric registration interface with:
-  - 64-tick radial progress ring with per-sector spring extension, completion wave, and glow
-  - Real-time 5-point facial landmark 3D head-pose estimation (yaw, pitch, roll)
-  - 3D perspective-projected latitude/longitude geodesic pose sphere & landmark constellation
-  - Hybrid auto-dwell capture (360ms hold when aligned & ready) + Spacebar trigger
-  - Zero-frame-retention privacy (frames zeroed immediately after QImage copy)
-"""
+"""Guided, local-only face enrollment window."""
 from __future__ import annotations
 
 import math
@@ -16,7 +7,7 @@ from typing import Callable, Optional
 
 import cv2
 import numpy as np
-from PyQt6.QtCore import QPointF, QRect, QRectF, Qt, QTimer
+from PyQt6.QtCore import QObject, QPointF, QRunnable, QRect, QRectF, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -34,89 +25,74 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
+try:
+    from daemon.enrollment_pose import (
+        check_pose_alignment,
+        estimate_head_pose_5pt,
+        friendly_readiness_message,
+        guide_direction_for_angle,
+        instruction_for_angle,
+        target_pose_for_angle,
+    )
+except ImportError:
+    from enrollment_pose import (
+        check_pose_alignment,
+        estimate_head_pose_5pt,
+        friendly_readiness_message,
+        guide_direction_for_angle,
+        instruction_for_angle,
+        target_pose_for_angle,
+    )
+
+_AUTO_DWELL_SECONDS = 0.55
 _RING_TICKS = 64
-_AUTO_DWELL_SECONDS = 0.36
 
 
-def estimate_head_pose_5pt(
-    kps: Optional[np.ndarray],
-    *,
-    mirror_yaw: bool = True,
-) -> tuple[float, float, float]:
-    """Estimate normalized (yaw, pitch, roll_deg) in [-1.0, 1.0] from 5 InsightFace keypoints.
-
-    Keypoint order: [left_eye, right_eye, nose, left_mouth, right_mouth].
-    Returns (0.0, 0.0, 0.0) if keypoints are missing or degenerate.
-    """
-    if kps is None:
-        return 0.0, 0.0, 0.0
-    try:
-        pts = np.asarray(kps, dtype=np.float32)
-        if pts.shape != (5, 2):
-            return 0.0, 0.0, 0.0
-        l_eye, r_eye, nose, l_mouth, r_mouth = pts
-        eye_dx = float(r_eye[0] - l_eye[0])
-        eye_dy = float(r_eye[1] - l_eye[1])
-        inter_eye = math.hypot(eye_dx, eye_dy)
-        if inter_eye < 4.0:
-            return 0.0, 0.0, 0.0
-
-        eye_mid_x = float(l_eye[0] + r_eye[0]) * 0.5
-        eye_mid_y = float(l_eye[1] + r_eye[1]) * 0.5
-        mouth_mid_y = float(l_mouth[1] + r_mouth[1]) * 0.5
-        face_vert = max(4.0, mouth_mid_y - eye_mid_y)
-
-        raw_yaw = (float(nose[0]) - eye_mid_x) / (inter_eye * 0.52)
-        if mirror_yaw:
-            raw_yaw = -raw_yaw
-
-        nose_ratio = (float(nose[1]) - eye_mid_y) / face_vert
-        raw_pitch = (nose_ratio - 0.56) / 0.24
-
-        roll_deg = math.degrees(math.atan2(eye_dy, eye_dx))
-        yaw = float(np.clip(raw_yaw, -1.0, 1.0))
-        pitch = float(np.clip(raw_pitch, -1.0, 1.0))
-        return yaw, pitch, float(np.clip(roll_deg, -45.0, 45.0))
-    except Exception:
-        return 0.0, 0.0, 0.0
+class _CaptureSignals(QObject):
+    finished = pyqtSignal(object, object, object)
 
 
-def target_pose_for_angle(angle_description: str) -> tuple[float, float, float]:
-    """Return (target_yaw, target_pitch, tolerance) in [-1.0, 1.0] for a named enrollment angle."""
-    low = (angle_description or "").lower()
-    if "left-up" in low:
-        return -0.42, -0.35, 0.48
-    if "right-up" in low:
-        return 0.42, -0.35, 0.48
-    if "left 25" in low:
-        return -0.58, 0.0, 0.46
-    if "right 25" in low:
-        return 0.58, 0.0, 0.46
-    if "left 10" in low or "slight left" in low or "tilted left" in low:
-        return -0.32, 0.0, 0.44
-    if "right 10" in low or "slight right" in low or "tilted right" in low:
-        return 0.32, 0.0, 0.44
-    if "up" in low:
-        return 0.0, -0.36, 0.46
-    if "down" in low and "lying down" not in low:
-        return 0.0, 0.36, 0.46
-    return 0.0, 0.0, 0.65
+class _CaptureBurstTask(QRunnable):
+    def __init__(self, callback: Callable[[str, int], list], angle: str, angle_index: int) -> None:
+        super().__init__()
+        self._callback = callback
+        self._angle = angle
+        self._angle_index = angle_index
+        self.signals = _CaptureSignals()
+
+    def run(self) -> None:
+        try:
+            result = self._callback(self._angle, self._angle_index)
+            samples = list(result or [])
+            status = str(getattr(result, "status", ""))
+            self.signals.finished.emit(samples, None, status)
+        except Exception as exc:
+            self.signals.finished.emit(None, exc, "")
 
 
-def check_pose_alignment(
-    yaw: float,
-    pitch: float,
-    angle_description: str,
-) -> tuple[bool, float]:
-    """Return (aligned, normalized_distance) between live (yaw, pitch) and the angle's target."""
-    ty, tp, tol = target_pose_for_angle(angle_description)
-    dist = math.hypot(yaw - ty, pitch - tp)
-    return dist <= tol, float(dist)
+class _LiveAnalysisSignals(QObject):
+    finished = pyqtSignal(object, object, object)
+
+
+class _LiveAnalysisTask(QRunnable):
+    def __init__(self, frame: np.ndarray, analyzer: Callable[[np.ndarray], tuple]) -> None:
+        super().__init__()
+        self._frame = frame
+        self._analyzer = analyzer
+        self.signals = _LiveAnalysisSignals()
+
+    def run(self) -> None:
+        try:
+            result = self._analyzer(self._frame)
+            self.signals.finished.emit(self._frame, result, None)
+        except Exception as exc:
+            self.signals.finished.emit(self._frame, None, exc)
 
 
 def _project_3d_sphere_point(
@@ -151,11 +127,11 @@ def _project_3d_sphere_point(
 
 
 class FaceIdRingCanvas(QWidget):
-    """Circular mirrored camera viewport with a 64-tick 3D Face ID ring and geodesic sphere."""
+    """Mirrored camera preview with simple alignment and completion guides."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(360, 360)
+        self.setMinimumSize(300, 300)
         self._frame_image: Optional[QImage] = None
         self._frame_w = 640
         self._frame_h = 480
@@ -163,19 +139,40 @@ class FaceIdRingCanvas(QWidget):
         self._yaw = 0.0
         self._pitch = 0.0
         self._roll_deg = 0.0
+        self._observed_yaw = 0.0
+        self._observed_pitch = 0.0
+        self._observed_roll = 0.0
         self._target_yaw = 0.0
         self._target_pitch = 0.0
         self._ready = False
         self._aligned = False
         self._dwell_progress = 0.0
+        self._dwell_started_at: Optional[float] = None
         self._overall_progress = 0.0
         self._capture_flash = 0.0
-        self._phase = 0.0
-        self._tick_levels = [0.0] * _RING_TICKS
-        self._completed_ticks: set[int] = set()
+        self._has_face = False
+        self._guide_direction = ""
 
     def trigger_capture_flash(self) -> None:
         self._capture_flash = 1.0
+        self.update()
+
+    def complete_view(self, progress: float) -> None:
+        self._overall_progress = float(np.clip(progress, 0.0, 1.0))
+        self._ready = False
+        self._aligned = False
+        self._has_face = False
+        self._dwell_progress = 0.0
+        self._dwell_started_at = None
+        self._capture_flash = 1.0
+        self.update()
+
+    def clear_tracking(self) -> None:
+        self._ready = False
+        self._aligned = False
+        self._has_face = False
+        self._dwell_progress = 0.0
+        self._dwell_started_at = None
         self.update()
 
     def set_frame_state(
@@ -192,19 +189,25 @@ class FaceIdRingCanvas(QWidget):
         aligned: bool,
         dwell_progress: float,
         overall_progress: float,
+        guide_direction: str = "",
     ) -> None:
-        # Smoothly interpolate pose so the 3D globe glides at 60fps
-        self._yaw += (float(np.clip(yaw, -1.0, 1.0)) - self._yaw) * 0.42
-        self._pitch += (float(np.clip(pitch, -1.0, 1.0)) - self._pitch) * 0.42
-        self._roll_deg += (float(np.clip(roll_deg, -45.0, 45.0)) - self._roll_deg) * 0.42
+        self._observed_yaw = float(np.clip(yaw, -1.0, 1.0))
+        self._observed_pitch = float(np.clip(pitch, -1.0, 1.0))
+        self._observed_roll = float(np.clip(roll_deg, -45.0, 45.0))
         self._target_yaw = float(np.clip(target_yaw, -1.0, 1.0))
         self._target_pitch = float(np.clip(target_pitch, -1.0, 1.0))
         self._ready = bool(ready)
         self._aligned = bool(aligned)
         self._dwell_progress = float(np.clip(dwell_progress, 0.0, 1.0))
+        self._dwell_started_at = (
+            time.monotonic() - self._dwell_progress * _AUTO_DWELL_SECONDS
+            if self._dwell_progress > 0.0
+            else None
+        )
         self._overall_progress = float(np.clip(overall_progress, 0.0, 1.0))
-        self._phase = (self._phase + 0.045) % math.tau
+        self._guide_direction = guide_direction
         self._capture_flash = max(0.0, self._capture_flash - 0.08)
+        self._has_face = kps is not None
 
         if kps is not None:
             try:
@@ -215,41 +218,38 @@ class FaceIdRingCanvas(QWidget):
         else:
             self._kps = None
 
-        completed_count = int(round(self._overall_progress * _RING_TICKS))
-        self._completed_ticks = set(range(completed_count))
-
-        head_angle = math.atan2(self._pitch, self._yaw) % math.tau
-        head_mag = min(1.0, math.hypot(self._yaw, self._pitch))
-        target_angle = math.atan2(self._target_pitch, self._target_yaw) % math.tau
-        target_mag = min(1.0, math.hypot(self._target_yaw, self._target_pitch))
-
-        for idx in range(_RING_TICKS):
-            tick_angle = (idx / _RING_TICKS) * math.tau
-            target_level = 1.0 if idx in self._completed_ticks else 0.14
-            if head_mag > 0.10:
-                diff = abs((tick_angle - head_angle + math.pi) % math.tau - math.pi)
-                if diff < 0.55:
-                    target_level = max(target_level, (1.0 - diff / 0.55) * 0.88)
-            if target_mag > 0.10:
-                tdiff = abs((tick_angle - target_angle + math.pi) % math.tau - math.pi)
-                if tdiff < 0.45:
-                    pulse = 0.55 + 0.35 * math.sin(self._phase * 2.2)
-                    target_level = max(target_level, (1.0 - tdiff / 0.45) * pulse)
-            self._tick_levels[idx] += (target_level - self._tick_levels[idx]) * 0.34
-
         if bgr_frame is not None and bgr_frame.size > 0:
-            self._frame_h, self._frame_w = bgr_frame.shape[:2]
-            mirrored = cv2.flip(bgr_frame, 1)
-            rgb = cv2.cvtColor(mirrored, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            self._frame_image = QImage(
-                rgb.data, w, h, ch * w, QImage.Format.Format_RGB888
-            ).copy()
-            rgb[:] = 0
-            mirrored[:] = 0
+            self.set_preview_frame(bgr_frame)
         self.update()
 
-    def paintEvent(self, _event) -> None:  # type: ignore[override]
+    def set_preview_frame(self, bgr_frame: np.ndarray) -> None:
+        if bgr_frame is None or bgr_frame.size == 0:
+            return
+        self._frame_h, self._frame_w = bgr_frame.shape[:2]
+        mirrored = cv2.flip(bgr_frame, 1)
+        try:
+            rgb = cv2.cvtColor(mirrored, cv2.COLOR_BGR2RGB)
+            try:
+                h, w, ch = rgb.shape
+                self._frame_image = QImage(
+                    rgb.data, w, h, ch * w, QImage.Format.Format_RGB888
+                ).copy()
+            finally:
+                rgb[:] = 0
+        finally:
+            mirrored[:] = 0
+        self._yaw += (self._observed_yaw - self._yaw) * 0.28
+        self._pitch += (self._observed_pitch - self._pitch) * 0.28
+        self._roll_deg += (self._observed_roll - self._roll_deg) * 0.28
+        self._capture_flash = max(0.0, self._capture_flash - 0.12)
+        if self._dwell_started_at is not None:
+            self._dwell_progress = min(
+                1.0,
+                max(0.0, (time.monotonic() - self._dwell_started_at) / _AUTO_DWELL_SECONDS),
+            )
+        self.update()
+
+    def _paint_legacy(self, _event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(
             QPainter.RenderHint.Antialiasing | QPainter.RenderHint.TextAntialiasing
@@ -484,6 +484,118 @@ class FaceIdRingCanvas(QWidget):
             y2 = cy + math.sin(angle) * (inner_r + tick_len)
             painter.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cx, cy = self.width() * 0.5, self.height() * 0.5
+        outer_r = min(self.width(), self.height()) * 0.45
+        viewport_r = outer_r - 12.0
+
+        clip = QPainterPath()
+        clip.addEllipse(QPointF(cx, cy), viewport_r, viewport_r)
+        painter.save()
+        painter.setClipPath(clip)
+        if self._frame_image is not None and not self._frame_image.isNull():
+            diameter = viewport_r * 2.0
+            scale = max(
+                diameter / max(1.0, self._frame_image.width()),
+                diameter / max(1.0, self._frame_image.height()),
+            )
+            draw_w = self._frame_image.width() * scale
+            draw_h = self._frame_image.height() * scale
+            painter.drawImage(
+                QRectF(cx - draw_w / 2, cy - draw_h / 2, draw_w, draw_h),
+                self._frame_image,
+            )
+        else:
+            painter.fillRect(
+                QRectF(cx - viewport_r, cy - viewport_r, viewport_r * 2, viewport_r * 2),
+                QColor("#171E29"),
+            )
+
+        guide = QRectF(
+            cx - viewport_r * 0.34,
+            cy - viewport_r * 0.47,
+            viewport_r * 0.68,
+            viewport_r * 0.94,
+        )
+        if self._ready and self._aligned:
+            guide_color = QColor("#54D68B")
+        elif self._has_face:
+            guide_color = QColor("#82B6FF")
+        else:
+            guide_color = QColor(255, 255, 255, 165)
+        painter.setPen(QPen(guide_color, 1.8))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(guide)
+        painter.restore()
+
+        painter.setPen(QPen(QColor("#DDE3EA"), 1.0))
+        painter.drawEllipse(QPointF(cx, cy), viewport_r, viewport_r)
+
+        progress_rect = QRectF(
+            cx - outer_r, cy - outer_r, outer_r * 2.0, outer_r * 2.0
+        )
+        painter.setPen(QPen(QColor("#DDE3EA"), 3.0))
+        painter.drawArc(progress_rect, 90 * 16, -360 * 16)
+        progress_color = QColor("#3478F6")
+        if self._ready and self._aligned or self._capture_flash > 0.15:
+            progress_color = QColor("#20A464")
+        progress_pen = QPen(progress_color, 3.0)
+        progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(progress_pen)
+        if self._overall_progress > 0.0:
+            painter.drawArc(
+                progress_rect, 90 * 16, int(-360 * 16 * self._overall_progress)
+            )
+
+        if self._dwell_progress > 0.01:
+            dwell_pen = QPen(QColor("#20A464"), 2.5)
+            dwell_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(dwell_pen)
+            painter.drawArc(
+                guide.adjusted(-5, -5, 5, 5),
+                90 * 16,
+                int(-360 * 16 * self._dwell_progress),
+            )
+        self._paint_direction_arrow(painter, cx, cy, viewport_r)
+        painter.end()
+
+    def _paint_direction_arrow(self, painter: QPainter, cx: float, cy: float, radius: float) -> None:
+        """Paint one calm directional cue, only when a turn is actually needed."""
+        vectors = {
+            "left": (-1.0, 0.0),
+            "right": (1.0, 0.0),
+            "up": (0.0, -1.0),
+            "down": (0.0, 1.0),
+            "up_left": (-0.72, -0.72),
+            "up_right": (0.72, -0.72),
+        }
+        dx, dy = vectors.get(self._guide_direction, (0.0, 0.0))
+        if dx == 0.0 and dy == 0.0:
+            return
+
+        origin = QPointF(cx - dx * radius * 0.28, cy - dy * radius * 0.28)
+        tip = QPointF(cx + dx * radius * 0.28, cy + dy * radius * 0.28)
+        pen = QPen(QColor("#3478F6"), 3.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(origin, tip)
+
+        length = max(1.0, math.hypot(dx, dy))
+        ux, uy = dx / length, dy / length
+        px, py = -uy, ux
+        head = radius * 0.065
+        wing = radius * 0.048
+        path = QPainterPath()
+        path.moveTo(tip)
+        path.lineTo(tip.x() - ux * head + px * wing, tip.y() - uy * head + py * wing)
+        path.lineTo(tip.x() - ux * head - px * wing, tip.y() - uy * head - py * wing)
+        path.closeSubpath()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#3478F6"))
+        painter.drawPath(path)
+
 
 class EnrollmentStudioWindow(QMainWindow):
     """Apple Face ID-style circular biometric enrollment window."""
@@ -508,8 +620,20 @@ class EnrollmentStudioWindow(QMainWindow):
         self._captured_samples: list = []
         self._completed = False
         self._aborted = False
+        self._abort_reason: Optional[str] = None
+        self._abort_requested = False
+        self._capture_requested = False
+        self._last_ready = False
+        self._last_aligned = False
+        self._last_status_text = "no face"
+        self._pose_history: list[tuple[float, float, float]] = []
         self._aligned_since: Optional[float] = None
         self._burst_in_progress = False
+        self._analysis_in_progress = False
+        self._worker_pool = QThreadPool(self)
+        self._worker_pool.setMaxThreadCount(1)
+        self._burst_task: Optional[_CaptureBurstTask] = None
+        self._analysis_task: Optional[_LiveAnalysisTask] = None
 
         self._build_ui()
         self._update_step_copy()
@@ -527,6 +651,18 @@ class EnrollmentStudioWindow(QMainWindow):
         return self._aborted
 
     @property
+    def abort_reason(self) -> Optional[str]:
+        return self._abort_reason
+
+    @property
+    def capture_in_progress(self) -> bool:
+        return self._burst_in_progress
+
+    @property
+    def analysis_in_progress(self) -> bool:
+        return self._analysis_in_progress
+
+    @property
     def selected_profile(self) -> str:
         return self._profile
 
@@ -540,52 +676,69 @@ class EnrollmentStudioWindow(QMainWindow):
         return ""
 
     def _build_ui(self) -> None:
-        self.setWindowTitle("MajestyGuard — Face ID Studio")
-        self.setMinimumSize(560, 680)
-        self.resize(580, 720)
+        self.setWindowTitle("MajestyGuard | Face setup")
+        self.setMinimumSize(520, 600)
+        screen = self.screen()
+        available = screen.availableGeometry() if screen is not None else QRect(0, 0, 640, 800)
+        self.resize(min(620, max(520, available.width() - 48)), min(740, max(600, available.height() - 36)))
         self.setStyleSheet(
-            "QMainWindow { background: #080B11; color: #F2F4F8; }"
-            "QLabel#eyebrow { color: #64D2FF; font: 600 10px 'Segoe UI Variable Text'; letter-spacing: 1.5px; }"
-            "QLabel#title { color: #F2F4F8; font: 600 24px 'Segoe UI Variable Display'; }"
-            "QLabel#subtitle { color: #8A96A8; font: 400 13px 'Segoe UI Variable Text'; }"
-            "QLabel#chip { background: #111723; color: #D5DCE6; border: 1px solid #1E293B;"
-            " border-radius: 11px; padding: 5px 12px; font: 600 11px 'Segoe UI Variable Text'; }"
-            "QPushButton#primary { background: #34C759; color: #061209; border: 0; border-radius: 10px;"
-            " padding: 12px 22px; font: 600 13px 'Segoe UI Variable Display'; }"
-            "QPushButton#primary:hover { background: #3CD863; }"
-            "QPushButton#primary:disabled { background: #182232; color: #586577; }"
-            "QPushButton#secondary { background: #121824; color: #C3CCD9; border: 1px solid #222E42;"
-            " border-radius: 10px; padding: 10px 16px; font: 600 12px 'Segoe UI Variable Text'; }"
-            "QComboBox { background: #111723; color: #F2F4F8; border: 1px solid #1E293B;"
-            " border-radius: 8px; padding: 5px 10px; font: 600 11px 'Segoe UI Variable Text'; }"
+            "QMainWindow, QWidget { background: #F4F6FA; color: #17212D;"
+            " font-family: 'Segoe UI'; }"
+            "QLabel#brand { color: #667382; font: 600 10px 'Segoe UI'; letter-spacing: 1px; }"
+            "QLabel#title { color: #151D28; font: 600 23px 'Segoe UI'; }"
+            "QLabel#subtitle { color: #5E6B79; font: 400 13px 'Segoe UI'; }"
+            "QLabel#step { color: #455362; font: 600 12px 'Segoe UI'; }"
+            "QLabel#status { color: #3F4B58; font: 500 13px 'Segoe UI'; }"
+            "QLabel#privacy { color: #788391; font: 400 10px 'Segoe UI'; }"
+            "QLabel#coverage { color: #677484; font: 500 11px 'Segoe UI'; }"
+            "QLabel#automation { color: #3478F6; font: 600 12px 'Segoe UI'; }"
+            "QProgressBar { background: #DFE4EB; border: 0; border-radius: 2px; max-height: 4px; }"
+            "QProgressBar::chunk { background: #3478F6; border-radius: 2px; }"
+            "QPushButton#primary { background: #3478F6; color: white; border: 0; border-radius: 9px;"
+            " padding: 11px 20px; font: 600 13px 'Segoe UI'; }"
+            "QPushButton#primary:hover { background: #2569E8; }"
+            "QPushButton#primary:disabled { background: #DCE3ED; color: #8793A2; }"
+            "QPushButton#secondary { background: transparent; color: #536171; border: 1px solid #D7DDE5;"
+            " border-radius: 9px; padding: 10px 15px; font: 600 12px 'Segoe UI'; }"
+            "QPushButton#secondary:hover { background: #E9EDF3; }"
+            "QComboBox { background: #FFFFFF; color: #344151; border: 1px solid #D7DDE5;"
+            " border-radius: 7px; padding: 5px 9px; font: 500 11px 'Segoe UI'; }"
         )
 
         root = QWidget(self)
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(32, 26, 32, 26)
-        layout.setSpacing(10)
+        layout.setContentsMargins(28, 20, 28, 18)
+        layout.setSpacing(8)
 
         top_bar = QHBoxLayout()
-        eyebrow = QLabel("BIOMETRIC ENROLLMENT STUDIO", root)
-        eyebrow.setObjectName("eyebrow")
-        top_bar.addWidget(eyebrow)
+        brand = QLabel("MAJESTYGUARD", root)
+        brand.setObjectName("brand")
+        top_bar.addWidget(brand)
         top_bar.addStretch(1)
 
+        coverage_label = QLabel("Coverage", root)
+        coverage_label.setObjectName("coverage")
+        top_bar.addWidget(coverage_label)
         self._profile_combo = QComboBox(root)
-        self._profile_combo.addItems(["robust", "real-life", "quick"])
-        self._profile_combo.setCurrentText(self._profile)
-        self._profile_combo.currentTextChanged.connect(self._handle_profile_change)
+        self._profile_combo.addItem("Quick", "quick")
+        self._profile_combo.addItem("Everyday", "robust")
+        self._profile_combo.addItem("Extended", "real-life")
+        selected_index = self._profile_combo.findData(self._profile)
+        self._profile_combo.setCurrentIndex(max(0, selected_index))
+        self._profile_combo.currentIndexChanged.connect(
+            lambda _index: self._handle_profile_change(str(self._profile_combo.currentData()))
+        )
         top_bar.addWidget(self._profile_combo)
         layout.addLayout(top_bar)
 
-        self._title_label = QLabel("Position your face in the circle", root)
+        self._title_label = QLabel("Set up face recognition", root)
         self._title_label.setObjectName("title")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._title_label)
 
         self._subtitle_label = QLabel(
-            "Move your head slowly to complete the circle, or press SPACE when ready.",
+            "Follow a few simple directions. We capture each view when you hold still.",
             root,
         )
         self._subtitle_label.setObjectName("subtitle")
@@ -596,34 +749,49 @@ class EnrollmentStudioWindow(QMainWindow):
         self.canvas = FaceIdRingCanvas(root)
         layout.addWidget(self.canvas, 1)
 
-        chips_row = QHBoxLayout()
-        chips_row.setSpacing(8)
-        self._step_chip = QLabel("Pose 1 / 12", root)
-        self._step_chip.setObjectName("chip")
-        self._quality_chip = QLabel("Quality: --", root)
-        self._quality_chip.setObjectName("chip")
-        self._status_chip = QLabel("Waiting for face", root)
-        self._status_chip.setObjectName("chip")
-        chips_row.addStretch(1)
-        chips_row.addWidget(self._step_chip)
-        chips_row.addWidget(self._quality_chip)
-        chips_row.addWidget(self._status_chip)
-        chips_row.addStretch(1)
-        layout.addLayout(chips_row)
+        progress_row = QHBoxLayout()
+        self._step_chip = QLabel("View 1 of 12", root)
+        self._step_chip.setObjectName("step")
+        progress_row.addWidget(self._step_chip)
+        self._progress_bar = QProgressBar(root)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.setTextVisible(False)
+        progress_row.addWidget(self._progress_bar, 1)
+        layout.addLayout(progress_row)
 
-        layout.addSpacing(6)
+        self._status_chip = QLabel("Move into the camera frame.", root)
+        self._status_chip.setObjectName("status")
+        self._status_chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._status_chip)
+
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(12)
-        self._cancel_btn = QPushButton("Cancel", root)
+        btn_row.setSpacing(10)
+        self._cancel_btn = QPushButton("Cancel setup", root)
         self._cancel_btn.setObjectName("secondary")
-        self._cancel_btn.clicked.connect(self.abort)
+        self._cancel_btn.clicked.connect(lambda: self.abort("cancel_button"))
         btn_row.addWidget(self._cancel_btn)
 
-        self._capture_btn = QPushButton("Capture Pose (SPACE)", root)
+        self._capture_btn = QPushButton("Capture this view", root)
         self._capture_btn.setObjectName("primary")
+        self._capture_btn.setToolTip("Press Space to capture when the guide is aligned")
         self._capture_btn.clicked.connect(self.trigger_capture)
-        btn_row.addWidget(self._capture_btn, 1)
+        self._capture_btn.hide()
+        self._automation_label = QLabel("Automatic capture is on", root)
+        self._automation_label.setObjectName("automation")
+        self._automation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_row.addWidget(self._automation_label, 1)
         layout.addLayout(btn_row)
+
+        self._privacy_label = QLabel(
+            "Video is not saved. Your encrypted face template is written only after setup completes.",
+            root,
+        )
+        self._privacy_label.setObjectName("privacy")
+        self._privacy_label.setWordWrap(True)
+        self._privacy_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._privacy_label)
 
     def _handle_profile_change(self, profile: str) -> None:
         if self._current_index > 0 or self._on_switch_profile is None:
@@ -637,23 +805,25 @@ class EnrollmentStudioWindow(QMainWindow):
     def _update_step_copy(self) -> None:
         total = max(1, len(self._angles))
         if self._current_index >= total:
-            self._title_label.setText("Face ID Gallery Complete")
-            self._subtitle_label.setText("Encrypting biometric templates with Windows DPAPI...")
-            self._step_chip.setText(f"Done {total} / {total}")
+            self._title_label.setText("Face setup complete")
+            self._subtitle_label.setText("Securing your face template on this device.")
+            self._step_chip.setText(f"View {total} of {total}")
+            self._progress_bar.setValue(100)
             self._capture_btn.setEnabled(False)
             return
 
         angle = self._angles[self._current_index]
-        self._title_label.setText(angle.split(" - ")[0].strip())
-        detail = angle.split(" - ")[1].strip() if " - " in angle else angle
-        self._subtitle_label.setText(
-            f"{detail}  ·  Hold steady in the target ring or press SPACE."
-        )
-        self._step_chip.setText(f"Pose {self._current_index + 1} / {total}")
+        title, detail = instruction_for_angle(angle)
+        self._title_label.setText(title)
+        self._subtitle_label.setText(detail)
+        self._step_chip.setText(f"View {self._current_index + 1} of {total}")
+        self._progress_bar.setValue(round(self._current_index * 100 / total))
+        self._capture_btn.setEnabled(False)
+        self._status_chip.setText("Move into the camera frame." if self._current_index == 0 else "Follow the direction above.")
 
     def update_live_frame(
         self,
-        frame: np.ndarray,
+        frame: Optional[np.ndarray],
         face: Optional[object],
         *,
         ready: bool,
@@ -668,10 +838,18 @@ class EnrollmentStudioWindow(QMainWindow):
         kps = getattr(face, "kps", None) if face is not None else None
         if kps is not None:
             yaw, pitch, roll_deg = estimate_head_pose_5pt(kps)
-            aligned, _dist = check_pose_alignment(yaw, pitch, angle)
+            self._pose_history.append((yaw, pitch, roll_deg))
+            self._pose_history = self._pose_history[-3:]
+            yaw, pitch, roll_deg = np.median(np.asarray(self._pose_history), axis=0).tolist()
+            aligned, _dist = check_pose_alignment(yaw, pitch, angle, roll_deg)
         else:
             yaw, pitch, roll_deg = 0.0, 0.0, 0.0
             aligned = False
+            self._pose_history.clear()
+
+        self._last_ready = bool(ready)
+        self._last_aligned = bool(aligned)
+        self._last_status_text = str(status_text)
 
         now = time.monotonic()
         if ready and aligned:
@@ -695,53 +873,190 @@ class EnrollmentStudioWindow(QMainWindow):
             aligned=aligned,
             dwell_progress=dwell,
             overall_progress=overall,
+            guide_direction=guide_direction_for_angle(angle),
         )
 
-        self._quality_chip.setText(f"Quality: {quality_score * 100:.0f}%")
         if dwell >= 1.0:
-            self._status_chip.setText("LOCKED ON — Capturing...")
+            self._status_chip.setText("Holding steady. Capturing this view…")
         elif ready and not aligned:
-            self._status_chip.setText("ALIGN HEAD WITH TARGET RING")
+            self._status_chip.setText("Follow the direction above.")
+        elif ready:
+            self._status_chip.setText("Hold still for a moment.")
         else:
-            self._status_chip.setText(status_text.upper())
+            self._status_chip.setText(friendly_readiness_message(status_text))
         self._capture_btn.setEnabled(ready and aligned)
 
         if dwell >= 1.0:
             self._aligned_since = None
             self.trigger_capture()
 
-    def trigger_capture(self) -> None:
+    def update_preview_frame(self, frame: np.ndarray) -> None:
         if self._completed or self._aborted or self._burst_in_progress:
+            if isinstance(frame, np.ndarray):
+                frame.fill(0)
+            return
+        try:
+            self.canvas.set_preview_frame(frame)
+        finally:
+            frame.fill(0)
+
+    def trigger_capture(self) -> None:
+        if self._completed or self._aborted or self._abort_requested or self._burst_in_progress:
             return
         if self._on_capture_burst is None or self._current_index >= len(self._angles):
             return
+        if self._analysis_in_progress:
+            self._capture_requested = True
+            self._status_chip.setText("Checking your position…")
+            return
+        if not self._last_ready:
+            self._status_chip.setText(friendly_readiness_message(self._last_status_text))
+            return
+        if not self._last_aligned:
+            direction, _detail = instruction_for_angle(self.current_angle())
+            self._status_chip.setText(f"{direction}.")
+            return
 
         self._burst_in_progress = True
-        self._status_chip.setText("CAPTURING BURST...")
-        self.repaint()
-        try:
-            angle = self._angles[self._current_index]
-            burst = self._on_capture_burst(angle, self._current_index + 1)
-            if len(burst) >= self._samples_per_angle:
-                self._captured_samples.extend(burst)
-                self._current_index += 1
-                self._profile_combo.setEnabled(False)
-                self.canvas.trigger_capture_flash()
-                self._update_step_copy()
-                if self._current_index >= len(self._angles):
-                    self._completed = True
-                    self.close()
-            else:
-                self._status_chip.setText(
-                    f"Captured {len(burst)}/{self._samples_per_angle} — hold steady & retry"
-                )
-        finally:
-            self._burst_in_progress = False
-            self._aligned_since = None
+        self._status_chip.setText("Checking this view for a live, clear face…")
+        self._capture_btn.setEnabled(False)
+        angle = self._angles[self._current_index]
+        task = _CaptureBurstTask(self._on_capture_burst, angle, self._current_index + 1)
+        task.signals.finished.connect(self._finish_capture_burst)
+        self._burst_task = task
+        self._worker_pool.start(task)
 
-    def abort(self) -> None:
+    def analyze_live_frame_async(
+        self,
+        frame: np.ndarray,
+        analyzer: Callable[[np.ndarray], tuple],
+    ) -> None:
+        if self._completed or self._aborted or self._abort_requested or self._burst_in_progress:
+            frame.fill(0)
+            return
+        if self._analysis_in_progress:
+            frame.fill(0)
+            return
+
+        self._analysis_in_progress = True
+        self._capture_btn.setEnabled(False)
+        task = _LiveAnalysisTask(frame, analyzer)
+        task.signals.finished.connect(self._finish_live_analysis)
+        self._analysis_task = task
+        self._worker_pool.start(task)
+
+    def _finish_live_analysis(self, frame: object, result: object, error: object) -> None:
+        self._analysis_in_progress = False
+        self._analysis_task = None
+        if not isinstance(frame, np.ndarray):
+            return
+
+        face = None
+        ready = False
+        status = "camera check unavailable"
+        quality_score = 0.0
+        if error is None and isinstance(result, tuple) and len(result) == 4:
+            face, ready, status, quality_score = result
+        try:
+            if self._abort_requested:
+                self._discard_captured_samples()
+                self._aborted = True
+                self.close()
+                return
+
+            capture_requested = self._capture_requested
+            self._capture_requested = False
+            self.update_live_frame(
+                None,
+                face,
+                ready=bool(ready),
+                status_text=str(status),
+                quality_score=float(quality_score),
+            )
+            if capture_requested and not self._burst_in_progress:
+                if self._capture_btn.isEnabled():
+                    self.trigger_capture()
+                else:
+                    self._status_chip.setText(
+                        f"{instruction_for_angle(self.current_angle())[0]}."
+                        if self._last_ready
+                        else friendly_readiness_message(self._last_status_text)
+                    )
+        except (TypeError, ValueError):
+            self._status_chip.setText("Camera check hiccup. Keeping the camera preview live.")
+        finally:
+            frame.fill(0)
+            embedding = getattr(face, "normed_embedding", None) if face is not None else None
+            if isinstance(embedding, np.ndarray):
+                embedding.fill(0)
+
+    def _finish_capture_burst(self, burst: object, error: object, status: object = "") -> None:
+        self._burst_in_progress = False
+        self._burst_task = None
+        self._aligned_since = None
+        self._last_ready = False
+        self._last_aligned = False
+        samples = burst if isinstance(burst, list) else []
+
+        if self._abort_requested:
+            self._zero_sample_embeddings(samples)
+            self._discard_captured_samples()
+            self._aborted = True
+            self.close()
+            return
+
+        if error is not None:
+            self._status_chip.setText("Camera check failed. Keep the camera clear and try again.")
+            self._capture_btn.setEnabled(False)
+            return
+
+        if len(samples) >= self._samples_per_angle:
+            self._captured_samples.extend(samples)
+            self._current_index += 1
+            self._pose_history.clear()
+            self._profile_combo.setEnabled(False)
+            self.canvas.complete_view(
+                self._current_index / max(1, len(self._angles))
+            )
+            self._update_step_copy()
+            self._status_chip.setText(str(status or "View captured."))
+            if self._current_index >= len(self._angles):
+                self._completed = True
+                self.close()
+        else:
+            self._zero_sample_embeddings(samples)
+            self.canvas.clear_tracking()
+            self._status_chip.setText(
+                str(status or "Could not capture this view. Keep still and try again.")
+            )
+            self._capture_btn.setEnabled(self._last_ready and self._last_aligned)
+
+    @staticmethod
+    def _zero_sample_embeddings(samples: list) -> None:
+        for sample in samples:
+            embedding = getattr(sample, "embedding", None)
+            if isinstance(embedding, np.ndarray):
+                embedding.fill(0)
+
+    def _discard_captured_samples(self) -> None:
+        self._zero_sample_embeddings(self._captured_samples)
+        self._captured_samples.clear()
+
+    def abort(self, reason: str = "user_cancel") -> None:
         """Public abort method used by Cancel button, Escape key, and deadline timer."""
+        if self._completed or self._aborted:
+            return
+        if self._abort_reason is None:
+            self._abort_reason = reason
+        self._capture_requested = False
+        if self._burst_in_progress or self._analysis_in_progress:
+            self._abort_requested = True
+            self._status_chip.setText("Finishing capture safely…")
+            self._capture_btn.setEnabled(False)
+            self._cancel_btn.setEnabled(False)
+            return
         self._aborted = True
+        self._discard_captured_samples()
         self.close()
 
     def _abort(self) -> None:
@@ -753,12 +1068,19 @@ class EnrollmentStudioWindow(QMainWindow):
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Q, Qt.Key.Key_Escape):
-            self.abort()
+            self.abort("escape")
             event.accept()
             return
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self._burst_in_progress or self._analysis_in_progress:
+            self.abort("window_closed")
+            event.ignore()
+            return
         if not self._completed:
+            if self._abort_reason is None:
+                self._abort_reason = "window_closed"
             self._aborted = True
+            self._discard_captured_samples()
         event.accept()

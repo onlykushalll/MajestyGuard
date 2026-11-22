@@ -11,25 +11,18 @@ DefaultDirName={localappdata}\Programs\MajestyGuard
 DefaultGroupName=MajestyGuard
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\dist\installer
 OutputBaseFilename=MajestyGuard-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-UninstallDisplayIcon={app}\MajestyGuard.exe
+UninstallDisplayIcon={app}\MajestyGuard\MajestyGuard.exe
 
 [Files]
 Source: "{#BundleRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MajestyGuard"; ValueData: """{app}\MajestyGuard.exe"" --background"; Flags: uninsdeletevalue
-
 [Icons]
-Name: "{autoprograms}\MajestyGuard"; Filename: "{app}\MajestyGuard.exe"
-
-[Run]
-Filename: "{app}\MajestyGuard.exe"; Parameters: "--background"; Description: "Start MajestyGuard"; Flags: nowait postinstall skipifsilent
+Name: "{autoprograms}\MajestyGuard"; Filename: "{app}\MajestyGuard\MajestyGuard.exe"
 
 [Code]
 function InitializeUninstall(): Boolean;

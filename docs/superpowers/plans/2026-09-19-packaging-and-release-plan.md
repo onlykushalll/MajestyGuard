@@ -29,7 +29,7 @@
 
 **Interfaces:**
 - `build_bundle.ps1 -PythonPath <path> -OutputDir <path>` produces `dist/MajestyGuard/`.
-- The bundle entry point is `MajestyGuard.exe`, generated from `app/main.py`.
+- The bundle entry point is `MajestyGuard/MajestyGuard.exe`, generated from `app/main.py`.
 
 - [ ] **Step 1: Write failing bundle-boundary tests**
 
@@ -92,7 +92,7 @@ git commit -m "build: add reproducible application bundle script"
 
 **Interfaces:**
 - Installer target is `{localappdata}\Programs\MajestyGuard`.
-- Startup target is `MajestyGuard.exe --background`.
+- Startup target is `MajestyGuard/MajestyGuard.exe --background`.
 - Standard uninstall preserves `%LOCALAPPDATA%\MajestyGuard\embeddings_v2.npy` and biometric data.
 
 - [ ] **Step 1: Write failing installer safety tests**
@@ -103,7 +103,8 @@ def test_installer_is_current_user_only_and_starts_control_center():
 
     assert "PrivilegesRequired=lowest" in text
     assert "{localappdata}\\Programs\\MajestyGuard" in text
-    assert "MajestyGuard.exe --background" in text
+    assert "MajestyGuard\\MajestyGuard.exe" in text
+    assert "--background" in text
 
 
 def test_installer_does_not_contain_legacy_privileged_integrations():
@@ -136,7 +137,7 @@ PrivilegesRequired=lowest
 DefaultDirName={localappdata}\Programs\MajestyGuard
 
 [Run]
-Filename: "{app}\MajestyGuard.exe"; Parameters: "--background"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\MajestyGuard\MajestyGuard.exe"; Parameters: "--background"; Flags: nowait postinstall skipifsilent
 ```
 
 Use `[Run]` or `[Registry]` only for current-user startup, stop known child processes by image path on uninstall, and include a custom uninstall checkbox named `RemoveUserData`. The checkbox alone permits removal of `%LOCALAPPDATA%\MajestyGuard`; default uninstall never removes it.
@@ -162,7 +163,7 @@ git commit -m "build: add per-user MajestyGuard installer"
 
 **Interfaces:**
 - Script detects `ISCC.exe` only when creating an installer and prints an actionable error when unavailable.
-- A bundle smoke test can run `MajestyGuard.exe --help` without opening a camera.
+- A bundle smoke test can import Qt and the Control Center via `MajestyGuard/MajestyGuard.exe --self-test` without opening a camera or creating a window.
 
 - [ ] **Step 1: Write failing validation tests**
 
@@ -170,7 +171,7 @@ git commit -m "build: add per-user MajestyGuard installer"
 def test_bundle_script_has_an_explicit_no_camera_smoke_test():
     text = (ROOT / "packaging" / "build_bundle.ps1").read_text(encoding="utf-8")
 
-    assert "--help" in text
+    assert "--self-test" in text
     assert "MG_ENABLE_LOCK" in text
     assert "0" in text
 ```
@@ -185,11 +186,12 @@ Expected: FAIL because the smoke test is absent.
 
 ```powershell
 $env:MG_ENABLE_LOCK = "0"
-& $BundleExe --help
-if ($LASTEXITCODE -ne 0) { throw "Bundle help smoke test failed." }
+$BundleExe = Join-Path $BundleRoot "MajestyGuard\MajestyGuard.exe"
+& $BundleExe --self-test
+if ($LASTEXITCODE -ne 0) { throw "Bundle import smoke test failed." }
 ```
 
-The entry point must support `--help` and `--background`; help must exit before creating a QApplication, starting a daemon, or opening the camera.
+The entry point must support `--self-test` and `--background`. The self-test imports the packaged Qt widgets and Control Center modules but exits before creating a QApplication, starting a daemon, or opening the camera.
 
 - [ ] **Step 4: Run validation tests and build if toolchain is installed**
 

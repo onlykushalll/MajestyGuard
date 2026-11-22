@@ -34,9 +34,13 @@ import numpy as np
 from insightface.app import FaceAnalysis
 
 sys.path.insert(0, os.path.dirname(__file__))
-from diagnostic_common import enhance_frame as _enhance_frame, select_primary_face as _select_primary_face
+from diagnostic_common import enhance_frame as _enhance_frame
 from face_quality import FaceQuality, measure_face_quality
 from liveness_detector import LivenessDetector
+try:
+    from .enrollment_pose import enrollment_pose_aligned, friendly_readiness_message
+except ImportError:
+    from enrollment_pose import enrollment_pose_aligned, friendly_readiness_message
 
 logging.basicConfig(level=logging.WARNING)
 
@@ -170,6 +174,12 @@ class EnrollmentSample:
         data = asdict(self)
         data.pop("embedding", None)
         return data
+
+
+class EnrollmentBurst(list):
+    def __init__(self, samples=(), status: str = "") -> None:
+        super().__init__(samples)
+        self.status = status
 
 
 
@@ -307,6 +317,26 @@ def estimate_head_pose_3d(face: Any, frame_shape: tuple[int, ...]) -> tuple[floa
     return yaw, pitch, roll
 
 
+def _single_enrollment_face(faces: list[Any]) -> Any | None:
+    """Accept enrollment frames only when exactly one face is detected."""
+    return faces[0] if len(faces) == 1 else None
+
+
+def _schedule_studio_analysis(studio: Any, raw_frame: np.ndarray, analyzer: Any) -> None:
+    """Queue analysis from an intact copy before the preview zeroes its input.
+
+    The UI copies preview pixels into a QImage and then zeroes the NumPy buffer.
+    Analysis must therefore receive its own copy first, otherwise the detector
+    silently sees an all-black image while the preview looks perfectly normal.
+    """
+    analysis_frame = raw_frame.copy()
+    try:
+        studio.update_preview_frame(raw_frame)
+    finally:
+        raw_frame.fill(0)
+    studio.analyze_live_frame_async(analysis_frame, analyzer)
+
+
 def _face_readiness(
     frame: np.ndarray,
     face,
@@ -324,7 +354,10 @@ def _face_readiness(
     center_dy = abs(face_center_y - h / 2.0) / max(1.0, h / 2.0)
 
     low_angle = (angle or "").lower()
-    min_h = 0.26 if ("leaning back" in low_angle or "away" in low_angle) else 0.36
+    # Laptop cameras often frame the owner around 28-32% of image height.
+    # This is sufficient for the detector, embedding, quality, and liveness gates
+    # that follow, so requiring 36% only makes normal desk setup needlessly fail.
+    min_h = 0.26 if ("leaning back" in low_angle or "away" in low_angle) else 0.28
     max_h = 0.76 if ("closer" in low_angle or "close" in low_angle) else 0.68
     max_dx = 0.34 if any(k in low_angle for k in ("left", "right", "lying")) else 0.26
     max_dy = 0.34 if any(k in low_angle for k in ("up", "down", "lying")) else 0.28
@@ -366,6 +399,15 @@ def _capture_burst(
 ) -> list[EnrollmentSample]:
     liveness.reset_session()
     accepted: list[EnrollmentSample] = []
+    rejected = {
+        "camera": 0,
+        "no_face": 0,
+        "multiple_faces": 0,
+        "quality": 0,
+        "pose": 0,
+        "liveness": 0,
+    }
+    last_readiness_status = ""
     deadline = time.monotonic() + 3.0
 
     while (
@@ -373,23 +415,48 @@ def _capture_burst(
         and time.monotonic() < deadline
         and not _enrollment_deadline_expired(enrollment_deadline)
     ):
-        ret, raw_frame = cap.read()
-        if not ret or raw_frame is None:
-            continue
-        frame = _enhance_frame(raw_frame)
         try:
-            face = _select_primary_face(frame, app.get(frame))
+            ret, raw_frame = cap.read()
+        except Exception as exc:
+            rejected["camera"] += 1
+            if rejected["camera"] == 1:
+                logging.getLogger(__name__).warning("Enrollment camera read failed: %s", exc)
+            time.sleep(0.05)
+            continue
+        if not ret or raw_frame is None:
+            rejected["camera"] += 1
+            if isinstance(raw_frame, np.ndarray):
+                raw_frame.fill(0)
+            time.sleep(0.05)
+            continue
+        frame = None
+        faces = []
+        try:
+            frame = _enhance_frame(raw_frame)
+            faces = app.get(frame)
+            face = _single_enrollment_face(faces)
             if face is None:
+                rejected["multiple_faces" if len(faces) > 1 else "no_face"] += 1
                 time.sleep(0.05)
                 continue
 
-            ready, _, quality = _face_readiness(frame, face, min_quality=min_quality, angle=angle)
+            ready, readiness_status, quality = _face_readiness(
+                frame, face, min_quality=min_quality, angle=angle
+            )
             if not ready:
+                rejected["quality"] += 1
+                last_readiness_status = str(readiness_status)
+                time.sleep(0.05)
+                continue
+
+            if not enrollment_pose_aligned(getattr(face, "kps", None), angle):
+                rejected["pose"] += 1
                 time.sleep(0.05)
                 continue
 
             live_score = liveness.score_fast(frame, face)
             if live_score < ENROLL_LIVENESS_THRESHOLD:
+                rejected["liveness"] += 1
                 logging.getLogger(__name__).warning(
                     "Enrollment sample rejected: liveness %.2f below %.2f (angle=%s)",
                     live_score, ENROLL_LIVENESS_THRESHOLD, angle,
@@ -415,12 +482,44 @@ def _capture_burst(
                 )
             )
         finally:
-            if frame is not raw_frame:
+            for detected_face in faces:
+                embedding = getattr(detected_face, "normed_embedding", None)
+                if isinstance(embedding, np.ndarray):
+                    embedding.fill(0)
+            if isinstance(frame, np.ndarray) and frame is not raw_frame:
                 frame[:] = 0
-            raw_frame[:] = 0
+            if isinstance(raw_frame, np.ndarray):
+                raw_frame[:] = 0
         time.sleep(0.12)
 
-    return accepted
+    partial_count = len(accepted)
+    if partial_count >= samples_per_angle:
+        status = "View captured."
+    else:
+        for sample in accepted:
+            if isinstance(sample.embedding, np.ndarray):
+                sample.embedding.fill(0)
+        accepted.clear()
+        if rejected["camera"]:
+            status = (
+                f"Camera stopped before enough clear samples were captured ({partial_count}/"
+                f"{samples_per_angle}). Close other camera apps and retry."
+            )
+        elif rejected["liveness"]:
+            status = "Could not confirm a live face. Keep your face uncovered and try again in even light."
+        elif rejected["pose"]:
+            status = "The view did not match the guide. Turn as shown and hold still."
+        elif rejected["quality"]:
+            status = friendly_readiness_message(last_readiness_status or "quality low")
+        elif rejected["multiple_faces"]:
+            status = "Only one person can enroll at a time."
+        elif rejected["no_face"]:
+            status = "Move into the camera frame."
+        elif partial_count:
+            status = f"Only {partial_count} of {samples_per_angle} clear samples were captured. Hold still and retry."
+        else:
+            status = "Camera did not provide a clear frame. Check the camera and retry."
+    return EnrollmentBurst(accepted, status)
 
 
 def _normalize_matrix(samples: list[EnrollmentSample]) -> np.ndarray:
@@ -592,21 +691,62 @@ def _write_metadata(
         "selected_samples": [sample.metadata() for sample in selected],
         "all_samples": [sample.metadata() for sample in all_samples],
     }
+    import win32crypt
+
+    protected = win32crypt.CryptProtectData(
+        json.dumps(payload, indent=2).encode("utf-8"),
+        "MajestyGuard enrollment metadata",
+        None,
+        None,
+        None,
+        0,
+    )
     tmp_meta = OUT_META_FILE.with_suffix(".json.tmp")
-    tmp_meta.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_meta.write_bytes(protected)
     os.replace(tmp_meta, OUT_META_FILE)
 
 
-def _backup_existing_artifacts() -> list[Path]:
-    backups: list[Path] = []
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+def _backup_existing_artifacts() -> dict[Path, Path]:
+    backups: dict[Path, Path] = {}
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     for path in [OUT_FILE, OUT_META_FILE]:
         if not path.exists():
             continue
         backup = path.with_name(f"{path.stem}.backup-{stamp}{path.suffix}")
-        shutil.copy2(path, backup)
-        backups.append(backup)
+        data = path.read_bytes()
+        import win32crypt
+
+        try:
+            win32crypt.CryptUnprotectData(data, None, None, None, 0)
+        except Exception:
+            description = (
+                "MajestyGuard biometric gallery backup"
+                if path == OUT_FILE
+                else "MajestyGuard enrollment metadata backup"
+            )
+            data = win32crypt.CryptProtectData(data, description, None, None, None, 0)
+        backup.write_bytes(data)
+        shutil.copystat(path, backup)
+        backups[path] = backup
     return backups
+
+
+def _rollback_enrollment_artifacts(backups: dict[Path, Path]) -> list[str]:
+    errors: list[str] = []
+    for target in (OUT_FILE, OUT_META_FILE):
+        restore_tmp = target.with_name(f"{target.name}.rollback-{os.getpid()}.tmp")
+        try:
+            backup = backups.get(target)
+            if backup is None:
+                target.unlink(missing_ok=True)
+            else:
+                shutil.copy2(backup, restore_tmp)
+                os.replace(restore_tmp, target)
+        except OSError as exc:
+            errors.append(f"{target}: {exc}")
+        finally:
+            restore_tmp.unlink(missing_ok=True)
+    return errors
 
 
 def main() -> int:
@@ -758,36 +898,56 @@ def main() -> int:
         poll_timer = QTimer()
 
         def _on_studio_tick():
-            if _enrollment_deadline_expired(enrollment_deadline):
-                studio.abort()
+            if studio.completed or studio.aborted:
                 poll_timer.stop()
                 app_qt.quit()
+                return
+
+            if _enrollment_deadline_expired(enrollment_deadline):
+                studio.abort("deadline")
+                if not studio.capture_in_progress and not studio.analysis_in_progress:
+                    poll_timer.stop()
+                    app_qt.quit()
+                return
+
+            if studio.capture_in_progress:
+                return
+
+            if studio.analysis_in_progress:
+                ret, discarded_frame = cap.read()
+                if ret and discarded_frame is not None:
+                    studio.update_preview_frame(discarded_frame)
+                    discarded_frame[:] = 0
                 return
 
             ret, raw_frame = cap.read()
             if not ret or raw_frame is None:
                 return
-            frame = _enhance_frame(raw_frame)
+            angle = studio.current_angle()
             try:
-                faces = app.get(frame)
-                face = _select_primary_face(frame, faces)
-                if face is not None:
-                    ready, status, quality = _face_readiness(frame, face, min_quality=min_quality, angle=studio.current_angle())
-                    q_score = quality.score
-                else:
-                    ready, status, q_score = False, "no face", 0.0
+                def _analyze_live_frame(analysis_frame):
+                    processed = _enhance_frame(analysis_frame)
+                    try:
+                        faces = app.get(processed)
+                        face = _single_enrollment_face(faces)
+                        if face is not None:
+                            ready, status, quality = _face_readiness(
+                                processed,
+                                face,
+                                min_quality=min_quality,
+                                angle=angle,
+                            )
+                            return face, ready, status, quality.score
+                        status = "one face only" if len(faces) > 1 else "no face"
+                        return None, False, status, 0.0
+                    finally:
+                        if processed is not analysis_frame:
+                            processed[:] = 0
 
-                studio.update_live_frame(
-                    frame,
-                    face,
-                    ready=ready,
-                    status_text=status,
-                    quality_score=q_score,
-                )
-            finally:
-                if frame is not raw_frame:
-                    frame[:] = 0
-                raw_frame[:] = 0
+                _schedule_studio_analysis(studio, raw_frame, _analyze_live_frame)
+            except Exception:
+                raw_frame.fill(0)
+                raise
 
             if studio.completed or studio.aborted:
                 poll_timer.stop()
@@ -799,7 +959,15 @@ def main() -> int:
         app_qt.exec()
 
         if not studio.completed or studio.aborted:
-            return abort_with_cleanup("Enrollment was canceled or aborted; nothing was saved.")
+            reason = studio.abort_reason
+            messages = {
+                "cancel_button": "Enrollment canceled by the user; nothing was saved.",
+                "escape": "Enrollment canceled with Escape; nothing was saved.",
+                "window_closed": "Enrollment window closed before completion; nothing was saved.",
+                "deadline": "Enrollment timed out before completion; nothing was saved.",
+            }
+            message = messages.get(reason, "Enrollment stopped before completion; nothing was saved.")
+            return abort_with_cleanup(message)
         samples = studio.captured_samples
         cap.release()
         cv2.destroyAllWindows()
@@ -823,9 +991,9 @@ def main() -> int:
                 frame = _enhance_frame(raw_frame)
 
                 faces = app.get(frame)
-                face = _select_primary_face(frame, faces)
+                face = _single_enrollment_face(faces)
                 display = frame.copy()
-                status = "no face"
+                status = "one face only" if len(faces) > 1 else "no face"
                 ready = False
                 height_frac = 0.0
 
@@ -926,8 +1094,8 @@ def main() -> int:
     arr = arr / (np.linalg.norm(arr, axis=1, keepdims=True) + 1e-8)
 
     backups = _backup_existing_artifacts()
-    for backup in backups:
-        print(f"Backed up previous artifact to {backup}")
+    for original, backup in backups.items():
+        print(f"Backed up {original.name} to {backup}")
     buf = io.BytesIO()
     np.save(buf, arr, allow_pickle=False)
     tmp_out = OUT_FILE.with_suffix(".npy.tmp")
@@ -947,18 +1115,29 @@ def main() -> int:
         else:
             print(f"ERROR: DPAPI encryption failed ({e}) — refusing to write plaintext biometric gallery.")
             return 1
-    _write_metadata(
-        profile=args.profile,
-        angles=angles,
-        samples_per_angle=samples_per_angle,
-        all_samples=samples,
-        selected=selected,
-        max_templates=max_templates,
-        min_cohesion=min_cohesion,
-        duplicate_similarity=duplicate_similarity,
-        min_quality=min_quality,
-        min_selected_per_angle=min_selected_per_angle,
-    )
+    try:
+        _write_metadata(
+            profile=args.profile,
+            angles=angles,
+            samples_per_angle=samples_per_angle,
+            all_samples=samples,
+            selected=selected,
+            max_templates=max_templates,
+            min_cohesion=min_cohesion,
+            duplicate_similarity=duplicate_similarity,
+            min_quality=min_quality,
+            min_selected_per_angle=min_selected_per_angle,
+        )
+    except Exception as exc:
+        print(f"ERROR: Could not write enrollment metadata ({exc}); rolling artifacts back.")
+        rollback_errors = _rollback_enrollment_artifacts(backups)
+        if rollback_errors:
+            print("ERROR: Enrollment rollback was incomplete:")
+            for error in rollback_errors:
+                print(f"  - {error}")
+        else:
+            print("Enrollment artifacts restored to their prior state.")
+        return 1
     print("Enrollment complete.")
     print(f"Captured {len(samples)} embeddings; selected {len(arr)} gallery templates.")
     print(f"Saved gallery to {OUT_FILE}")

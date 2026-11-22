@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import sys
 from pathlib import Path
 from typing import Sequence
 
-from PyQt6.QtWidgets import QApplication
-
-from app.control_center import ControlCenter
 from app.runtime import Supervisor
 
 
@@ -20,6 +18,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="start in the notification area instead of opening the Control Center window",
     )
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -27,7 +26,13 @@ def default_paths(root: Path | None = None) -> tuple[Path, Path]:
     if root is not None:
         application_root = Path(root)
     elif getattr(sys, "frozen", False):
-        application_root = Path(sys.executable).resolve().parent
+        executable_dir = Path(sys.executable).resolve().parent
+        shared_bundle_root = executable_dir.parent
+        application_root = (
+            shared_bundle_root
+            if (shared_bundle_root / "MajestyGuardDaemon").is_dir()
+            else executable_dir
+        )
     else:
         application_root = Path(__file__).resolve().parents[1]
     local_app_data = Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
@@ -45,6 +50,15 @@ def default_daemon_executable(root: Path) -> Path | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.self_test:
+        importlib.import_module("PyQt6.QtWidgets")
+        importlib.import_module("app.control_center")
+        return 0
+
+    from PyQt6.QtWidgets import QApplication
+
+    from app.control_center import ControlCenter
+
     root, settings_path = default_paths()
     app = QApplication([sys.argv[0]])
     app.setApplicationName("MajestyGuard")

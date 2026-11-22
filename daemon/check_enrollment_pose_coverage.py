@@ -5,7 +5,7 @@ Reads embeddings_v2_meta.json only. It does not open the camera, save frames,
 start IPC, lock the workstation, or touch login integration.
 """
 from __future__ import annotations
-from diagnostic_common import load_embeddings_array
+from diagnostic_common import load_embeddings_array, load_enrollment_metadata
 
 import argparse
 import json
@@ -238,7 +238,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
+    metadata = load_enrollment_metadata(args.metadata)
     matrix = None
     if not args.skip_embedding_check:
         matrix = load_embeddings_array(args.embeddings)

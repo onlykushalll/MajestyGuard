@@ -42,7 +42,7 @@ def generate_flash_sequence(n_steps: int, rng: Optional[random.Random] = None) -
     expected face-brightness response too small to distinguish from noise."""
     if n_steps < 2:
         raise ValueError("n_steps must be >= 2 to compute a correlation")
-    r = rng or random.Random()
+    r = rng if rng is not None else random.SystemRandom()
     min_gap = 0.3
     seq = [r.uniform(0.1, 0.9)]
     for _ in range(n_steps - 1):

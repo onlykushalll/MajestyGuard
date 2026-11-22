@@ -58,7 +58,10 @@ if ($LASTEXITCODE -ne 0) {
 New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
 foreach ($artifact in @(
     (Join-Path $BundleRoot "MajestyGuard.exe"),
+    (Join-Path $BundleRoot "MajestyGuard"),
     (Join-Path $BundleRoot "MajestyGuardUI.exe"),
+    (Join-Path $BundleRoot "MajestyGuardUI"),
+    (Join-Path $BundleRoot "MajestyGuardDaemon.exe"),
     (Join-Path $BundleRoot "MajestyGuardDaemon")
 )) {
     if (Test-Path -LiteralPath $artifact) {
@@ -75,11 +78,10 @@ $commonArguments = @(
     "--distpath", $BundleRoot
 )
 
-# The control app and visual client stay small. The daemon gets the models once
-# in its onedir bundle, avoiding a copied virtual environment or model extraction
-# each time protection is started.
+# Keep every executable in an onedir bundle. This avoids one-file archive
+# extraction at launch and gives Qt's native DLLs a stable adjacent layout.
 Invoke-PyInstaller ($commonArguments + @(
-    "--onefile",
+    "--onedir",
     "--windowed",
     "--name", "MajestyGuard",
     "--collect-all", "PyQt6",
@@ -104,26 +106,26 @@ Invoke-PyInstaller ($commonArguments + @(
 ))
 
 Invoke-PyInstaller ($commonArguments + @(
-    "--onefile",
+    "--onedir",
     "--windowed",
     "--name", "MajestyGuardUI",
     "--collect-all", "PyQt6",
     (Join-Path $Root "ui\main.py")
 ))
 
-$ControlCenter = Join-Path $BundleRoot "MajestyGuard.exe"
+$ControlCenter = Join-Path $BundleRoot "MajestyGuard\MajestyGuard.exe"
 Require-File $ControlCenter "Control Center executable"
 Require-File (Join-Path $BundleRoot "MajestyGuardDaemon\MajestyGuardDaemon.exe") "daemon executable"
-Require-File (Join-Path $BundleRoot "MajestyGuardUI.exe") "overlay executable"
+Require-File (Join-Path $BundleRoot "MajestyGuardUI\MajestyGuardUI.exe") "overlay executable"
 
-# This proves command-line initialization returns before QApplication, camera,
-# daemon, or soft-lock code is started.
+# Import the packaged Qt widgets without creating QApplication, a window,
+# camera, daemon, or soft-lock instance.
 $previousLockSetting = $env:MG_ENABLE_LOCK
 try {
     $env:MG_ENABLE_LOCK = "0"
-    & $ControlCenter --help
+    & $ControlCenter --self-test
     if ($LASTEXITCODE -ne 0) {
-        throw "Control Center help smoke test failed with exit code $LASTEXITCODE."
+        throw "Control Center packaged import smoke test failed with exit code $LASTEXITCODE."
     }
 }
 finally {

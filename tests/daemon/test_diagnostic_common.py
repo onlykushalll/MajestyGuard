@@ -61,6 +61,28 @@ def test_load_embeddings_array_loads_plaintext_and_dpapi(tmp_path):
         pass
 
 
+def test_load_enrollment_metadata_reads_legacy_plaintext_and_dpapi(tmp_path, monkeypatch):
+    import json
+    import sys
+    from diagnostic_common import load_enrollment_metadata
+
+    expected = {"profile": "robust", "selected_count": 12}
+    legacy_path = tmp_path / "legacy.json"
+    legacy_path.write_text(json.dumps(expected), encoding="utf-8")
+    assert load_enrollment_metadata(legacy_path) == expected
+
+    def unprotect(data, *_args):
+        if not data.startswith(b"DPAPI:"):
+            raise ValueError("not DPAPI")
+        return "metadata", data[6:]
+
+    monkeypatch.setitem(sys.modules, "win32crypt", SimpleNamespace(CryptUnprotectData=unprotect))
+    encrypted_path = tmp_path / "encrypted.json"
+    encrypted_path.write_bytes(b"DPAPI:" + json.dumps(expected).encode("utf-8"))
+
+    assert load_enrollment_metadata(encrypted_path) == expected
+
+
 def test_resolve_resource_dir_finds_existing_repo_models():
     from diagnostic_common import resolve_resource_dir
     models_dir = resolve_resource_dir("models")

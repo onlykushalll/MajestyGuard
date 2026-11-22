@@ -1,4 +1,6 @@
 import json
+import sys
+from types import SimpleNamespace
 import numpy as np
 
 import enroll_v2
@@ -121,6 +123,18 @@ def test_real_life_profile_covers_night_lying_close_face_poses():
 def test_write_metadata_records_declared_pose_count(tmp_path, monkeypatch):
     meta_path = tmp_path / "embeddings_v2_meta.json"
     monkeypatch.setattr(enroll_v2, "OUT_META_FILE", meta_path)
+    def protect(data, *_args):
+        return b"DPAPI:" + data
+
+    def unprotect(data, *_args):
+        if not data.startswith(b"DPAPI:"):
+            raise ValueError("not DPAPI")
+        return "metadata", data[6:]
+
+    monkeypatch.setitem(sys.modules, "win32crypt", SimpleNamespace(
+        CryptProtectData=protect,
+        CryptUnprotectData=unprotect,
+    ))
     samples = [_sample([1.0, 0.0, 0.0], 1), _sample([0.0, 1.0, 0.0], 2)]
     samples[0].angle = "front"
     samples[1].angle = "left"
@@ -138,9 +152,69 @@ def test_write_metadata_records_declared_pose_count(tmp_path, monkeypatch):
         min_selected_per_angle=1,
     )
 
-    payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    from diagnostic_common import load_enrollment_metadata
 
+    payload = load_enrollment_metadata(meta_path)
+
+    assert meta_path.read_bytes().startswith(b"DPAPI:")
     assert payload["min_angle_count"] == 2
+
+
+def test_gallery_backup_encrypts_legacy_plaintext_before_copying(tmp_path, monkeypatch):
+    gallery = tmp_path / "embeddings_v2.npy"
+    metadata = tmp_path / "embeddings_v2_meta.json"
+    original = b"legacy-plaintext-gallery"
+    gallery.write_bytes(original)
+    metadata.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(enroll_v2, "OUT_FILE", gallery)
+    monkeypatch.setattr(enroll_v2, "OUT_META_FILE", metadata)
+
+    def protect(data, *_args):
+        return b"DPAPI:" + data
+
+    def unprotect(data, *_args):
+        if not data.startswith(b"DPAPI:"):
+            raise ValueError("not DPAPI")
+        return "backup", data[6:]
+
+    monkeypatch.setitem(sys.modules, "win32crypt", SimpleNamespace(
+        CryptProtectData=protect,
+        CryptUnprotectData=unprotect,
+    ))
+
+    backups = enroll_v2._backup_existing_artifacts()
+    gallery_backup = backups[gallery]
+    metadata_backup = backups[metadata]
+
+    assert gallery_backup.read_bytes() == b"DPAPI:" + original
+    assert metadata_backup.read_bytes() == b"DPAPI:{}"
+    assert gallery.read_bytes() == original
+
+
+def test_enrollment_artifact_rollback_restores_existing_pair_and_removes_new_files(tmp_path, monkeypatch):
+    gallery = tmp_path / "embeddings_v2.npy"
+    metadata = tmp_path / "embeddings_v2_meta.json"
+    gallery_backup = tmp_path / "gallery.backup.npy"
+    metadata_backup = tmp_path / "metadata.backup.json"
+    gallery.write_bytes(b"new-gallery")
+    metadata.write_text("new-metadata", encoding="utf-8")
+    gallery_backup.write_bytes(b"old-gallery")
+    metadata_backup.write_text("old-metadata", encoding="utf-8")
+    monkeypatch.setattr(enroll_v2, "OUT_FILE", gallery)
+    monkeypatch.setattr(enroll_v2, "OUT_META_FILE", metadata)
+
+    errors = enroll_v2._rollback_enrollment_artifacts(
+        {gallery: gallery_backup, metadata: metadata_backup}
+    )
+
+    assert errors == []
+    assert gallery.read_bytes() == b"old-gallery"
+    assert metadata.read_text(encoding="utf-8") == "old-metadata"
+
+    errors = enroll_v2._rollback_enrollment_artifacts({})
+    assert errors == []
+    assert not gallery.exists()
+    assert not metadata.exists()
 
 
 def test_enrollment_timeout_defaults_from_mg_max_seconds():

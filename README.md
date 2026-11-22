@@ -90,7 +90,9 @@ powershell -ExecutionPolicy Bypass -File packaging\build_bundle.ps1 `
 The resulting bundle is written to `dist\MajestyGuard`. Add
 `-CreateInstaller` only after Inno Setup 6 is installed. See
 [the install and update guide](docs/guides/INSTALL_AND_UPDATE.md) for the
-installer boundary and release gates.
+installer boundary and release gates. The bundle keeps the Control Center,
+overlay, and daemon in adjacent one-directory packages; keep the complete
+`MajestyGuard` bundle together rather than moving individual executables.
 
 ## Documentation
 

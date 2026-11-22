@@ -6,7 +6,7 @@ reports cosine similarity against the enrolled matrix. No locking, no IPC, and
 no frames are written to disk.
 """
 from __future__ import annotations
-from diagnostic_common import load_embeddings_array
+from diagnostic_common import load_embeddings_array, load_enrollment_metadata
 
 import argparse
 import json
@@ -61,8 +61,8 @@ def _load_metadata() -> dict:
     if not EMBEDDINGS_META_PATH.exists():
         return {}
     try:
-        return json.loads(EMBEDDINGS_META_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        return load_enrollment_metadata(EMBEDDINGS_META_PATH)
+    except (OSError, ValueError):
         return {}
 
 

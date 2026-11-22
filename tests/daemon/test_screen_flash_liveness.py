@@ -9,6 +9,7 @@ import random
 import numpy as np
 import pytest
 
+from daemon import screen_flash_liveness
 from daemon.screen_flash_liveness import (
     generate_flash_sequence,
     score_reflectance,
@@ -33,6 +34,29 @@ def test_generate_flash_sequence_is_randomized_not_fixed():
 def test_generate_flash_sequence_rejects_too_few_steps():
     with pytest.raises(ValueError):
         generate_flash_sequence(1)
+
+
+def test_default_flash_sequence_uses_system_random(monkeypatch):
+    created = []
+
+    class FixedSystemRandom:
+        def uniform(self, low, high):
+            return low
+
+        def choice(self, candidates):
+            return candidates[-1]
+
+    def make_rng():
+        rng = FixedSystemRandom()
+        created.append(rng)
+        return rng
+
+    monkeypatch.setattr(screen_flash_liveness.random, "SystemRandom", make_rng)
+
+    sequence = generate_flash_sequence(4)
+
+    assert len(created) == 1
+    assert len(sequence) == 4
 
 
 @pytest.mark.parametrize("lag", [0, 1, 2])

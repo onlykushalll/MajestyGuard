@@ -103,6 +103,12 @@ def test_copy_fits_its_boxes_with_real_font_metrics():
         status_font = QFontMetricsF(fonts.ui_font_px(8.5 * s, QFont.Weight.DemiBold, spacing=1.1))
         head_font = QFontMetricsF(fonts.ui_font_px(16.5 * s, QFont.Weight.DemiBold))
         sub_font = QFontMetricsF(fonts.ui_font_px(10.5 * s, QFont.Weight.Normal))
+        probe = QFontMetricsF(fonts.ui_font_px(10.5 * s))
+        if abs(probe.horizontalAdvance("i") - probe.horizontalAdvance("W")) < 0.01:
+            # Windows' offscreen platform has no font database: every glyph is one fixed
+            # width, so these measurements mean nothing. Real metrics run on Linux / interactive Qt.
+            import pytest
+            pytest.skip("no real font metrics on this Qt platform")
         chip_room = lay.status[2] - (7.0 + 10.0) * s - 24.0 * s
         for name in states:
             label = L.status_label(name)

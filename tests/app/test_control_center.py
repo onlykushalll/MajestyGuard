@@ -215,3 +215,22 @@ def test_control_center_actions_are_noops_while_locked(qapp, tmp_path):
     assert not hasattr(supervisor, "idle_timeout")
     assert view._quitting is False
     view.close()
+
+
+def test_current_timeout_preset_is_highlighted_and_follows_changes(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+
+    def current():
+        return [b.property("seconds") for b in view._preset_buttons if b.property("current") == "true"]
+
+    view._timeout_input.setValue(120)
+    view.save_idle_timeout()
+    assert current() == [120]
+
+    view.apply_timeout_preset(300)
+    assert current() == [300]
+
+    view._timeout_input.setValue(77)  # not a preset -> nothing highlighted
+    view.save_idle_timeout()
+    assert current() == []
+    view.close()

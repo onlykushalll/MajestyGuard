@@ -14,6 +14,7 @@ from PyQt6.QtGui import (
     QDesktopServices,
     QIcon,
     QKeySequence,
+    QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
@@ -53,12 +54,46 @@ class SupervisorProtocol(Protocol):
 _LOCKED_NOTE = "Session is locked. Controls are disabled until you unlock."
 
 _STATUS_COPY = {
-    RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "#7f8b9c"),
-    RuntimeStatus.STARTING: ("Starting protection", "Starting", "#237bff"),
-    RuntimeStatus.RUNNING: ("Protection running", "Pause protection", "#16a36a"),
-    RuntimeStatus.PAUSED: ("Protection paused", "Resume protection", "#7f8b9c"),
-    RuntimeStatus.DEGRADED: ("Protection degraded", "Restart protection", "#c06a00"),
+    RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "#8590a3"),
+    RuntimeStatus.STARTING: ("Starting protection", "Starting", "#0a84ff"),
+    RuntimeStatus.RUNNING: ("Protection running", "Pause protection", "#1fa855"),
+    RuntimeStatus.PAUSED: ("Protection paused", "Resume protection", "#8590a3"),
+    RuntimeStatus.DEGRADED: ("Protection degraded", "Restart protection", "#d97706"),
 }
+
+
+_FONT = "'Segoe UI Variable', 'Segoe UI'"
+_STYLE = (
+    "QMainWindow { background: #EEF1FA; color: #151A24; }"
+    f"QLabel {{ font-family: {_FONT}; }}"
+    f"QLabel#eyebrow {{ color: #0A84FF; font: 600 10px {_FONT}; letter-spacing: 1.6px; }}"
+    f"QLabel#title {{ color: #151A24; font: 600 28px {_FONT}; }}"
+    "QFrame#card { background: rgba(255,255,255,0.58); border: 1px solid rgba(255,255,255,0.90);"
+    " border-bottom: 1px solid rgba(120,132,160,0.30); border-radius: 22px; }"
+    f"QLabel#status {{ color: #151A24; font: 600 19px {_FONT}; }}"
+    f"QLabel#detail {{ color: #566075; font: 400 12px {_FONT}; }}"
+    "QLabel#chip { background: rgba(255,255,255,0.55); color: #34405A; border: 1px solid rgba(255,255,255,0.90);"
+    f" border-radius: 13px; padding: 5px 12px; font: 600 11px {_FONT}; }}"
+    "QPushButton { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3D93FF, stop:1 #0A72F5);"
+    " color: #FFFFFF; border: 0; border-radius: 16px; padding: 13px 20px;"
+    f" font: 600 13px {_FONT}; }}"
+    "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5AA3FF, stop:1 #1F80FF); }"
+    "QPushButton:pressed { background: #0A63DB; }"
+    "QPushButton:disabled { background: rgba(110,122,150,0.20); color: rgba(52,64,90,0.45); }"
+    "QPushButton#secondary { background: rgba(255,255,255,0.62); color: #1B2438;"
+    " border: 1px solid rgba(255,255,255,0.92); border-bottom: 1px solid rgba(120,132,160,0.28);"
+    f" border-radius: 14px; padding: 10px 18px; font: 600 12px {_FONT}; }}"
+    "QPushButton#secondary:hover { background: rgba(255,255,255,0.88); }"
+    "QPushButton#secondary:pressed { background: rgba(255,255,255,0.45); }"
+    "QPushButton#secondary:disabled { background: rgba(255,255,255,0.28); color: rgba(52,64,90,0.40);"
+    " border: 1px solid rgba(255,255,255,0.45); }"
+    "QPushButton#secondary[current=\"true\"] { background: rgba(10,132,255,0.16); color: #0A5FD0;"
+    " border: 1px solid rgba(10,132,255,0.55); }"
+    "QSpinBox { background: rgba(255,255,255,0.66); color: #151A24; border: 1px solid rgba(255,255,255,0.92);"
+    f" border-radius: 12px; padding: 7px 12px; font: 600 12px {_FONT}; }}"
+    "QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }"
+    "QSpinBox:disabled { color: rgba(52,64,90,0.40); background: rgba(255,255,255,0.30); }"
+)
 
 
 def _create_tray_icon(accent_hex: str) -> QIcon:
@@ -139,17 +174,61 @@ class StatusPulseOrbWidget(QWidget):
         painter.setBrush(self._color)
         painter.drawEllipse(QPointF(cx, cy), 5.0 + 0.8 * pulse, 5.0 + 0.8 * pulse)
 
-        dot_color = QColor("#F2F4F8")
+        dot_color = QColor("#2A3446")
         for i in range(8):
             ang = (i / 8.0) * math.tau + (self._phase * 0.6 if self._animated else 0.0)
             rad = 13.5 + (1.2 * math.sin(self._phase + i) if self._animated else 0.0)
-            dot_color.setAlpha(190 if i % 2 == 0 else 125)
+            dot_color.setAlpha(170 if i % 2 == 0 else 105)
             painter.setBrush(dot_color)
             painter.drawEllipse(
                 QPointF(cx + math.cos(ang) * rad, cy + math.sin(ang) * rad),
                 1.7,
                 1.7,
             )
+        painter.end()
+
+
+class _AuroraBackground(QWidget):
+    """Window backdrop: the same luminous colour field as the lock overlay.
+
+    Rendered once per size into a pixmap, so repainting while a child animates
+    is a single blit.
+    """
+
+    _ORBS = (
+        (0.06, 0.08, 0.60, (112, 168, 255, 170)),
+        (0.94, 0.06, 0.52, (186, 138, 255, 150)),
+        (0.84, 0.96, 0.64, (255, 126, 178, 140)),
+        (0.04, 0.94, 0.48, (104, 214, 232, 130)),
+        (0.50, 0.50, 0.40, (255, 206, 150, 70)),
+    )
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._cache = QPixmap()
+
+    def _render(self) -> None:
+        w, h = max(1, self.width()), max(1, self.height())
+        pix = QPixmap(w, h)
+        painter = QPainter(pix)
+        base = QLinearGradient(0.0, 0.0, 0.0, float(h))
+        base.setColorAt(0.0, QColor(248, 249, 255))
+        base.setColorAt(1.0, QColor(222, 229, 247))
+        painter.fillRect(0, 0, w, h, base)
+        for cx, cy, radius, (r, g, b, a) in self._ORBS:
+            reach = radius * max(w, h)
+            glow = QRadialGradient(QPointF(cx * w, cy * h), reach)
+            glow.setColorAt(0.0, QColor(r, g, b, a))
+            glow.setColorAt(1.0, QColor(r, g, b, 0))
+            painter.fillRect(0, 0, w, h, glow)
+        painter.end()
+        self._cache = pix
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        if self._cache.size() != self.size():
+            self._render()
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self._cache)
         painter.end()
 
 
@@ -177,28 +256,10 @@ class ControlCenter(QMainWindow):
     def _build_window(self) -> None:
         self.setWindowTitle("MajestyGuard")
         self.setMinimumSize(500, 430)
-        self.resize(540, 460)
-        self.setStyleSheet(
-            "QMainWindow { background: #090C12; color: #F2F4F8; }"
-            "QLabel#eyebrow { color: #64D2FF; font: 600 10px 'Segoe UI Variable Text'; letter-spacing: 1.4px; }"
-            "QLabel#title { color: #F2F4F8; font: 600 26px 'Segoe UI Variable Display'; }"
-            "QFrame#card { background: #101622; border: 1px solid #1E2738; border-radius: 12px; }"
-            "QLabel#status { color: #F2F4F8; font: 600 18px 'Segoe UI Variable Display'; }"
-            "QLabel#detail { color: #8A96A8; font: 400 12px 'Segoe UI Variable Text'; }"
-            "QLabel#chip { background: #131B29; color: #C5D0E0; border: 1px solid #222E42;"
-            " border-radius: 8px; padding: 4px 10px; font: 600 11px 'Segoe UI Variable Text'; }"
-            "QPushButton { background: #F2F4F8; color: #090C12; border: 0; border-radius: 8px;"
-            " padding: 10px 18px; font: 600 12px 'Segoe UI Variable Display'; }"
-            "QPushButton:hover { background: #FFFFFF; }"
-            "QPushButton:pressed { background: #D8E0EC; }"
-            "QPushButton:disabled { background: #1A2232; color: #5B677A; }"
-            "QPushButton#secondary { background: #131B29; color: #D5DCE6; border: 1px solid #243146; }"
-            "QPushButton#secondary:hover { background: #1B2538; color: #FFFFFF; }"
-            "QSpinBox { background: #101622; color: #F2F4F8; border: 1px solid #243146;"
-            " border-radius: 8px; padding: 6px 10px; font: 600 12px 'Segoe UI Variable Text'; }"
-        )
+        self.resize(540, 500)
+        self.setStyleSheet(_STYLE)
 
-        root = QWidget(self)
+        root = _AuroraBackground(self)
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
         layout.setContentsMargins(28, 24, 28, 22)
@@ -286,6 +347,7 @@ class ControlCenter(QMainWindow):
         self._timeout_input = QSpinBox(root)
         self._timeout_input.setRange(15, 1800)
         self._timeout_input.setSuffix(" seconds")
+        self._timeout_input.setMinimumWidth(150)
         self._timeout_input.setValue(self._current_idle_timeout())
         timeout_row.addWidget(self._timeout_input)
         timeout_row.addStretch(1)
@@ -305,7 +367,8 @@ class ControlCenter(QMainWindow):
         for label_text, secs in (("30s", 30), ("1m", 60), ("2m", 120), ("5m", 300)):
             btn = QPushButton(label_text, root)
             btn.setObjectName("secondary")
-            btn.setFixedHeight(26)
+            btn.setFixedHeight(30)
+            btn.setProperty("seconds", secs)
             self._preset_buttons.append(btn)
             btn.clicked.connect(lambda _checked=False, s=secs: self.apply_timeout_preset(s))
             preset_row.addWidget(btn)
@@ -321,6 +384,7 @@ class ControlCenter(QMainWindow):
         self._hint_label.setObjectName("detail")
         self._hint_label.setContentsMargins(0, 8, 0, 0)
         layout.addWidget(self._hint_label)
+        self._mark_current_preset()
 
     def _build_tray(self) -> None:
         self._tray = QSystemTrayIcon(_create_tray_icon("#7f8b9c"), self)
@@ -383,6 +447,14 @@ class ControlCenter(QMainWindow):
             return False
         self._timeout_note.setText(_LOCKED_NOTE)
         return True
+
+    def _mark_current_preset(self) -> None:
+        """Highlight the preset that matches the timeout currently in the box."""
+        value = self._timeout_input.value()
+        for btn in self._preset_buttons:
+            btn.setProperty("current", "true" if btn.property("seconds") == value else "false")
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
 
     def timeout_note_text(self) -> str:
         return self._timeout_note.text()
@@ -476,6 +548,7 @@ class ControlCenter(QMainWindow):
         if self._refuse_while_locked():
             return
         seconds = self._timeout_input.value()
+        self._mark_current_preset()
         if self._supervisor.set_idle_timeout(seconds):
             if self._supervisor.status() is RuntimeStatus.RUNNING:
                 self._timeout_note.setText("Saved. Active protection updated live (next start also uses this).")

@@ -336,3 +336,33 @@ def test_legacy_hook_aliases_exist():
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "_install_keyboard_hook" in source
     assert "_uninstall_keyboard_hook" in source
+
+
+def test_verify_cooldown_escalates_and_caps():
+    from main import VERIFY_COOLDOWN_SCHEDULE_S, verify_cooldown_for
+
+    waits = [verify_cooldown_for(n) for n in range(1, 12)]
+    assert waits[0] == 5.0
+    assert waits == sorted(waits)  # never shortens while failures continue
+    assert waits[-1] == max(VERIFY_COOLDOWN_SCHEDULE_S) == 60.0
+    assert verify_cooldown_for(0) == 5.0
+
+
+def test_consecutive_inconclusive_verifications_lengthen_the_cooldown():
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    spans = []
+    for _ in range(4):
+        before = time.monotonic()
+        daemon._on_verify_inconclusive()
+        spans.append(daemon._verify_cooldown_until - before)
+    assert spans[0] < 5.6 and spans[3] > 14.5
+    assert daemon._verify_fail_streak == 4
+
+
+def test_successful_verification_resets_the_failure_streak():
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._on_verify_inconclusive()
+    daemon._on_verify_inconclusive()
+    daemon._clear_soft_lock(confidence=0.9, liveness=0.9)
+    assert daemon._verify_fail_streak == 0
+    assert daemon._verify_cooldown_until == 0.0

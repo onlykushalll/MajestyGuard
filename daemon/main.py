@@ -137,6 +137,15 @@ SOFT_LOCK_IDLE_SECONDS = read_idle_timeout()
 SOFT_LOCK_IDLE_REARM_SECONDS = _env_float("MG_SOFT_LOCK_IDLE_REARM_SECONDS", 1.0, 0.0, 10.0)
 SOFT_LOCK_RELEASE_GRACE_SECONDS = _env_float("MG_SOFT_LOCK_RELEASE_GRACE_SECONDS", 15.0, 0.0, 300.0)
 SOFT_LOCK_VERIFY_WINDOW_SECONDS = _env_float("MG_SOFT_LOCK_VERIFY_WINDOW_SECONDS", 15.0, 3.0, 60.0)
+# Retry cooldown after consecutive inconclusive verifications: the first misses are
+# cheap for the real owner, repeated ones (a spoof being iterated on) get slower.
+VERIFY_COOLDOWN_SCHEDULE_S = (5.0, 5.0, 8.0, 15.0, 30.0, 60.0)
+
+
+def verify_cooldown_for(streak: int) -> float:
+    """Cooldown after the ``streak``-th consecutive inconclusive verification (1-based)."""
+    index = max(1, int(streak)) - 1
+    return VERIFY_COOLDOWN_SCHEDULE_S[min(index, len(VERIFY_COOLDOWN_SCHEDULE_S) - 1)]
 IDLE_CHECK_MODE = os.environ.get("MG_IDLE_CHECK_MODE", "0") == "1"
 IDLE_OWNER_PROBE_SECONDS = _env_float("MG_IDLE_OWNER_PROBE_SECONDS", 14.0, 3.0, 20.0)
 IDLE_CHECK_SUCCESS_EXIT_SECONDS = _env_float("MG_IDLE_CHECK_SUCCESS_EXIT_SECONDS", 1.25, 0.5, 5.0)
@@ -1772,10 +1781,16 @@ class MajestyGuardDaemon:
 
     def _on_verify_inconclusive(self) -> None:
         now = time.monotonic()
+        self._verify_fail_streak = getattr(self, "_verify_fail_streak", 0) + 1
+        cooldown = verify_cooldown_for(self._verify_fail_streak)
         self._verify_failed_until = now + 2.0
-        self._verify_cooldown_until = now + 5.0
+        self._verify_cooldown_until = now + cooldown
         self.ipc.broadcast_state("verify_failed")
-        log.info("[Verify] Inconclusive — cooldown until +5.0s")
+        log.info(
+            "[Verify] Inconclusive (streak %d) — cooldown until +%.1fs",
+            self._verify_fail_streak,
+            cooldown,
+        )
 
     def _start_soft_lock_verification(self, detail: str) -> None:
         now = time.monotonic()
@@ -1829,6 +1844,8 @@ class MajestyGuardDaemon:
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._soft_lock_stranger_strikes = 0
+        self._verify_fail_streak = 0
+        self._verify_cooldown_until = 0.0
         FaceState.set_recognized(liveness_score=liveness)
         self._transition(State.ACTIVE)
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)

@@ -4,6 +4,10 @@ Guarantees ONNX and ONNXRuntime native C++ DLLs are initialized before any
 PyQt6 DLL is loaded during test session collection, preventing Windows DLL
 initialization conflict: `ImportError: DLL load failed while importing onnx_cpp2py_export`.
 """
+import os
+
+os.environ.setdefault("MG_AUDIT_LOG", "0")  # tests never write the real audit trail
+
 try:
     import onnx
     import onnxruntime

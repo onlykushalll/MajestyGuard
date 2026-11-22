@@ -34,6 +34,11 @@ _MODEL_FILENAME = "midas_v21_small_256.onnx"
 _INPUT_SIZE     = 256          # MiDaS small uses 256×256
 _REAL_CV_THRESH = 0.10         # CV above this → real
 _SPOOF_CV_THRESH = 0.04        # CV below this → flat/spoof
+# Min-max stretching turns *any* depth map -- including an almost constant one --
+# into a full 0..1 range, which hid flat spoofs. The raw (pre-stretch) relative
+# contrast of the central 90% of the map is therefore checked separately: below
+# this the map is effectively flat and the score is scaled down toward 0.
+_MIN_RAW_CONTRAST = 0.08
 
 
 class DepthLivenessDetector:
@@ -109,16 +114,26 @@ class DepthLivenessDetector:
         if face_crop is None:
             return 0.5
 
-        depth_map = self._predict_depth(face_crop)
-        if depth_map is None:
+        predicted = self._predict_depth(face_crop)
+        if predicted is None:
             return 0.5
+        depth_map, raw_contrast = predicted
 
-        return self._depth_variance_score(depth_map, face_crop.shape)
+        score = self._depth_variance_score(depth_map, face_crop.shape)
+        flatness = float(np.clip(raw_contrast / _MIN_RAW_CONTRAST, 0.0, 1.0))
+        if flatness < 1.0:
+            logger.debug("Depth map nearly flat (raw contrast %.4f) -> score x%.2f", raw_contrast, flatness)
+        return float(score * flatness)
 
     # ── Depth prediction ─────────────────────────────────────────────
 
-    def _predict_depth(self, face_img: np.ndarray) -> "np.ndarray | None":
-        """Run MiDaS on the face crop, return normalised depth map."""
+    def _predict_depth(self, face_img: np.ndarray) -> "tuple[np.ndarray, float] | None":
+        """Run MiDaS on the face crop.
+
+        Returns ``(normalised_depth_map, raw_contrast)`` or None when no usable
+        map came back. ``raw_contrast`` is the robust spread of the *unstretched*
+        output relative to its median, so a nearly constant map stays "flat".
+        """
         try:
             resized = cv2.resize(face_img, (_INPUT_SIZE, _INPUT_SIZE))
             rgb     = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32)
@@ -132,11 +147,18 @@ class DepthLivenessDetector:
             output = self._session.run(None, {self._input_name: blob})[0]  # (1, H, W) or (H, W)
 
             depth = output.squeeze()
-            # Normalise to [0, 1]
             mn, mx = float(depth.min()), float(depth.max())
             if mx - mn < 1e-6:
-                return None
-            return (depth - mn) / (mx - mn)
+                return None        # exactly constant: degenerate output, stay neutral
+            lo, med, hi = (float(v) for v in np.percentile(depth, (5.0, 50.0, 95.0)))
+            raw_contrast = (hi - lo) / (abs(med) + 1e-6)
+            # Percentile stretch (not min-max) so a couple of outlier pixels
+            # cannot inflate an otherwise flat map to the full range.
+            p2, p98 = (float(v) for v in np.percentile(depth, (2.0, 98.0)))
+            if p98 - p2 < 1e-6:
+                return np.zeros_like(depth, dtype=np.float32), 0.0
+            norm = np.clip((depth - p2) / (p98 - p2), 0.0, 1.0).astype(np.float32)
+            return norm, raw_contrast
 
         except Exception as e:
             logger.debug("MiDaS inference error: %s", e)

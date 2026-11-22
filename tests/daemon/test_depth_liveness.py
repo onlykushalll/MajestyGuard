@@ -117,3 +117,45 @@ def test_depth_liveness_3d_depth_real(monkeypatch):
     score = detector.score(frame, face)
     # Should yield a high score indicating a real face
     assert score >= 0.70
+
+
+def _detector(monkeypatch):
+    monkeypatch.setattr(os.path, "exists", lambda path: True)
+    import onnxruntime as ort
+    monkeypatch.setattr(ort, "InferenceSession", MockInferenceSession)
+    return DepthLivenessDetector("dummy_dir")
+
+
+def _face_frame():
+    return np.zeros((480, 640, 3), dtype=np.uint8), SimpleNamespace(bbox=[100, 100, 200, 200])
+
+
+def test_small_gradient_on_a_large_offset_is_not_stretched_into_a_real_face(monkeypatch):
+    """Raw depth ~1000 +/- 1: min-max would stretch this to 0..1 and look 3-D."""
+    detector = _detector(monkeypatch)
+    ys, xs = np.mgrid[0:256, 0:256].astype(np.float32)
+    bump = np.exp(-(((xs - 128) / 60) ** 2 + ((ys - 128) / 60) ** 2))
+    detector._session.outputs = [(1000.0 + 1.0 * bump)[np.newaxis]]
+    frame, face = _face_frame()
+
+    assert detector.score(frame, face) <= 0.35
+
+
+def test_strong_relative_depth_still_scores_as_real(monkeypatch):
+    detector = _detector(monkeypatch)
+    ys, xs = np.mgrid[0:256, 0:256].astype(np.float32)
+    bump = np.exp(-(((xs - 128) / 60) ** 2 + ((ys - 128) / 60) ** 2))
+    detector._session.outputs = [(300.0 + 900.0 * bump)[np.newaxis]]  # nose well in front of the rest
+    frame, face = _face_frame()
+
+    assert detector.score(frame, face) >= 0.70
+
+
+def test_outlier_pixels_do_not_inflate_a_flat_map(monkeypatch):
+    detector = _detector(monkeypatch)
+    depth = np.full((256, 256), 500.0, dtype=np.float32)
+    depth[0, 0], depth[255, 255] = 0.0, 1000.0
+    detector._session.outputs = [depth[np.newaxis]]
+    frame, face = _face_frame()
+
+    assert detector.score(frame, face) <= 0.35

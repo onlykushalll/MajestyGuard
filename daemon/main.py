@@ -21,6 +21,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 from diagnostic_common import resolve_resource_dir
+import audit_log
 import model_prehash
 
 # Start hashing the ONNX packs now so it overlaps with the heavy imports below.
@@ -304,6 +305,7 @@ def lock_workstation() -> None:
         log.warning("LOCK SUPPRESSED (set MG_ENABLE_LOCK=1 to enable real locking)")
         return
     log.warning("LOCKING WORKSTATION")
+    audit_log.record("windows_lock")
     if not ctypes.windll.user32.LockWorkStation():
         log.error(
             "LockWorkStation FAILED (GetLastError=%d) - system is NOT locked "
@@ -785,7 +787,9 @@ class MajestyGuardDaemon:
         unlocked, the daemon waits in CAMERA_UNAVAILABLE and soft-locks if the
         user goes input-idle. Healing continues in the background either way.
         """
-        diagnosis = self._camera_health_tracker().diagnosis()
+        tracker = self._camera_health_tracker()
+        diagnosis = tracker.diagnosis()
+        audit_log.record("camera_fault", fault=tracker.fault.value)
         self._camera_fault_active = True
         self._soft_lock_verify_until = 0.0
         self._write_camera_health_snapshot()
@@ -1783,6 +1787,7 @@ class MajestyGuardDaemon:
         now = time.monotonic()
         self._verify_fail_streak = getattr(self, "_verify_fail_streak", 0) + 1
         cooldown = verify_cooldown_for(self._verify_fail_streak)
+        audit_log.record("verify_failed", streak=self._verify_fail_streak, cooldown_s=cooldown)
         self._verify_failed_until = now + 2.0
         self._verify_cooldown_until = now + cooldown
         self.ipc.broadcast_state("verify_failed")
@@ -1796,6 +1801,7 @@ class MajestyGuardDaemon:
         now = time.monotonic()
         self._soft_lock_verify_until = now + SOFT_LOCK_VERIFY_WINDOW_SECONDS
         self._soft_lock_verification_started_at = now
+        audit_log.record("verify_requested", by=detail)
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._absent_frames = 0
@@ -1816,6 +1822,7 @@ class MajestyGuardDaemon:
     def _enter_soft_lock(self, reason: str) -> None:
         old = self.state
         self.state = State.SOFT_LOCK
+        audit_log.record("soft_lock", reason=reason, frm=old.name)
         self._absent_frames = 0
         self._stranger_frames = 0
         self._active_reacquire_grace_frames = 0
@@ -1846,6 +1853,7 @@ class MajestyGuardDaemon:
         self._soft_lock_stranger_strikes = 0
         self._verify_fail_streak = 0
         self._verify_cooldown_until = 0.0
+        audit_log.record("unlock_face")
         FaceState.set_recognized(liveness_score=liveness)
         self._transition(State.ACTIVE)
         self.ipc.broadcast_state("active", confidence=confidence, liveness=liveness)
@@ -2102,6 +2110,8 @@ class MajestyGuardDaemon:
     def _transition(self, new_state: State) -> None:
         old = self.state
         self.state = new_state
+        if old != new_state:
+            audit_log.record("state", frm=old.name, to=new_state.name)
         # getattr default handles bare/partially-constructed instances (e.g.
         # test helpers that skip __init__) so this never raises AttributeError.
         self._transition_generation = getattr(self, "_transition_generation", 0) + 1
@@ -2194,6 +2204,7 @@ def main() -> None:
     global _ACTIVE_DAEMON
     daemon = MajestyGuardDaemon()
     _ACTIVE_DAEMON = daemon
+    audit_log.record("daemon_start", pid=os.getpid())
 
     def _sig_handler(sig, frame):
         log.info("Signal %d received - stopping", sig)

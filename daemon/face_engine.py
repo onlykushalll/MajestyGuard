@@ -894,11 +894,8 @@ class FaceEngine:
                     if query_embedding is not None:
                         primary_face._cached_norm_emb = query_embedding
                 if query_embedding is not None:
-                    scores = self._enrolled_matrix @ query_embedding  # (N,)
-                    best_template_index = int(np.argmax(scores))
-                    best_score = float(np.clip(scores[best_template_index], 0.0, 1.0))
-                    k = min(3, len(scores))
-                    top3_mean = float(np.mean(np.partition(scores, -k)[-k:]))
+                    best_score, best_template_index, top3_mean, anchor_best = self._score_vs_enrolled(query_embedding)
+                    primary_face._anchor_best = anchor_best
                     primary_face._cached_identity_scores = (best_score, best_template_index, top3_mean)
 
             if query_embedding is None:
@@ -965,6 +962,10 @@ class FaceEngine:
                     )
                     if self._should_refresh_owner_track(best_score, liveness_passed, selection_meta["reason"]):
                         self._remember_owner(primary_face)
+                    self._offer_adaptive_template(
+                        query_embedding, primary_face, primary_user_present, liveness_score,
+                        quality_score, raw_face_count, liveness_mode,
+                    )
                 else:
                     self._consecutive_matches = 0
                     self._consecutive_liveness = 0
@@ -1238,6 +1239,30 @@ class FaceEngine:
 
         return best_face, best_score, best_idx
 
+    def attach_adaptive_store(self, store) -> None:
+        """Optional bounded pool of extra owner templates (see adaptive_templates.py)."""
+        self._adaptive_store = store
+
+    def _score_vs_enrolled(self, embedding: np.ndarray) -> tuple[float, int, float, float]:
+        """(score, best_anchor_index, top3_mean, anchor_only_score).
+
+        ``score`` may include the bounded adaptive-template boost; ``anchor_only_score``
+        never does and is what decides whether a frame may teach the pool.
+        """
+        scores = self._enrolled_matrix @ embedding
+        best_idx = int(np.argmax(scores))
+        anchor_best = float(np.clip(scores[best_idx], 0.0, 1.0))
+        k = min(3, len(scores))
+        top3_mean = float(np.mean(np.partition(scores, -k)[-k:]))
+        best = anchor_best
+        store = getattr(self, "_adaptive_store", None)
+        if store is not None:
+            try:
+                best = float(np.clip(store.boosted(embedding, anchor_best), 0.0, 1.0))
+            except Exception:
+                best = anchor_best
+        return best, best_idx, top3_mean, anchor_best
+
     def _score_face_identity(self, frame: np.ndarray, face) -> tuple[float, int]:
         if self._enrolled_matrix is None:
             return 0.0, -1
@@ -1254,16 +1279,31 @@ class FaceEngine:
                     face._cached_norm_emb = embedding
             if embedding is None:
                 return 0.0, -1
-            scores = self._enrolled_matrix @ embedding
-            best_idx = int(np.argmax(scores))
-            best_score = float(np.clip(scores[best_idx], 0.0, 1.0))
-            k = min(3, len(scores))
-            top3_mean = float(np.mean(np.partition(scores, -k)[-k:]))
+            best_score, best_idx, top3_mean, anchor_best = self._score_vs_enrolled(embedding)
+            face._anchor_best = anchor_best
             face._cached_identity_scores = (best_score, best_idx, top3_mean)
             return best_score, best_idx
         except Exception as e:
             logger.debug("Identity scoring failed for candidate face: %s", e)
             return 0.0, -1
+
+    def _offer_adaptive_template(self, embedding, face, owner_confirmed, liveness, quality,
+                                 raw_face_count, liveness_mode) -> None:
+        store = getattr(self, "_adaptive_store", None)
+        if store is None or embedding is None:
+            return
+        try:
+            store.consider(
+                embedding,
+                anchor_score=float(getattr(face, "_anchor_best", 0.0)),
+                liveness=float(liveness),
+                quality=float(quality),
+                face_count=int(raw_face_count),
+                owner_confirmed=bool(owner_confirmed),
+                full_liveness=(liveness_mode != "fast"),
+            )
+        except Exception:
+            logger.debug("Adaptive template offer failed", exc_info=True)
 
     def _should_refresh_owner_track(self, score: float, liveness_passed: bool, reason: str) -> bool:
         if not liveness_passed:

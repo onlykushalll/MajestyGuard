@@ -694,6 +694,7 @@ class MajestyGuardDaemon:
             if accepted_count <= 0:
                 raise RuntimeError(f"No valid v2 enrolled embeddings loaded")
             log.info("Loaded %d valid v2 embeddings", accepted_count)
+            self._attach_adaptive_templates(engine, data)
             return
 
         if kind == "v1":
@@ -721,6 +722,20 @@ class MajestyGuardDaemon:
         if kind == "error":
             raise result["exc"]
         log.warning("No embeddings result produced (unexpected state: %r)", kind)
+
+    def _attach_adaptive_templates(self, engine, anchors) -> None:
+        """Bounded, drift-guarded growth of the owner's templates. MG_ADAPTIVE_TEMPLATES=0 disables."""
+        if os.environ.get("MG_ADAPTIVE_TEMPLATES", "1").strip().lower() in ("0", "false", "no", "off"):
+            log.info("Adaptive templates disabled by MG_ADAPTIVE_TEMPLATES")
+            return
+        try:
+            from adaptive_templates import AdaptiveTemplateStore
+
+            store = AdaptiveTemplateStore(_MG_STATE_DIR / "adaptive_templates.bin", anchors)
+            engine.attach_adaptive_store(store)
+            log.info("Adaptive templates ready (%d learned)", store.size)
+        except Exception:
+            log.warning("Adaptive templates unavailable", exc_info=True)
 
     def _camera_health_tracker(self) -> CameraHealth:
         """Lazily created so bare/partially-constructed daemons (tests) work."""

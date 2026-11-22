@@ -1435,21 +1435,6 @@ class IslandWidget(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QPointF(cx, cy), 2.8, 2.8)
 
-    def _draw_metric_bar(self, painter: QPainter, x: int, y: int, width: int, label: str, value: float, color: str) -> None:
-        track = QColor(255, 255, 255, int(self._alpha * self._content_alpha * 32))
-        fill = QColor(color)
-        fill.setAlphaF(self._alpha * self._content_alpha)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(track)
-        painter.drawRoundedRect(QRectF(x, y, width, 4), 2, 2)
-        painter.setBrush(fill)
-        painter.drawRoundedRect(QRectF(x, y, width * max(0.0, min(1.0, value)), 4), 2, 2)
-
-        label_color = QColor(160, 160, 166, int(self._alpha * self._content_alpha * 210))
-        painter.setPen(label_color)
-        painter.setFont(_font(6.5, QFont.Weight.Medium))
-        painter.drawText(QRect(x, y - 12, width, 10), Qt.AlignmentFlag.AlignLeft, label)
-
     def _draw_scan_lens(self, painter: QPainter, rect: QRectF, quality: float, color: str) -> None:
         pulse = 0.5 + 0.5 * math.sin(self._pulse_phase * 2.0 * math.pi)
         accent = QColor(color)

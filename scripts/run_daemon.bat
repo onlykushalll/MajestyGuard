@@ -1,6 +1,11 @@
 @echo off
 REM run_daemon.bat - MajestyGuard v2 Python Daemon
-IF EXIST "C:\tmp\mg-venv-clean\Scripts\python.exe" (
+REM Python: MG_PYTHON override, else the repo's own .venv, else the known local venvs.
+IF NOT "%MG_PYTHON%"=="" (
+    SET "VENV=%MG_PYTHON%"
+) ELSE IF EXIST "%~dp0..\.venv\Scripts\python.exe" (
+    SET "VENV=%~dp0..\.venv\Scripts\python.exe"
+) ELSE IF EXIST "C:\tmp\mg-venv-clean\Scripts\python.exe" (
     SET "VENV=C:\tmp\mg-venv-clean\Scripts\python.exe"
 ) ELSE (
     SET "VENV=C:\tmp\MajestyGuard\src\MajestyGuard.CVEngine\.venv\Scripts\python.exe"

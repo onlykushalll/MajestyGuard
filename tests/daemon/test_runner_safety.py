@@ -29,3 +29,10 @@ def test_run_ui_batch_uses_moved_repo_relative_ui_path():
 
     assert r"C:\tmp\MajestyGuard-v2" not in script
     assert "%~dp0..\\ui\\main.py" in script
+
+
+def test_launch_scripts_prefer_an_override_and_the_repo_venv_over_hardcoded_paths():
+    for name in ("run_daemon.bat", "run_ui.bat"):
+        script = (Path(__file__).resolve().parents[2] / "scripts" / name).read_text(encoding="utf-8")
+        assert script.index("MG_PYTHON") < script.index(r"C:\tmp\mg-venv-clean")
+        assert script.index(r"%~dp0..\.venv\Scripts\python.exe") < script.index(r"C:\tmp\mg-venv-clean")

@@ -58,11 +58,12 @@ def test_soft_lock_overlay_source_is_fullscreen_glass_input_shield():
     assert "Secured by MajestyGuard" in text
     assert "_paint_corner_status" in text
     assert "_paint_brand_signature" in text
-    assert "QColor(246, 248, 252" in text
-    assert "QColor(82, 86, 94" in text
+    # Layout and key caps come from the shared pure modules; the mouse is pinned
+    # while locked, so there is no QPushButton to click.
+    assert "lock_layout" in text and "tokens" in text
+    assert "_paint_key" in text
+    assert "QPushButton" not in text
     assert "_build_noise_texture" in text
-    assert "_paint_noise_texture" in text
-    assert "drawTiledPixmap" in text
     assert "MajestyGuard locked" not in text
     assert "Face verification required to resume this desktop" not in text
     assert "drawLine(x, 0, x + rect.height()" not in text
@@ -144,6 +145,7 @@ def test_shield_states_use_centered_status_painter():
     text = (UI / "island.py").read_text(encoding="utf-8")
 
     assert "_paint_shield" in text
-    assert "Click or Space" in text
+    assert "Press Space" in text
+    assert "Click or Space" not in text  # the mouse is pinned while locked
     assert "Owner only" in text
-    assert "Windows lock" in text
+    assert "Tab for Windows" in text

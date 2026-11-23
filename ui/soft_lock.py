@@ -1037,18 +1037,33 @@ class SoftLockOverlay(QWidget):
 
     def _use_windows_lock(self) -> None:
         import ctypes
+        import logging
         _uninstall_hooks()
-        hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 5)
-        hwnd2 = ctypes.windll.user32.FindWindowW("Shell_SecondaryTrayWnd", None)
-        if hwnd2:
-            ctypes.windll.user32.ShowWindow(hwnd2, 5)
+        _set_taskbar_visible(True)
+        try:
+            locked = bool(ctypes.windll.user32.LockWorkStation())
+        except Exception:
+            locked = False
+        if not locked:
+            # Fail closed. LockWorkStation can be refused (the DisableLockWorkstation policy,
+            # a session that is not interactive). Hiding the overlay anyway would hand the
+            # desktop to whoever pressed TAB twice, so take the lock back instead.
+            logging.getLogger("MajestyGuard.UI").error(
+                "LockWorkStation failed (GetLastError=%d) - keeping the lock overlay up",
+                ctypes.windll.kernel32.GetLastError(),
+            )
+            self._tab_gate.reset()
+            self._resume_lock_state(new_lock=False)
+            self._force_topmost()
+            self.raise_()
+            self.activateWindow()
+            self.update()
+            return
+        # The Windows lock is engaging: only now tell the daemon and let go of the screen.
         if self._on_windows_lock_used:
             self._on_windows_lock_used()
         self.hide()
         self._lock_shown_at = None
-        ctypes.windll.user32.LockWorkStation()
 
     def getOverlayOpacity(self) -> float:
         return self._opacity_value

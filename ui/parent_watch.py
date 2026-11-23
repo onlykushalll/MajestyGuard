@@ -80,9 +80,21 @@ def quit_flag_path(environ=None):
     return raw or None
 
 
-def quit_requested(path) -> bool:
-    """True when the daemon asked this UI to exit (and consumes the request)."""
+def quit_requested(path, overlay_visible: bool = False) -> bool:
+    """True when the daemon asked this UI to exit (and consumes the request).
+
+    While the lock overlay is showing, this file is NOT honoured: anyone able to
+    create a file in the state folder could otherwise drop the lock without a face.
+    A deliberate shutdown while locked arrives over the authenticated pipe as an
+    ``exit`` state instead (see daemon ``_stop_owned_overlay``).
+    """
     if not path:
+        return False
+    if overlay_visible:
+        try:                                  # discard it, so it cannot fire once the overlay hides
+            os.remove(path)
+        except OSError:
+            pass
         return False
     try:
         if os.path.exists(path):

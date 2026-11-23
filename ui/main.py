@@ -333,7 +333,7 @@ def main() -> None:
     def _check_quit_request() -> None:
         # Deliberate stop by the daemon (it is unlocking or exiting): shut down through the
         # normal path so the taskbar, cursor clip and hooks are restored, unlike terminate().
-        if quit_requested(quit_path):
+        if quit_requested(quit_path, bool(shield is not None and shield.isVisible())):
             log.info("Daemon asked the UI to quit")
             _shutdown()
 

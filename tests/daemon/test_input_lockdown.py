@@ -366,3 +366,15 @@ def test_successful_verification_resets_the_failure_streak():
     daemon._clear_soft_lock(confidence=0.9, liveness=0.9)
     assert daemon._verify_fail_streak == 0
     assert daemon._verify_cooldown_until == 0.0
+
+
+def test_windows_lock_failure_keeps_overlay_up():
+    """TAB-TAB must never drop the overlay unless LockWorkStation actually succeeded."""
+    source = (UI / "soft_lock.py").read_text(encoding="utf-8")
+    body = source[source.index("def _use_windows_lock"):source.index("def getOverlayOpacity")]
+    assert "locked = bool(ctypes.windll.user32.LockWorkStation())" in body
+    fail = body.index("if not locked:")
+    assert "return" in body[fail:body.index("self._on_windows_lock_used()")]
+    assert body.index("_resume_lock_state") > fail                       # lock taken back on failure
+    assert body.index("self._on_windows_lock_used()") > fail             # daemon told only after success
+    assert body.index("self.hide()") > body.index("self._on_windows_lock_used()")

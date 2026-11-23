@@ -1068,6 +1068,8 @@ class MajestyGuardDaemon:
             self._whcdf_stop.set()
         if getattr(self, "session_monitor", None):
             self.session_monitor.stop()
+        # Before the pipe closes: the overlay is asked to exit over it.
+        self._stop_owned_overlay()
         if hasattr(self, "ipc"):
             self.ipc.stop()
         if getattr(self, "command_ipc", None):
@@ -1075,7 +1077,6 @@ class MajestyGuardDaemon:
         if getattr(self, "service_ipc", None):
             self.service_ipc.stop()
         self._release_camera()
-        self._stop_owned_overlay()
         if getattr(self, "face_eng", None):
             self.face_eng.shutdown()
         FaceState.clear()
@@ -1298,6 +1299,14 @@ class MajestyGuardDaemon:
             return
         # Ask the UI to leave through its normal shutdown (restores taskbar, cursor clip,
         # hooks, gestures). terminate() skips all of that, so it is only the fallback.
+        # The authenticated pipe carries the request that works while the lock overlay is
+        # up; the flag file is only honoured by a UI that is not locking the screen.
+        ipc = getattr(self, "ipc", None)
+        if ipc is not None:
+            try:
+                ipc.broadcast_state("exit")
+            except Exception:
+                log.debug("exit broadcast failed", exc_info=True)
         flag = _MG_STATE_DIR / "ui_quit.flag"
         try:
             flag.write_text("quit\n", encoding="utf-8")

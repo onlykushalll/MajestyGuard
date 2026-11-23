@@ -1,14 +1,16 @@
 """Painted building blocks for the Control Center (no business logic).
 
-Everything is drawn with QPainter so the window needs no image assets and stays
-crisp at any display scale. Colours come from the shared design tokens, so the
-Control Center, the lock overlay and the island read as one product.
+Solid, theme-driven surfaces and gradients (no translucency tricks). Everything
+reads the active theme from ``app.theme`` at paint time, so a theme switch is just
+a repaint, and everything is drawn with QPainter so no image assets are needed and
+it stays crisp at any display scale.
 """
 from __future__ import annotations
 
 import math
+import re
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtProperty
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -20,23 +22,20 @@ from PyQt6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import QAbstractButton, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
-try:  # package layout in the repo / bundle, flat layout when run from ui/
-    from ui import tokens as tok
-except ImportError:  # pragma: no cover
-    import tokens as tok
+from app import theme as _theme
 
-INK = QColor(*tok.INK)
-INK_SOFT = QColor(*tok.INK_SOFT)
-INK_FAINT = QColor(*tok.INK_FAINT)
-BLUE = QColor(*tok.BLUE)
-GREEN = QColor(*tok.GREEN)
-AMBER = QColor(*tok.AMBER)
-RED = QColor(*tok.RED)
-CYAN = QColor(*tok.CYAN)
+_RGBA = re.compile(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)")
 
-TONE_COLOUR = {"ok": GREEN, "info": BLUE, "warn": AMBER, "bad": RED, "idle": QColor(134, 144, 163)}
+
+def qcolor(value: str, alpha: float | None = None) -> QColor:
+    """'#RRGGBB' or 'rgba(r,g,b,a)' -> QColor (optionally with a 0..1 alpha override)."""
+    m = _RGBA.fullmatch(value.strip())
+    colour = QColor(int(m.group(1)), int(m.group(2)), int(m.group(3)), int(float(m.group(4)) * 255)) if m else QColor(value)
+    if alpha is not None:
+        colour.setAlphaF(max(0.0, min(1.0, alpha)))
+    return colour
 
 
 def with_alpha(colour: QColor, alpha: int) -> QColor:
@@ -45,89 +44,133 @@ def with_alpha(colour: QColor, alpha: int) -> QColor:
     return out
 
 
-class AuroraBackground(QWidget):
-    """Same luminous colour field as the lock overlay, rendered once per size."""
+def tone_colour(tone: str) -> QColor:
+    t = _theme.active()
+    return qcolor({"ok": t.ok, "info": t.info, "warn": t.warn, "bad": t.bad}.get(tone, t.text_faint))
 
-    _ORBS = (
-        (0.06, 0.08, 0.60, (112, 168, 255, 170)),
-        (0.94, 0.06, 0.52, (186, 138, 255, 150)),
-        (0.84, 0.96, 0.64, (255, 126, 178, 140)),
-        (0.04, 0.94, 0.48, (104, 214, 232, 130)),
-        (0.50, 0.50, 0.40, (255, 206, 150, 70)),
-    )
+
+def accent_gradient(x0: float, y0: float, x1: float, y1: float, alpha: float = 1.0) -> QLinearGradient:
+    t = _theme.active()
+    grad = QLinearGradient(x0, y0, x1, y1)
+    grad.setColorAt(0.0, qcolor(t.accent_a, alpha))
+    grad.setColorAt(1.0, qcolor(t.accent_b, alpha))
+    return grad
+
+
+class Backdrop(QWidget):
+    """Window backdrop: a quiet vertical gradient with two large accent glows."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._cache = QPixmap()
+        self._key: tuple = ()
+
+    def invalidate(self) -> None:
+        self._key = ()
+        self.update()
 
     def _render(self) -> None:
+        t = _theme.active()
         w, h = max(1, self.width()), max(1, self.height())
         pix = QPixmap(w, h)
         painter = QPainter(pix)
         base = QLinearGradient(0.0, 0.0, 0.0, float(h))
-        base.setColorAt(0.0, QColor(248, 249, 255))
-        base.setColorAt(1.0, QColor(222, 229, 247))
+        base.setColorAt(0.0, qcolor(t.bg_top))
+        base.setColorAt(1.0, qcolor(t.bg_bottom))
         painter.fillRect(0, 0, w, h, base)
-        for cx, cy, radius, (r, g, b, a) in self._ORBS:
-            glow = QRadialGradient(QPointF(cx * w, cy * h), radius * max(w, h))
-            glow.setColorAt(0.0, QColor(r, g, b, a))
-            glow.setColorAt(1.0, QColor(r, g, b, 0))
+        strength = 0.30 if t.dark else 0.22
+        for (cx, cy, rad, col) in ((0.98, 0.0, 0.62, t.glow_a), (0.0, 1.0, 0.55, t.glow_b)):
+            glow = QRadialGradient(QPointF(cx * w, cy * h), rad * max(w, h))
+            glow.setColorAt(0.0, qcolor(col, strength))
+            glow.setColorAt(1.0, qcolor(col, 0.0))
             painter.fillRect(0, 0, w, h, glow)
         painter.end()
         self._cache = pix
+        self._key = (t.key, w, h)
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
-        if self._cache.size() != self.size():
+        if self._key != (_theme.active().key, self.width(), self.height()):
             self._render()
         painter = QPainter(self)
         painter.drawPixmap(0, 0, self._cache)
         painter.end()
 
 
-class GlassPanel(QWidget):
-    """A frosted card: translucent white body, bright top rim, soft shadow line."""
+class Surface(QWidget):
+    """A solid card: theme surface, hairline border, faint top sheen."""
 
-    def __init__(self, parent: QWidget | None = None, *, radius: float = 22.0, strength: float = 1.0) -> None:
+    def __init__(self, parent: QWidget | None = None, *, radius: float = 20.0, raised: bool = False) -> None:
         super().__init__(parent)
         self._radius = radius
-        self._strength = strength
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self._raised = raised
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
+        t = _theme.active()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         path = QPainterPath()
         path.addRoundedRect(rect, self._radius, self._radius)
-        body = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-        s = self._strength
-        body.setColorAt(0.0, QColor(255, 255, 255, int(165 * s)))
-        body.setColorAt(1.0, QColor(246, 249, 255, int(120 * s)))
-        painter.fillPath(path, body)
-        rim = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-        rim.setColorAt(0.0, QColor(255, 255, 255, 235))
-        rim.setColorAt(0.55, QColor(255, 255, 255, 120))
-        rim.setColorAt(1.0, QColor(120, 132, 160, 76))
-        painter.setPen(QPen(rim, 1.0))
+        painter.fillPath(path, qcolor(t.surface_hi if self._raised else t.surface))
+        sheen = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.top() + rect.height() * 0.5)
+        sheen.setColorAt(0.0, QColor(255, 255, 255, 14 if t.dark else 70))
+        sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
+        painter.fillPath(path, sheen)
+        painter.setPen(QPen(qcolor(t.border), 1.0))
         painter.drawPath(path)
         painter.end()
 
 
-class StatusOrb(QWidget):
-    """Breathing status badge: a coloured core ringed by dots."""
+class GradientCard(QWidget):
+    """The hero: a vivid diagonal gradient with soft decorative rings."""
 
-    def __init__(self, size: int = 56, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, radius: float = 26.0) -> None:
+        super().__init__(parent)
+        self._radius = radius
+        self._a = QColor("#4F7CFF")
+        self._b = QColor("#9B5CFF")
+
+    def set_colors(self, a_hex: str, b_hex: str) -> None:
+        self._a, self._b = QColor(a_hex), QColor(b_hex)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(rect, self._radius, self._radius)
+        grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        grad.setColorAt(0.0, self._a)
+        grad.setColorAt(1.0, self._b)
+        painter.fillPath(path, grad)
+        painter.setClipPath(path)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i, (rx, ry, r) in enumerate(((0.93, -0.10, 0.62), (1.02, 0.78, 0.44), (0.70, 1.20, 0.55))):
+            painter.setPen(QPen(QColor(255, 255, 255, 30 - i * 6), 1.4))
+            painter.drawEllipse(QPointF(rect.width() * rx, rect.height() * ry), rect.height() * r, rect.height() * r)
+        shine = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
+        shine.setColorAt(0.0, QColor(255, 255, 255, 40))
+        shine.setColorAt(0.5, QColor(255, 255, 255, 0))
+        shine.setColorAt(1.0, QColor(0, 0, 0, 28))
+        painter.fillPath(path, shine)
+        painter.end()
+
+
+class StatusRing(QWidget):
+    """Hero status badge: ring track, an orbiting arc while active, shield in the middle."""
+
+    def __init__(self, size: int = 68, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(size, size)
-        self._color = QColor(134, 144, 163)
         self._animated = False
         self._phase = 0.0
+        self._ink = QColor("#FFFFFF")
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self._tick)
 
-    def set_state_visual(self, color_hex: str, *, animated: bool) -> None:
-        self._color = QColor(color_hex)
+    def set_state_visual(self, color_hex: str, *, animated: bool) -> None:  # color kept for API parity
         self._animated = animated
         if animated and not self._timer.isActive():
             self._timer.start()
@@ -135,32 +178,87 @@ class StatusOrb(QWidget):
             self._timer.stop()
         self.update()
 
+    def set_ink(self, colour: QColor) -> None:
+        self._ink = colour
+        self.update()
+
     def _tick(self) -> None:
-        self._phase = (self._phase + 0.05) % math.tau
+        self._phase = (self._phase + 0.035) % 1.0
         self.update()
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        u = self.width() / 46.0
-        cx, cy = self.width() / 2.0, self.height() / 2.0
-        pulse = 0.5 + 0.5 * math.sin(self._phase) if self._animated else 0.3
-        aura = QRadialGradient(QPointF(cx, cy), 22.0 * u)
-        aura.setColorAt(0.0, with_alpha(self._color, 35 + 45 * pulse))
-        aura.setColorAt(1.0, QColor(0, 0, 0, 0))
+        rect = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(with_alpha(self._ink, 70), 4.0))
+        painter.drawEllipse(rect)
+        if self._animated:
+            pen = QPen(self._ink, 4.0)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            painter.setPen(pen)
+            painter.drawArc(rect, int(-self._phase * 360 * 16), 110 * 16)
+        icon = QRectF(rect.center().x() - 13, rect.center().y() - 13, 26, 26)
+        draw_icon(painter, "protection", icon, self._ink)
+        painter.end()
+
+
+class LogoMark(QWidget):
+    def __init__(self, size: int = 42, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        t = _theme.active()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(rect, rect.width() * 0.3, rect.width() * 0.3)
+        painter.fillPath(path, accent_gradient(rect.left(), rect.top(), rect.right(), rect.bottom()))
+        pad = rect.width() * 0.24
+        draw_icon(painter, "protection", rect.adjusted(pad, pad, -pad, -pad), qcolor(t.on_accent))
+        painter.end()
+
+
+class HeroBadge(QWidget):
+    """White line icon in a translucent disc, for use on a gradient hero card."""
+
+    def __init__(self, kind: str, size: int = 60, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._kind = kind
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(aura)
-        painter.drawEllipse(QPointF(cx, cy), 22.0 * u, 22.0 * u)
-        painter.setBrush(self._color)
-        r = (5.0 + 0.9 * pulse) * u
-        painter.drawEllipse(QPointF(cx, cy), r, r)
-        dot = QColor(42, 52, 70)
-        for i in range(8):
-            ang = i / 8.0 * math.tau + (self._phase * 0.6 if self._animated else 0.0)
-            rad = (13.5 + (1.2 * math.sin(self._phase + i) if self._animated else 0.0)) * u
-            dot.setAlpha(170 if i % 2 == 0 else 105)
-            painter.setBrush(dot)
-            painter.drawEllipse(QPointF(cx + math.cos(ang) * rad, cy + math.sin(ang) * rad), 1.7 * u, 1.7 * u)
+        painter.setBrush(QColor(255, 255, 255, 46))
+        painter.drawEllipse(rect)
+        pad = rect.width() * 0.27
+        draw_icon(painter, self._kind, rect.adjusted(pad, pad, -pad, -pad), QColor("#FFFFFF"))
+        painter.end()
+
+
+class IconChip(QWidget):
+    """Small rounded square holding a line icon, tinted with the accent gradient."""
+
+    def __init__(self, kind: str, size: int = 38, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self._kind = kind
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        t = _theme.active()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect())
+        path = QPainterPath()
+        path.addRoundedRect(rect, 12, 12)
+        painter.fillPath(path, accent_gradient(rect.left(), rect.top(), rect.right(), rect.bottom(), 0.20))
+        pad = rect.width() * 0.26
+        draw_icon(painter, self._kind, rect.adjusted(pad, pad, -pad, -pad), qcolor(t.accent_a))
         painter.end()
 
 
@@ -203,6 +301,20 @@ def draw_icon(painter: QPainter, kind: str, rect: QRectF, colour: QColor) -> Non
         arc = QPainterPath(QPointF(6.6, 18.2))
         arc.cubicTo(8, 14.8, 16, 14.8, 17.4, 18.2)
         painter.drawPath(arc)
+    elif kind == "appearance":
+        painter.drawEllipse(QPointF(12, 12), 9, 9)
+        painter.setPen(QPen(colour, 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        for x, y in ((8, 9.2), (12, 7), (16, 9.6), (15.4, 15)):
+            painter.drawPoint(QPointF(x, y))
+    elif kind == "clock":
+        painter.drawEllipse(QPointF(12, 12), 9, 9)
+        painter.drawPolyline([QPointF(12, 6.8), QPointF(12, 12), QPointF(15.8, 14.2)])
+    elif kind == "unlock":
+        painter.drawRoundedRect(QRectF(4.5, 10.5, 15, 10), 3, 3)
+        arc = QPainterPath(QPointF(8, 10.5))
+        arc.lineTo(8, 7.4)
+        arc.cubicTo(8, 2.4, 16, 2.4, 16.6, 6.4)
+        painter.drawPath(arc)
     elif kind == "about":
         painter.drawEllipse(QPointF(12, 12), 9, 9)
         painter.drawLine(QPointF(12, 11), QPointF(12, 16.4))
@@ -212,7 +324,7 @@ def draw_icon(painter: QPainter, kind: str, rect: QRectF, colour: QColor) -> Non
 
 
 class NavButton(QAbstractButton):
-    """Sidebar tab: icon + label, a glass pill when selected, keyboard focusable."""
+    """Sidebar tab: icon + label; the selected one is a solid accent-gradient pill."""
 
     def __init__(self, kind: str, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -225,6 +337,11 @@ class NavButton(QAbstractButton):
         self.setAutoExclusive(True)
         self._badge = ""
         self._badge_tone = "warn"
+        self._kbd_focus = False
+
+    def focusInEvent(self, event) -> None:  # type: ignore[override]
+        self._kbd_focus = event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
+        super().focusInEvent(event)
 
     def set_badge(self, text: str, tone: str = "warn") -> None:
         if (text, tone) != (self._badge, self._badge_tone):
@@ -238,47 +355,40 @@ class NavButton(QAbstractButton):
         return QSize(200, 44)
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
+        t = _theme.active()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        rect = QRectF(self.rect()).adjusted(1, 2, -1, -2)
         selected = self.isChecked()
-        hover = self.underMouse() and self.isEnabled()
-        if selected or hover or self.hasFocus():
-            path = QPainterPath()
-            path.addRoundedRect(rect, 14, 14)
-            if selected:
-                fill = QLinearGradient(rect.left(), rect.top(), rect.left(), rect.bottom())
-                fill.setColorAt(0.0, QColor(255, 255, 255, 215))
-                fill.setColorAt(1.0, QColor(255, 255, 255, 150))
-                painter.fillPath(path, fill)
-                painter.setPen(QPen(QColor(255, 255, 255, 235), 1.0))
+        path = QPainterPath()
+        path.addRoundedRect(rect, 13, 13)
+        if selected:
+            painter.fillPath(path, accent_gradient(rect.left(), rect.top(), rect.right(), rect.bottom()))
+            ink, label = qcolor(t.on_accent), qcolor(t.on_accent)
+        else:
+            if self.underMouse() and self.isEnabled():
+                painter.fillPath(path, qcolor(t.surface_hi))
+            if self.hasFocus() and self._kbd_focus:
+                painter.setPen(QPen(qcolor(t.accent_a), 1.6))
                 painter.drawPath(path)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(BLUE)
-                painter.drawRoundedRect(QRectF(rect.left() + 3, rect.center().y() - 9, 3.2, 18), 1.6, 1.6)
-            else:
-                painter.fillPath(path, QColor(255, 255, 255, 90 if hover else 0))
-                if self.hasFocus():
-                    painter.setPen(QPen(with_alpha(BLUE, 150), 1.4))
-                    painter.drawPath(path)
-        colour = BLUE if selected else INK_SOFT
-        draw_icon(painter, self._kind, QRectF(rect.left() + 16, rect.center().y() - 10, 20, 20), colour)
+            ink, label = qcolor(t.text_soft), qcolor(t.text)
+        draw_icon(painter, self._kind, QRectF(rect.left() + 15, rect.center().y() - 10, 20, 20), ink)
         font = QFont(self.font())
         font.setPixelSize(14)
-        font.setWeight(QFont.Weight.DemiBold if selected else QFont.Weight.Medium)
+        font.setWeight(QFont.Weight.Bold if selected else QFont.Weight.Medium)
         painter.setFont(font)
-        painter.setPen(INK if selected else INK_SOFT)
-        painter.drawText(QRectF(rect.left() + 48, rect.top(), rect.width() - 80, rect.height()),
+        painter.setPen(label)
+        painter.drawText(QRectF(rect.left() + 47, rect.top(), rect.width() - 78, rect.height()),
                          int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
         if self._badge:
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(TONE_COLOUR.get(self._badge_tone, AMBER))
-            painter.drawEllipse(QPointF(rect.right() - 16, rect.center().y()), 4.5, 4.5)
+            painter.setBrush(tone_colour(self._badge_tone))
+            painter.drawEllipse(QPointF(rect.right() - 15, rect.center().y()), 4.5, 4.5)
         painter.end()
 
 
 class Toggle(QAbstractButton):
-    """iOS-style switch. A real checkable button, so keyboard and screen readers work."""
+    """Switch with an accent-gradient track. A real checkable button: keyboard + a11y work."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -291,15 +401,6 @@ class Toggle(QAbstractButton):
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._step)
         self.toggled.connect(lambda _c: self._timer.start())
-
-    def _get_pos(self) -> float:
-        return self._pos
-
-    def _set_pos(self, value: float) -> None:
-        self._pos = value
-        self.update()
-
-    position = pyqtProperty(float, _get_pos, _set_pos)
 
     def setChecked(self, checked: bool) -> None:  # type: ignore[override]
         super().setChecked(checked)
@@ -316,34 +417,34 @@ class Toggle(QAbstractButton):
         self.update()
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
+        t = _theme.active()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
-        t = self._pos
-        off, on = QColor(150, 160, 182, 120), BLUE
-        track = QColor(
-            int(off.red() + (on.red() - off.red()) * t), int(off.green() + (on.green() - off.green()) * t),
-            int(off.blue() + (on.blue() - off.blue()) * t), int(off.alpha() + (on.alpha() - off.alpha()) * t),
-        )
-        if not self.isEnabled():
-            track.setAlpha(int(track.alpha() * 0.45))
-        painter.setPen(QPen(QColor(255, 255, 255, 200), 1.0))
-        painter.setBrush(track)
-        painter.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
-        d = rect.height() - 6
-        x = rect.left() + 3 + (rect.width() - d - 6) * t
-        painter.setPen(QPen(QColor(120, 132, 160, 70), 1.0))
-        painter.setBrush(QColor(255, 255, 255, 255 if self.isEnabled() else 170))
-        painter.drawEllipse(QRectF(x, rect.top() + 3, d, d))
+        radius = rect.height() / 2
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        painter.fillPath(path, qcolor(t.surface_hi))
+        painter.setOpacity(self._pos if self.isEnabled() else self._pos * 0.4)
+        painter.fillPath(path, accent_gradient(rect.left(), rect.top(), rect.right(), rect.top()))
+        painter.setOpacity(1.0 if self.isEnabled() else 0.5)
+        painter.setPen(QPen(qcolor(t.border), 1.0))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        d = rect.height() - 7
+        x = rect.left() + 3.5 + (rect.width() - d - 7) * self._pos
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(QRectF(x, rect.top() + 3.5, d, d))
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(with_alpha(BLUE, 170), 1.6))
-            painter.drawRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), rect.height() / 2 + 1.5, rect.height() / 2 + 1.5)
+            painter.setPen(QPen(qcolor(t.accent_a), 1.8))
+            painter.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), radius + 2, radius + 2)
         painter.end()
 
 
 class Dot(QWidget):
-    """Tiny coloured status dot used in lists and chips."""
+    """Coloured status dot with a soft halo, for lists and banners."""
 
     def __init__(self, tone: str = "info", size: int = 10, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -357,16 +458,97 @@ class Dot(QWidget):
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        colour = TONE_COLOUR.get(self._tone, BLUE)
+        colour = tone_colour(self._tone)
         c = QPointF(self.width() / 2, self.height() / 2)
         halo = QRadialGradient(c, self.width() / 2)
-        halo.setColorAt(0.0, with_alpha(colour, 90))
+        halo.setColorAt(0.0, with_alpha(colour, 100))
         halo.setColorAt(1.0, with_alpha(colour, 0))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(halo)
         painter.drawEllipse(c, self.width() / 2, self.width() / 2)
         painter.setBrush(colour)
-        painter.drawEllipse(c, 3.6, 3.6)
+        painter.drawEllipse(c, self.width() / 2 - 3.4, self.width() / 2 - 3.4)
+        painter.end()
+
+
+class ThemeSwatch(QAbstractButton):
+    """A live miniature of a theme. Click to apply; the selected one gets an accent ring."""
+
+    def __init__(self, theme: "_theme.Theme", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.theme = theme
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumSize(138, 150)
+        self.setFixedHeight(150)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(f"{theme.label} theme")
+
+    def paintEvent(self, _event) -> None:  # type: ignore[override]
+        mine, now = self.theme, _theme.active()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(3, 3, -3, -3)
+        outer = QPainterPath()
+        outer.addRoundedRect(rect, 18, 18)
+        painter.fillPath(outer, qcolor(now.surface))
+        # the miniature window
+        mini = QRectF(rect.left() + 10, rect.top() + 10, rect.width() - 20, 82)
+        mp = QPainterPath()
+        mp.addRoundedRect(mini, 10, 10)
+        bg = QLinearGradient(mini.topLeft(), mini.bottomLeft())
+        bg.setColorAt(0.0, qcolor(mine.bg_top))
+        bg.setColorAt(1.0, qcolor(mine.bg_bottom))
+        painter.fillPath(mp, bg)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(qcolor(mine.surface))
+        painter.drawRoundedRect(QRectF(mini.left() + 6, mini.top() + 6, 26, mini.height() - 12), 6, 6)
+        hero = QRectF(mini.left() + 38, mini.top() + 6, mini.width() - 44, 34)
+        hp = QPainterPath()
+        hp.addRoundedRect(hero, 7, 7)
+        g = QLinearGradient(hero.topLeft(), hero.bottomRight())
+        g.setColorAt(0.0, qcolor(mine.accent_a))
+        g.setColorAt(1.0, qcolor(mine.accent_b))
+        painter.fillPath(hp, g)
+        for i in range(2):
+            tile = QRectF(mini.left() + 38 + i * ((mini.width() - 44) / 2 + 2), mini.top() + 46,
+                          (mini.width() - 44) / 2 - 2, 28)
+            painter.setBrush(qcolor(mine.surface))
+            painter.drawRoundedRect(tile, 6, 6)
+        painter.setBrush(qcolor(mine.text_soft))
+        painter.drawRoundedRect(QRectF(mini.left() + 46, mini.top() + 50, 34, 4), 2, 2)
+        painter.setBrush(qcolor(mine.text))
+        painter.drawRoundedRect(QRectF(mini.left() + 46, mini.top() + 60, 22, 6), 3, 3)
+        # caption
+        font = QFont(self.font())
+        font.setPixelSize(13)
+        font.setWeight(QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(qcolor(now.text))
+        painter.drawText(QRectF(rect.left() + 14, mini.bottom() + 6, rect.width() - 28, 22),
+                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.theme.label)
+        font.setPixelSize(10)
+        font.setWeight(QFont.Weight.Normal)
+        painter.setFont(font)
+        painter.setPen(qcolor(now.text_soft))
+        painter.drawText(QRectF(rect.left() + 14, mini.bottom() + 26, rect.width() - 28, 16),
+                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.theme.tagline)
+        selected = self.isChecked()
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(qcolor(now.accent_a) if selected else qcolor(now.border), 2.4 if selected else 1.0))
+        painter.drawPath(outer)
+        if selected:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(accent_gradient(rect.right() - 34, rect.top() + 8, rect.right() - 10, rect.top() + 32))
+            painter.drawEllipse(QRectF(rect.right() - 34, rect.top() + 14, 22, 22))
+            painter.setPen(QPen(qcolor(now.on_accent), 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawPolyline([QPointF(rect.right() - 28, rect.top() + 25), QPointF(rect.right() - 24, rect.top() + 29),
+                                  QPointF(rect.right() - 18, rect.top() + 21)])
+        elif self.hasFocus():
+            painter.setPen(QPen(qcolor(now.accent_a), 1.6))
+            painter.drawPath(outer)
         painter.end()
 
 

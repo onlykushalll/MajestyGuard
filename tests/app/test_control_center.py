@@ -257,9 +257,9 @@ class ToggleSupervisor(FakeSupervisor):
         return True
 
 
-def test_six_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
+def test_seven_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
-    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About"]
+    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "Appearance", "About"]
     assert [b.text() for b in view._nav] == titles
     for index, title in enumerate(titles):
         view._nav[index].click()
@@ -267,7 +267,7 @@ def test_six_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
         assert view._page_title.text() == title
         assert view._nav[index].isChecked()
     view.show_page(99)                      # out of range clamps, never raises
-    assert view.current_page() == 5
+    assert view.current_page() == 6
     view.show_page(-4)
     assert view.current_page() == 0
     view.close()
@@ -356,4 +356,33 @@ def test_timeout_stat_follows_a_saved_change(qapp, tmp_path):
     assert view._stat_timeout.text() == "5 min"
     view.apply_timeout_preset(90)
     assert view._stat_timeout.text() == "1 min 30 s"
+    view.close()
+
+
+def test_theme_switch_applies_and_persists(qapp, tmp_path):
+    from app import theme as theme_mod
+
+    settings = tmp_path / "settings.json"
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), settings)
+    assert theme_mod.active().key == "midnight"
+    view.apply_theme("ember")
+    assert theme_mod.active().key == "ember"
+    assert theme_mod.EMBER.accent_a.lower() in view.styleSheet().lower()
+    assert [s.isChecked() for s in view._theme_swatches] == [False, False, True, False]
+    assert (tmp_path / "appearance.json").is_file()
+    view.close()
+
+    again = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), settings)
+    assert theme_mod.active().key == "ember"
+    assert again._theme_swatches[2].isChecked()
+    again.apply_theme("midnight")           # leave global state clean for other tests
+    again.close()
+
+
+def test_unknown_theme_key_falls_back_to_default(qapp, tmp_path):
+    from app import theme as theme_mod
+
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    view.apply_theme("nope")
+    assert theme_mod.active().key == theme_mod.DEFAULT.key
     view.close()

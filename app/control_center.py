@@ -1,4 +1,4 @@
-"""MajestyGuard Control Center: a tabbed, local-only glass dashboard.
+"""MajestyGuard Control Center: a tabbed, local-only dashboard with switchable colour themes.
 
 Lifecycle and settings UI only. It never receives biometric or liveness data;
 everything it shows about the camera and history comes from the small
@@ -30,7 +30,21 @@ from PyQt6.QtWidgets import (
 )
 
 from app import activity
-from app.cc_widgets import AuroraBackground, Dot, GlassPanel, NavButton, StatusOrb, Toggle, make_tray_icon
+from app import theme as theme_mod
+from app.cc_widgets import (
+    Backdrop,
+    Dot,
+    GradientCard,
+    HeroBadge,
+    IconChip,
+    LogoMark,
+    NavButton,
+    StatusRing,
+    Surface,
+    ThemeSwatch,
+    Toggle,
+    make_tray_icon,
+)
 from app.runtime import RuntimeStatus
 
 
@@ -49,11 +63,20 @@ class SupervisorProtocol(Protocol):
 _LOCKED_NOTE = "Session is locked. Controls are disabled until you unlock."
 
 _STATUS_COPY = {
-    RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "#8590a3"),
-    RuntimeStatus.STARTING: ("Starting protection", "Starting", "#0a84ff"),
-    RuntimeStatus.RUNNING: ("Protection running", "Pause protection", "#1fa855"),
-    RuntimeStatus.PAUSED: ("Protection paused", "Resume protection", "#8590a3"),
-    RuntimeStatus.DEGRADED: ("Protection degraded", "Restart protection", "#d97706"),
+    RuntimeStatus.STOPPED: ("Protection stopped", "Start protection", "idle"),
+    RuntimeStatus.STARTING: ("Starting protection", "Starting", "info"),
+    RuntimeStatus.RUNNING: ("Protection running", "Pause protection", "ok"),
+    RuntimeStatus.PAUSED: ("Protection paused", "Resume protection", "idle"),
+    RuntimeStatus.DEGRADED: ("Protection degraded", "Restart protection", "warn"),
+}
+# Hero gradients are state colours (not theme colours) so "running" always reads green,
+# "needs attention" amber and "failed" red, whichever theme is active.
+_HERO = {
+    "ok": ("#14B879", "#1593DB"),
+    "info": ("#3B7BFF", "#7A4DFF"),
+    "warn": ("#FF9F2E", "#FF5A3C"),
+    "bad": ("#F0405A", "#A81E62"),
+    "idle": ("#5E6985", "#394159"),
 }
 _SIDE_PILL = {
     RuntimeStatus.STOPPED: ("Stopped", "idle"),
@@ -69,57 +92,10 @@ _PAGES = (
     ("camera", "Camera", "Health of the camera MajestyGuard watches"),
     ("activity", "Activity", "A tamper-evident history of lock events"),
     ("enrollment", "Enrollment", "Your face profile"),
+    ("appearance", "Appearance", "Pick a colour theme"),
     ("about", "About", "Privacy, shortcuts and files"),
 )
-
-_FONT = "'Segoe UI Variable', 'Segoe UI'"
-_STYLE = f"""
-QMainWindow {{ background: #EEF1FA; color: #151A24; }}
-QLabel {{ font-family: {_FONT}; color: #151A24; background: transparent; }}
-QLabel#eyebrow {{ color: #0A84FF; font: 600 10px {_FONT}; letter-spacing: 1.6px; }}
-QLabel#brand {{ font: 700 15px {_FONT}; }}
-QLabel#brandSub {{ color: #566075; font: 500 11px {_FONT}; }}
-QLabel#pageTitle {{ font: 600 28px {_FONT}; }}
-QLabel#pageSub {{ color: #566075; font: 400 13px {_FONT}; }}
-QLabel#cardTitle {{ font: 600 15px {_FONT}; }}
-QLabel#status {{ font: 600 24px {_FONT}; }}
-QLabel#detail {{ color: #566075; font: 400 12px {_FONT}; }}
-QLabel#value {{ font: 600 22px {_FONT}; }}
-QLabel#statLabel {{ color: #566075; font: 600 10px {_FONT}; letter-spacing: 1.2px; }}
-QLabel#rowTitle {{ font: 600 13px {_FONT}; }}
-QLabel#rowMeta {{ color: #566075; font: 400 11px {_FONT}; }}
-QLabel#mono {{ color: #34405A; font: 500 11px 'Cascadia Mono', Consolas, monospace; }}
-QLabel#chip {{ background: rgba(255,255,255,0.55); color: #34405A; border: 1px solid rgba(255,255,255,0.90);
-  border-radius: 13px; padding: 5px 12px; font: 600 11px {_FONT}; }}
-QLabel#pill {{ background: rgba(255,255,255,0.62); color: #1B2438; border: 1px solid rgba(255,255,255,0.92);
-  border-radius: 12px; padding: 4px 12px; font: 600 11px {_FONT}; }}
-QLabel#keycap {{ background: rgba(255,255,255,0.55); color: #1B2438; border: 1.4px solid rgba(24,28,38,0.35);
-  border-radius: 9px; padding: 4px 10px; font: 700 11px {_FONT}; }}
-QFrame#hair {{ background: rgba(120,132,160,0.22); max-height: 1px; min-height: 1px; border: 0; }}
-QPushButton {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3D93FF, stop:1 #0A72F5);
-  color: #FFFFFF; border: 0; border-radius: 16px; padding: 13px 22px; font: 600 13px {_FONT}; }}
-QPushButton:hover {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5AA3FF, stop:1 #1F80FF); }}
-QPushButton:pressed {{ background: #0A63DB; }}
-QPushButton:focus {{ border: 2px solid rgba(255,255,255,0.9); }}
-QPushButton:disabled {{ background: rgba(110,122,150,0.20); color: rgba(52,64,90,0.45); }}
-QPushButton#secondary {{ background: rgba(255,255,255,0.62); color: #1B2438;
-  border: 1px solid rgba(255,255,255,0.92); border-bottom: 1px solid rgba(120,132,160,0.28);
-  border-radius: 14px; padding: 10px 18px; font: 600 12px {_FONT}; }}
-QPushButton#secondary:hover {{ background: rgba(255,255,255,0.88); }}
-QPushButton#secondary:pressed {{ background: rgba(255,255,255,0.45); }}
-QPushButton#secondary:focus {{ border: 1.5px solid rgba(10,132,255,0.7); }}
-QPushButton#secondary:disabled {{ background: rgba(255,255,255,0.28); color: rgba(52,64,90,0.40);
-  border: 1px solid rgba(255,255,255,0.45); }}
-QPushButton#secondary[current="true"] {{ background: rgba(10,132,255,0.16); color: #0A5FD0;
-  border: 1px solid rgba(10,132,255,0.55); }}
-QPushButton#link {{ background: transparent; color: #0A5FD0; border: 0; padding: 4px 6px; font: 600 12px {_FONT}; }}
-QPushButton#link:hover {{ color: #0A84FF; }}
-QSpinBox {{ background: rgba(255,255,255,0.66); color: #151A24; border: 1px solid rgba(255,255,255,0.92);
-  border-radius: 12px; padding: 7px 12px; font: 600 12px {_FONT}; }}
-QSpinBox::up-button, QSpinBox::down-button {{ width: 0px; border: none; }}
-QSpinBox:disabled {{ color: rgba(52,64,90,0.40); background: rgba(255,255,255,0.30); }}
-"""
-
+_APPEARANCE_FILE = "appearance.json"
 
 class ActivityList(QWidget):
     """Rows of (dot, title + note, time). Rebuilt only when the content changes."""
@@ -174,11 +150,19 @@ class ActivityList(QWidget):
 
 
 def _card(parent: QWidget, *, radius: float = 22.0, margins=(22, 18, 22, 18), spacing: int = 10):
-    panel = GlassPanel(parent, radius=radius)
+    panel = Surface(parent, radius=radius)
     box = QVBoxLayout(panel)
     box.setContentsMargins(*margins)
     box.setSpacing(spacing)
     return panel, box
+
+
+def _hero(parent: QWidget, *, radius: float = 28.0, margins=(26, 22, 26, 22), spacing: int = 8):
+    card = GradientCard(parent, radius=radius)
+    box = QVBoxLayout(card)
+    box.setContentsMargins(*margins)
+    box.setSpacing(spacing)
+    return card, box
 
 
 def _label(text: str, name: str, parent: QWidget, wrap: bool = False) -> QLabel:
@@ -198,6 +182,7 @@ class ControlCenter(QMainWindow):
         self._quitting = False
         self._integrity_key: tuple | None = None
         self._integrity: tuple[bool, int, str] = (True, 0, "")
+        theme_mod.set_active(theme_mod.load_choice(self._settings_path.parent / _APPEARANCE_FILE))
         self._build_window()
         self._build_tray()
         self._setup_shortcuts()
@@ -221,8 +206,9 @@ class ControlCenter(QMainWindow):
         self.setWindowTitle("MajestyGuard")
         self.setMinimumSize(940, 640)
         self.resize(1040, 700)
-        self.setStyleSheet(_STYLE)
-        root = AuroraBackground(self)
+        self.setStyleSheet(theme_mod.build_style(theme_mod.active()))
+        root = Backdrop(self)
+        self._backdrop = root
         self.setCentralWidget(root)
         outer = QHBoxLayout(root)
         outer.setContentsMargins(20, 20, 20, 20)
@@ -244,7 +230,7 @@ class ControlCenter(QMainWindow):
         outer.addLayout(content, 1)
 
         for builder in (self._page_overview, self._page_protection, self._page_camera,
-                        self._page_activity, self._page_enrollment, self._page_about):
+                        self._page_activity, self._page_enrollment, self._page_appearance, self._page_about):
             self._stack.addWidget(builder())
         self.show_page(0)
 
@@ -254,8 +240,7 @@ class ControlCenter(QMainWindow):
         head = QHBoxLayout()
         head.setContentsMargins(6, 0, 6, 0)
         head.setSpacing(10)
-        self._side_orb = StatusOrb(44, side)
-        head.addWidget(self._side_orb)
+        head.addWidget(LogoMark(42, side))
         names = QVBoxLayout()
         names.setSpacing(0)
         names.addWidget(_label("MajestyGuard", "brand", side))
@@ -290,19 +275,22 @@ class ControlCenter(QMainWindow):
 
     def _page_overview(self) -> QWidget:
         page, box = self._page()
-        hero, hero_box = _card(page, radius=28, margins=(26, 22, 26, 22))
+        hero, hero_box = _hero(page)
+        self._hero = hero
         row = QHBoxLayout()
         row.setSpacing(18)
-        self._orb_widget = StatusOrb(64, hero)
+        self._orb_widget = StatusRing(72, hero)
         row.addWidget(self._orb_widget)
         copy = QVBoxLayout()
         copy.setSpacing(4)
-        self._status_label = _label("", "status", hero)
+        self._status_label = _label("", "heroTitle", hero)
         copy.addWidget(self._status_label)
-        self._detail_label = _label("Camera and biometric decisions stay inside the local daemon.", "detail", hero, True)
+        self._detail_label = _label("Camera and biometric decisions stay inside the local daemon.", "heroSub", hero, True)
         copy.addWidget(self._detail_label)
         row.addLayout(copy, 1)
         self._primary_button = QPushButton(hero)
+        self._primary_button.setObjectName("hero")
+        self._primary_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self._primary_button.setMinimumWidth(190)
         self._primary_button.clicked.connect(self._run_primary_action)
         row.addWidget(self._primary_button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -321,9 +309,9 @@ class ControlCenter(QMainWindow):
 
         stats = QHBoxLayout()
         stats.setSpacing(14)
-        self._stat_timeout = self._stat_card(page, stats, "LOCKS AFTER")
-        self._stat_camera = self._stat_card(page, stats, "CAMERA")
-        self._stat_last = self._stat_card(page, stats, "LAST UNLOCK")
+        self._stat_timeout = self._stat_card(page, stats, "LOCKS AFTER", "clock")
+        self._stat_camera = self._stat_card(page, stats, "CAMERA", "camera")
+        self._stat_last = self._stat_card(page, stats, "LAST UNLOCK", "unlock")
         box.addLayout(stats)
 
         recent, recent_box = _card(page, margins=(22, 16, 22, 10), spacing=2)
@@ -342,11 +330,18 @@ class ControlCenter(QMainWindow):
         box.addWidget(recent, 1)
         return page
 
-    def _stat_card(self, parent: QWidget, row: QHBoxLayout, caption: str) -> QLabel:
-        card, box = _card(parent, radius=20, margins=(20, 14, 20, 14), spacing=2)
-        box.addWidget(_label(caption, "statLabel", card))
+    def _stat_card(self, parent: QWidget, row: QHBoxLayout, caption: str, icon: str = "overview") -> QLabel:
+        card, box = _card(parent, radius=20, margins=(18, 14, 18, 14), spacing=0)
+        line = QHBoxLayout()
+        line.setSpacing(14)
+        line.addWidget(IconChip(icon, 42, card), 0, Qt.AlignmentFlag.AlignVCenter)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(_label(caption, "statLabel", card))
         value = _label("--", "value", card)
-        box.addWidget(value)
+        col.addWidget(value)
+        line.addLayout(col, 1)
+        box.addLayout(line)
         row.addWidget(card, 1)
         return value
 
@@ -428,16 +423,16 @@ class ControlCenter(QMainWindow):
 
     def _page_camera(self) -> QWidget:
         page, box = self._page()
-        card, cbox = _card(page, radius=28, margins=(26, 22, 26, 22))
+        card, cbox = _hero(page)
+        self._camera_hero = card
         row = QHBoxLayout()
-        row.setSpacing(16)
-        self._camera_dot = Dot("idle", 16, card)
-        row.addWidget(self._camera_dot, 0, Qt.AlignmentFlag.AlignTop)
+        row.setSpacing(18)
+        row.addWidget(HeroBadge("camera", 60, card), 0, Qt.AlignmentFlag.AlignVCenter)
         text = QVBoxLayout()
         text.setSpacing(3)
-        self._camera_headline = _label("No camera data yet", "status", card)
+        self._camera_headline = _label("No camera data yet", "heroTitle", card)
         text.addWidget(self._camera_headline)
-        self._camera_hint = _label("Camera status appears here while protection is running.", "detail", card, True)
+        self._camera_hint = _label("Camera status appears here while protection is running.", "heroSub", card, True)
         text.addWidget(self._camera_hint)
         row.addLayout(text, 1)
         cbox.addLayout(row)
@@ -445,9 +440,9 @@ class ControlCenter(QMainWindow):
 
         stats = QHBoxLayout()
         stats.setSpacing(14)
-        self._cam_backend = self._stat_card(page, stats, "BACKEND")
-        self._cam_recoveries = self._stat_card(page, stats, "SELF-HEALED")
-        self._cam_retry = self._stat_card(page, stats, "NEXT RETRY")
+        self._cam_backend = self._stat_card(page, stats, "BACKEND", "protection")
+        self._cam_recoveries = self._stat_card(page, stats, "SELF-HEALED", "activity")
+        self._cam_retry = self._stat_card(page, stats, "NEXT RETRY", "clock")
         box.addLayout(stats)
 
         events, ebox = _card(page, margins=(22, 16, 22, 12), spacing=4)
@@ -487,19 +482,21 @@ class ControlCenter(QMainWindow):
 
     def _page_enrollment(self) -> QWidget:
         page, box = self._page()
-        card, cbox = _card(page, radius=28, margins=(26, 22, 26, 22))
+        card, cbox = _hero(page)
+        self._enroll_hero = card
         row = QHBoxLayout()
-        row.setSpacing(16)
-        self._enroll_dot = Dot("ok", 16, card)
-        row.addWidget(self._enroll_dot, 0, Qt.AlignmentFlag.AlignTop)
+        row.setSpacing(18)
+        row.addWidget(HeroBadge("enrollment", 60, card), 0, Qt.AlignmentFlag.AlignVCenter)
         text = QVBoxLayout()
         text.setSpacing(3)
-        self._enroll_title = _label("Face profile ready", "status", card)
-        self._enroll_sub = _label("", "detail", card, True)
+        self._enroll_title = _label("Face profile ready", "heroTitle", card)
+        self._enroll_sub = _label("", "heroSub", card, True)
         text.addWidget(self._enroll_title)
         text.addWidget(self._enroll_sub)
         row.addLayout(text, 1)
         self._reenroll_btn = QPushButton("Re-enroll face", card)
+        self._reenroll_btn.setObjectName("hero")
+        self._reenroll_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._reenroll_btn.setMinimumWidth(170)
         self._reenroll_btn.clicked.connect(self.start_reenrollment)
         row.addWidget(self._reenroll_btn, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -520,6 +517,30 @@ class ControlCenter(QMainWindow):
             line.addWidget(_label(tip, "detail", tips, True), 1)
             tbox.addLayout(line)
         box.addWidget(tips)
+        box.addStretch(1)
+        return page
+
+    def _page_appearance(self) -> QWidget:
+        page, box = self._page()
+        card, cbox = _card(page, margins=(24, 20, 24, 22), spacing=12)
+        cbox.addWidget(_label("Colour theme", "cardTitle", card))
+        cbox.addWidget(_label("Applies instantly and is remembered. The lock screen keeps its own look.",
+                              "detail", card, True))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(14)
+        self._theme_swatches: list[ThemeSwatch] = []
+        for i, preset in enumerate(theme_mod.PRESETS):
+            sw = ThemeSwatch(preset, card)
+            sw.setChecked(preset.key == theme_mod.active().key)
+            sw.clicked.connect(lambda _c=False, k=preset.key: self.apply_theme(k))
+            self._theme_swatches.append(sw)
+            grid.addWidget(sw, 0, i)
+            grid.setColumnStretch(i, 1)
+        cbox.addLayout(grid)
+        self._theme_note = _label("", "detail", card, True)
+        cbox.addWidget(self._theme_note)
+        box.addWidget(card)
         box.addStretch(1)
         return page
 
@@ -544,7 +565,7 @@ class ControlCenter(QMainWindow):
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(8)
-        for r, (combo, what) in enumerate((("Ctrl + 1 to 6", "Switch tab"), ("Ctrl + R", "Re-enroll face"),
+        for r, (combo, what) in enumerate((("Ctrl + 1 to 7", "Switch tab"), ("Ctrl + R", "Re-enroll face"),
                                            ("Ctrl + D", "Open diagnostics"))):
             cap = _label(combo, "keycap", keys)
             cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -683,11 +704,11 @@ class ControlCenter(QMainWindow):
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
         if not enrolled:
-            text, action, color = "Enrollment required", "Enroll face", "#c06a00"
+            text, action, tone_key = "Enrollment required", "Enroll face", "warn"
             detail = "Create a local face profile before starting protection."
             pill, tone = "Enroll to start", "warn"
         else:
-            text, action, color = _STATUS_COPY[status]
+            text, action, tone_key = _STATUS_COPY[status]
             detail = "Camera and biometric decisions stay inside the local daemon."
             pill, tone = _SIDE_PILL[status]
         self._status_label.setText(text)
@@ -697,8 +718,10 @@ class ControlCenter(QMainWindow):
         self._tray_primary_action.setText(action)
         self._tray_primary_action.setEnabled(status is not RuntimeStatus.STARTING)
         animated = status in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING)
-        self._orb_widget.set_state_visual(color, animated=animated)
-        self._side_orb.set_state_visual(color, animated=animated)
+        hero_a, hero_b = _HERO[tone_key]
+        self._hero.set_colors(hero_a, hero_b)
+        self._orb_widget.set_state_visual(hero_a, animated=animated)
+        color = hero_a
         self._side_pill.setText(pill)
         self._tray.setIcon(make_tray_icon(color))
         self._gallery_text = self._refresh_telemetry_chips(enrolled)
@@ -722,7 +745,7 @@ class ControlCenter(QMainWindow):
         cam = activity.read_camera_health(state / "camera_health.json")
         live = cam is not None and cam.age_s < 60
         if cam is None or not live:
-            self._camera_dot.set_tone("idle")
+            self._camera_hero.set_colors(*_HERO["idle"])
             self._camera_headline.setText("No live camera data")
             self._camera_hint.setText("Camera status appears here while protection is running.")
             self._stat_camera.setText("Idle")
@@ -734,7 +757,7 @@ class ControlCenter(QMainWindow):
         else:
             healthy = cam.status == "healthy"
             tone = "ok" if healthy else ("bad" if cam.status == "failed" else "warn")
-            self._camera_dot.set_tone(tone)
+            self._camera_hero.set_colors(*_HERO[tone])
             self._camera_headline.setText(cam.headline or ("Camera is healthy" if healthy else "Camera needs attention"))
             self._camera_hint.setText(cam.hint or ("Frames are arriving normally." if healthy else "Retrying automatically."))
             self._stat_camera.setText("Healthy" if healthy else cam.status.capitalize())
@@ -746,13 +769,13 @@ class ControlCenter(QMainWindow):
 
         gallery = getattr(self, "_gallery_text", "")
         if enrolled:
-            self._enroll_dot.set_tone("ok")
+            self._enroll_hero.set_colors(*_HERO["ok"])
             self._enroll_title.setText("Face profile ready")
             self._enroll_sub.setText(f"{gallery}. Re-enroll if your look changes a lot or recognition feels off.")
             self._reenroll_btn.setText("Re-enroll face")
             self._nav[4].set_badge("")
         else:
-            self._enroll_dot.set_tone("warn")
+            self._enroll_hero.set_colors(*_HERO["warn"])
             self._enroll_title.setText("No face profile yet")
             self._enroll_sub.setText("Create a local face profile to switch protection on.")
             self._reenroll_btn.setText("Enroll face")
@@ -789,6 +812,18 @@ class ControlCenter(QMainWindow):
         return f"{minutes} min" if not rest else f"{minutes} min {rest} s"
 
     # --------------------------------------------------------------- actions
+    def apply_theme(self, key: str) -> None:
+        chosen = theme_mod.set_active(theme_mod.by_key(key))
+        self.setStyleSheet(theme_mod.build_style(chosen))
+        for swatch in self._theme_swatches:
+            swatch.setChecked(swatch.theme.key == chosen.key)
+            swatch.update()
+        saved = theme_mod.save_choice(self._state_dir() / _APPEARANCE_FILE, chosen)
+        self._theme_note.setText(f"{chosen.label} applied." if saved else f"{chosen.label} applied for this session.")
+        self._backdrop.invalidate()
+        for child in self.findChildren(QWidget):
+            child.update()
+
     def start_protection(self) -> None:
         self._supervisor.start()
         self.refresh()

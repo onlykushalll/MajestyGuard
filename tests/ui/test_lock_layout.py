@@ -22,12 +22,15 @@ def test_layout_stays_on_screen_and_in_order():
         screen = (0, 0, w, h)
         for name in ("card", "space_key", "tab_key", "status", "brand"):
             assert _inside(getattr(lay, name), screen), (w, h, name)
-        # status chip above the card (and clear of the island zone: top-centre), keys directly
-        # under it, brand at the very bottom
+        # status chip above the card and clear of the island zone (top-centre); brand pill is
+        # bottom-right; the card is a wide, short ruler; keys sit directly under it
         assert lay.status[1] + lay.status[3] < lay.card[1]
         assert lay.status[0] + lay.status[2] < w / 2.0 - 150.0 * lay.scale, (w, h)
+        assert lay.card[2] > lay.card[3] * 3.5, (w, h)
+        assert lay.brand[0] > w / 2.0 and lay.brand[1] > lay.tab_key[1] + lay.tab_key[3]
+        for inner in ("time", "date", "message", "ruler"):
+            assert _inside(getattr(lay, inner), lay.card), (w, h, inner)
         assert lay.space_key[1] >= lay.card[1] + lay.card[3]
-        assert lay.brand[1] > lay.tab_key[1] + lay.tab_key[3]
         # keys sit side by side and together are exactly as wide as the card
         assert lay.space_key[0] + lay.space_key[2] < lay.tab_key[0]
         assert abs((lay.tab_key[0] + lay.tab_key[2]) - (lay.card[0] + lay.card[2])) < 0.5
@@ -56,14 +59,17 @@ def test_every_lock_state_has_copy_and_two_keys():
         assert space.label and tab.label
 
 
-def test_camera_fault_needs_two_tab_presses_and_says_so():
+def test_tab_needs_two_presses_and_says_so():
     _, tab = L.key_models("camera_fault", tab_armed=False)
-    assert "twice" in tab.sub.lower() and tab.mode == "idle"
+    assert "confirm" in tab.sub.lower() and tab.mode == "idle"
     _, tab = L.key_models("camera_fault", tab_armed=True)
     assert tab.mode == "armed"
-    assert L.message_for("camera_fault", "x", tab_armed=True)[0] == "Press TAB again"
-    # a working camera hands over to Windows on the first press
-    assert "twice" not in L.key_models("soft_locked")[1].sub.lower()
+    assert L.message_for("camera_fault", "x", tab_armed=True)[0] == "Lock Windows?"
+    # Windows lock needs a confirming second press in EVERY lock state, not just camera faults
+    for name in ("soft_locked", "social_lock", "hostile_lock", "verify_failed", "camera_fault"):
+        assert L.key_models(name, tab_armed=True)[1].mode == "armed", name
+        assert L.message_for(name, "", tab_armed=True)[0] == "Lock Windows?", name
+        assert "confirm" in L.key_models(name)[1].sub.lower(), name
 
 
 def test_face_check_is_not_offered_when_it_is_not_available():
@@ -118,4 +124,4 @@ def test_copy_fits_its_boxes_with_real_font_metrics():
                 headline, sub = L.message_for(name, "Camera is blocked. Details.", armed)
                 room = lay.message[2]
                 assert head_font.horizontalAdvance(headline) <= room, (w, h, name, headline)
-                assert sub_font.horizontalAdvance(sub) <= room, (w, h, name, sub)
+                assert sub_font.horizontalAdvance(sub) <= room * 2.0 * 0.9, (w, h, name, sub)

@@ -17,15 +17,16 @@ _VERIFY_ENABLED = {"locked_passive", "soft_locked", "social_lock", "camera_fault
 @dataclass(frozen=True)
 class Layout:
     scale: float
-    card: Rect
-    time_baseline: float
-    date_baseline: float
-    divider_y: float
-    message: Rect
+    card: Rect          # the wide "ruler" glass card
+    time: Rect          # clock digits, left of the card
+    divider: Rect       # hairline between clock and text (x, y, 0, h)
+    date: Rect
+    message: Rect       # headline + supporting line, right of the divider
+    ruler: Rect         # tick strip along the card's lower edge
     space_key: Rect
     tab_key: Rect
-    status: Rect
-    brand: Rect
+    status: Rect        # top-left chip
+    brand: Rect         # bottom-right pill
     cx: float
 
 
@@ -35,10 +36,11 @@ def compute(x: float, y: float, w: float, h: float) -> Layout:
     margin = max(24.0, min(42.0, w / 48.0))
     cx = x + w / 2.0
 
-    card_w, card_h = 600.0 * s, 292.0 * s
-    key_h, key_gap, dock_gap = 64.0 * s, 14.0 * s, 20.0 * s
+    card_w = min(800.0 * s, w - 2.0 * margin)
+    card_h = 176.0 * s
+    key_h, key_gap, dock_gap = 68.0 * s, 16.0 * s, 18.0 * s
     group_h = card_h + dock_gap + key_h
-    top = y + max(margin * 2.0 + 36.0 * s, (h - group_h) * 0.42)
+    top = y + max(margin * 2.0 + 36.0 * s, (h - group_h) * 0.40)
     card = (cx - card_w / 2.0, top, card_w, card_h)
 
     key_w = (card_w - key_gap) / 2.0
@@ -46,18 +48,28 @@ def compute(x: float, y: float, w: float, h: float) -> Layout:
     space_key = (card[0], key_y, key_w, key_h)
     tab_key = (card[0] + key_w + key_gap, key_y, key_w, key_h)
 
-    message_h = 70.0 * s
-    message = (card[0] + 36.0 * s, top + card_h - message_h - 22.0 * s, card_w - 72.0 * s, message_h)
-    # Top-left, so it never sits under the Dynamic Island (top-centre).
-    status = (x + margin, y + margin, 200.0 * s, 36.0 * s)
-    brand = (cx - 140.0 * s, y + h - margin - 24.0 * s, 280.0 * s, 24.0 * s)
+    pad = 40.0 * s
+    time_w = 292.0 * s
+    time_rect = (card[0] + pad, top + 14.0 * s, time_w, card_h - 14.0 * s - 46.0 * s)
+    div_x = card[0] + pad + time_w + 18.0 * s
+    divider = (div_x, top + 26.0 * s, 0.0, card_h - 26.0 * s - 58.0 * s)
+    text_x = div_x + 28.0 * s
+    text_w = card[0] + card_w - pad - text_x
+    date = (text_x, top + 24.0 * s, text_w, 24.0 * s)
+    message = (text_x, top + 52.0 * s, text_w, 66.0 * s)
+    ruler = (card[0] + pad, top + card_h - 36.0 * s, card_w - 2.0 * pad, 20.0 * s)
+
+    status = (x + margin, y + margin, 200.0 * s, 36.0 * s)      # top-left, clear of the island
+    brand_w, brand_h = 236.0 * s, 34.0 * s
+    brand = (x + w - margin - brand_w, y + h - margin - brand_h, brand_w, brand_h)
     return Layout(
         scale=s,
         card=card,
-        time_baseline=top + 118.0 * s,
-        date_baseline=top + 164.0 * s,
-        divider_y=top + card_h - message_h - 34.0 * s,
+        time=time_rect,
+        divider=divider,
+        date=date,
         message=message,
+        ruler=ruler,
         space_key=space_key,
         tab_key=tab_key,
         status=status,
@@ -102,8 +114,12 @@ def status_label(state_name: str) -> str:
 
 
 def message_for(state_name: str, detail: str = "", tab_armed: bool = False) -> tuple[str, str]:
-    """(headline, supporting line) shown at the foot of the clock card."""
+    """(headline, supporting line) shown beside the clock. Keep the copy short: it sits
+    in a narrow column and wraps to at most two lines."""
     detail = (detail or "").strip()
+    if tab_armed:
+        # Applies in every lock state: handing over to Windows is never a single stray press.
+        return "Lock Windows?", "Press TAB again to lock this PC and sign in with your Windows password"
     if state_name == "verifying_lock":
         return "Verifying", "Hold steady and look at the camera"
     if state_name == "verify_failed":
@@ -113,17 +129,15 @@ def message_for(state_name: str, detail: str = "", tab_armed: bool = False) -> t
     if state_name == "social_lock":
         return "Privacy lock", "Someone else is in view. SPACE runs an owner check"
     if state_name == "hostile_lock":
-        return "Security hold", "Face verification is paused. TAB uses the Windows password"
+        return "Security hold", "Face verification is paused. Use the Windows password"
     if state_name == "camera_fault":
-        if tab_armed:
-            return "Press TAB again", "Confirm to continue with the Windows password"
-        headline = (detail.split(". ")[0] or "Camera unavailable").strip()
-        return headline, "SPACE retries the camera. TAB twice uses the Windows password"
+        reason = detail.split(". ")[0].strip().rstrip(".")
+        return "Camera unavailable", (reason + "." if reason else "SPACE retries the camera")
     return "Locked", "Press SPACE to verify it's you"
 
 
 def key_models(state_name: str, detail: str = "", tab_armed: bool = False) -> tuple[KeyModel, KeyModel]:
-    """The two key caps under the card, in display order (SPACE, TAB)."""
+    """The two glass key blocks under the card, in display order (SPACE, TAB)."""
     if state_name == "verifying_lock":
         space = KeyModel("SPACE", "Verifying", "Looking for you", "busy")
     elif state_name == "camera_fault":
@@ -135,11 +149,8 @@ def key_models(state_name: str, detail: str = "", tab_armed: bool = False) -> tu
     else:  # hostile_lock and anything else: face verification is not on offer
         space = KeyModel("SPACE", "Unavailable", "Face check is paused", "dim")
 
-    if state_name == "camera_fault":
-        if tab_armed:
-            tab = KeyModel("TAB", "Confirm now", "Press TAB once more", "armed")
-        else:
-            tab = KeyModel("TAB", "Windows password", "Press twice to confirm", "idle")
+    if tab_armed:
+        tab = KeyModel("TAB", "Confirm lock", "Press TAB once more", "armed")
     else:
-        tab = KeyModel("TAB", "Windows password", "Use your PIN or password", "idle")
+        tab = KeyModel("TAB", "Windows lock", "Press TAB, then confirm", "idle")
     return space, tab

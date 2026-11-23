@@ -84,6 +84,7 @@ Invoke-PyInstaller ($commonArguments + @(
     "--onedir",
     "--windowed",
     "--name", "MajestyGuard",
+    "--hidden-import", "ui.tokens",
     "--collect-all", "PyQt6",
     (Join-Path $Root "app\main.py")
 ))

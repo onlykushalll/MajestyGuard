@@ -712,7 +712,7 @@ class SoftLockOverlay(QWidget):
             pass
 
     def apply_state(self, state: IslandState) -> None:
-        if state.name != "camera_fault":
+        if state.name != self._state.name:
             self._tab_gate.reset()
         if state.name != self._state.name:
             self._state_changed_at = time.monotonic()
@@ -1028,7 +1028,8 @@ class SoftLockOverlay(QWidget):
 
     def _on_tab_pressed(self) -> None:
         self._mark_key("TAB")
-        action = self._tab_gate.press(confirmation_required=self._camera_fault_active())
+        # Windows lock is never one stray key: TAB arms, a second TAB within the window confirms.
+        action = self._tab_gate.press(confirmation_required=True)
         if action == ACTION_LOCK:
             self._use_windows_lock()
         else:
@@ -1121,7 +1122,7 @@ class SoftLockOverlay(QWidget):
 
         # State aura: a soft coloured glow behind the card in every non-idle state.
         if name not in {"locked_passive", "soft_locked"}:
-            aura_r = card.width() * (0.66 + 0.03 * pulse)
+            aura_r = card.width() * (0.60 + 0.03 * pulse)
             centre = QPointF(cx, card.center().y())
             aura = QRadialGradient(centre, aura_r)
             strong = int((46 + 26 * pulse) * self._content_alpha())
@@ -1130,14 +1131,14 @@ class SoftLockOverlay(QWidget):
             aura.setColorAt(1.0, QColor(255, 255, 255, 0))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(aura)
-            painter.drawEllipse(centre, aura_r, aura_r * 0.78)
+            painter.drawEllipse(centre, aura_r, aura_r * 0.50)
 
-        radius = _tok.RADIUS_CARD * s
+        radius = 38.0 * s
         tint = (255, 255, 255)
         if name not in {"locked_passive", "soft_locked"}:
             ar, ag, ab = _tok.accent_for(name)
             tint = (255 - int((255 - ar) * 0.22), 255 - int((255 - ag) * 0.22), 255 - int((255 - ab) * 0.22))
-        if not self._draw_lens(painter, card, radius, tint=tint, tint_alpha=0.42, saturation=1.10, bulge=0.07):
+        if not self._draw_lens(painter, card, radius, tint=tint, tint_alpha=0.40, saturation=1.10, bulge=0.06):
             path = QPainterPath()
             path.addRoundedRect(card, radius, radius)
             body = QLinearGradient(card.left(), card.top(), card.left(), card.bottom())
@@ -1147,70 +1148,112 @@ class SoftLockOverlay(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 190), 1.0))
             painter.drawPath(path)
 
-        # Time and date.
-        time_font = _font(76 * s, QFont.Weight.Light, tabular=True, spacing=-2.0)
-        painter.setFont(time_font)
-        painter.setPen(self._ink(235))
-        time_str = now.strftime("%H:%M")
-        tw = painter.fontMetrics().horizontalAdvance(time_str)
-        painter.drawText(QPointF(cx - tw / 2.0, lay.time_baseline), time_str)
+        # Time, left; hairline; date + state message, right.
+        time_font = _font(58 * s, QFont.Weight.Light, tabular=True, spacing=-1.6)
+        self._draw_text(painter, QRectF(*lay.time), now.strftime("%H:%M"), time_font, self._ink(235),
+                        Qt.AlignmentFlag.AlignHCenter)
+        dx, dy, _dw, dh = lay.divider
+        painter.setPen(QPen(self._ink(30), 1.0))
+        painter.drawLine(QPointF(dx, dy), QPointF(dx, dy + dh))
 
-        date_rect = QRectF(card.left(), lay.date_baseline - 20.0 * s, card.width(), 26.0 * s)
-        self._draw_text(painter, date_rect, now.strftime("%A, %B %d"), _font(15 * s, QFont.Weight.Medium),
-                        self._ink(190, 1))
-
-        # Divider and the state message.
-        mx, my, mw, mh = lay.message
-        painter.setPen(QPen(self._ink(26), 1.0))
-        painter.drawLine(QPointF(card.left() + 36.0 * s, lay.divider_y), QPointF(card.right() - 36.0 * s, lay.divider_y))
-        headline, sub = _layout.message_for(name, self._state.detail or "", self._tab_gate.armed)
         fade = self._content_alpha()
-        self._draw_text(painter, QRectF(mx, my, mw, mh * 0.52), headline,
-                        _font(16.5 * s, QFont.Weight.DemiBold), self._ink(int(240 * fade)))
-        self._draw_text(painter, QRectF(mx, my + mh * 0.50, mw, mh * 0.40), sub,
-                        _font(10.5 * s, QFont.Weight.Normal), self._ink(int(176 * fade), 1))
+        self._draw_text(painter, QRectF(*lay.date), now.strftime("%A, %B %d").upper(),
+                        _font(9.5 * s, QFont.Weight.DemiBold, spacing=1.4), self._ink(int(185 * fade), 1),
+                        Qt.AlignmentFlag.AlignLeft)
+        headline, sub = _layout.message_for(name, self._state.detail or "", self._tab_gate.armed)
+        mx, my, mw, mh = lay.message
+        self._draw_text(painter, QRectF(mx, my, mw, mh * 0.42), headline,
+                        _font(18 * s, QFont.Weight.DemiBold), self._ink(int(240 * fade)), Qt.AlignmentFlag.AlignLeft)
+        painter.setFont(_font(10 * s, QFont.Weight.Normal))
+        painter.setPen(self._ink(int(176 * fade), 1))
+        painter.drawText(QRectF(mx, my + mh * 0.44, mw, mh * 0.56),
+                         int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap), sub)
 
-        # Key caps: the only actions on this screen (the mouse is pinned).
+        self._paint_ruler(painter, lay, now)
+
+        # Glass key blocks: the only actions on this screen (the mouse is pinned).
         space, tab = _layout.key_models(name, self._state.detail or "", self._tab_gate.armed)
         self._paint_key(painter, QRectF(*lay.space_key), space, s)
         self._paint_key(painter, QRectF(*lay.tab_key), tab, s)
+        painter.restore()
+
+    def _paint_ruler(self, painter: QPainter, lay, now) -> None:
+        """Tick marks along the card's lower edge; the lit marker is the current second,
+        the faint fill before it is the minute so far. Makes the card read as a ruler."""
+        s = lay.scale
+        x0, y0, w, h = lay.ruler
+        step = 7.0 * s
+        count = max(8, int(w // step))
+        step = w / count
+        frac = (now.second + now.microsecond / 1e6) / 60.0
+        marker = x0 + w * frac
+        base = y0 + h
+        painter.save()
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i in range(count + 1):
+            x = x0 + i * step
+            major = i % 5 == 0
+            near = max(0.0, 1.0 - abs(x - marker) / (46.0 * s))
+            tick_h = (h * (0.78 if major else 0.44)) + h * 0.30 * near
+            if x <= marker:
+                col = self._accent(int(70 + 90 * near)) if near > 0.02 else self._ink(70, 1)
+            else:
+                col = self._ink(46 + int(60 * near), 1)
+            painter.setPen(QPen(col, 1.4 if major else 1.0))
+            painter.drawLine(QPointF(x, base), QPointF(x, base - tick_h))
+        glow = QRadialGradient(QPointF(marker, base - h * 0.4), 16.0 * s)
+        glow.setColorAt(0.0, self._accent(120))
+        glow.setColorAt(1.0, self._accent(0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(QPointF(marker, base - h * 0.4), 16.0 * s, 16.0 * s)
+        pen = QPen(self._accent(235), 2.2 * s)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        painter.drawLine(QPointF(marker, base), QPointF(marker, base - h * 1.1))
         painter.restore()
 
     def _paint_key(self, painter: QPainter, rect: QRectF, model, s: float) -> None:
         mode = model.mode
         radius = rect.height() / 2.0
         tint = _tok.AMBER if mode == "armed" else (255, 255, 255)
-        alpha = {"idle": 0.36, "busy": 0.34, "armed": 0.36, "dim": 0.20}.get(mode, 0.36)
-        if not self._draw_lens(painter, rect, radius, tint=tint, tint_alpha=alpha, saturation=1.10,
-                               bulge=0.05, spec_gain=0.9):
+        # Pure glass: almost no tint, strong bulge and edge refraction, a little dispersion.
+        alpha = {"idle": 0.07, "busy": 0.08, "armed": 0.16, "dim": 0.05}.get(mode, 0.07)
+        extra = {}
+        if _glass is not None:
+            try:
+                extra["strength"] = _glass.default_bezel(int(rect.width()), int(rect.height())) * 1.0
+            except Exception:
+                extra = {}
+        if not self._draw_lens(painter, rect, radius, tint=tint, tint_alpha=alpha, saturation=1.22,
+                               bulge=0.15, spec_gain=1.3, dispersion=0.12, **extra):
             path = QPainterPath()
             path.addRoundedRect(rect, radius, radius)
-            painter.fillPath(path, QColor(255, 255, 255, 70 if mode == "dim" else 125))
+            painter.fillPath(path, QColor(255, 255, 255, 50 if mode == "dim" else 90))
             painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
             painter.drawPath(path)
 
-        k = 0.45 if mode == "dim" else 1.0
+        k = 0.5 if mode == "dim" else 1.0
         fade = self._content_alpha()
-        cap_h = rect.height() * 0.56
+        # Engraved key outline: no fill, so the glass shows through it.
+        cap_h = rect.height() * 0.54
         cap_font = _font(9 * s, QFont.Weight.DemiBold, spacing=0.6)
         painter.setFont(cap_font)
         cap_w = max(cap_h * 1.25, painter.fontMetrics().horizontalAdvance(model.key) + 24.0 * s)
-        cap = QRectF(rect.left() + radius * 0.55, rect.center().y() - cap_h / 2.0, cap_w, cap_h)
-        painter.setBrush(QColor(255, 255, 255, int(238 * k)))
-        painter.setPen(QPen(self._ink(int(52 * k)), 1.0))
-        painter.drawRoundedRect(cap, 9.0 * s, 9.0 * s)
-        painter.setPen(QPen(self._ink(int(84 * k)), 1.6))
-        painter.drawLine(QPointF(cap.left() + 9.0 * s, cap.bottom() - 0.8), QPointF(cap.right() - 9.0 * s, cap.bottom() - 0.8))
-        self._draw_text(painter, cap, model.key, cap_font, self._ink(int(215 * k), 1))
+        cap = QRectF(rect.left() + radius * 0.6, rect.center().y() - cap_h / 2.0, cap_w, cap_h)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(self._ink(int(95 * k)), 1.3))
+        painter.drawRoundedRect(cap, 10.0 * s, 10.0 * s)
+        self._draw_text(painter, cap, model.key, cap_font, self._ink(int(225 * k), 1))
 
         pad_r = radius * 0.62 + (26.0 * s if mode == "busy" else 0.0)
         tx = cap.right() + 14.0 * s
         tw = max(10.0, rect.right() - pad_r - tx)
         self._draw_text(painter, QRectF(tx, rect.top() + rect.height() * 0.15, tw, rect.height() * 0.38), model.label,
-                        _font(11.5 * s, QFont.Weight.DemiBold), self._ink(int(238 * k * fade)),
+                        _font(11.5 * s, QFont.Weight.DemiBold), self._ink(int(240 * k * fade)),
                         Qt.AlignmentFlag.AlignLeft)
         self._draw_text(painter, QRectF(tx, rect.top() + rect.height() * 0.52, tw, rect.height() * 0.30), model.sub,
-                        _font(9 * s, QFont.Weight.Normal), self._ink(int(170 * k * fade), 1),
+                        _font(9 * s, QFont.Weight.Normal), self._ink(int(175 * k * fade), 1),
                         Qt.AlignmentFlag.AlignLeft)
 
         if mode == "busy":
@@ -1223,7 +1266,6 @@ class SoftLockOverlay(QWidget):
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)
             painter.drawArc(arc, int(-((self._phase * 1080.0) % 360.0) * 16), 100 * 16)
-            # Scan sweep along the key's rim.
             path = QPainterPath()
             path.addRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), radius + 1.5, radius + 1.5)
             sweep_x = rect.left() + rect.width() * ((self._phase * 1.8) % 1.0)
@@ -1280,9 +1322,16 @@ class SoftLockOverlay(QWidget):
 
     def _paint_brand_signature(self, painter: QPainter) -> None:
         lay = self._layout()
+        rect = QRectF(*lay.brand)
         painter.save()
-        self._draw_text(painter, QRectF(*lay.brand), "Secured by MajestyGuard",
-                        _font(8.5 * lay.scale, QFont.Weight.Medium, spacing=0.5), self._ink(165, 2))
+        if not self._draw_lens(painter, rect, rect.height() / 2.0, tint_alpha=0.30, spec_gain=0.9, bulge=0.04):
+            path = QPainterPath()
+            path.addRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
+            painter.fillPath(path, QColor(255, 255, 255, 100))
+            painter.setPen(QPen(QColor(255, 255, 255, 160), 1.0))
+            painter.drawPath(path)
+        self._draw_text(painter, rect.adjusted(14.0 * lay.scale, 0, -14.0 * lay.scale, 0), "Secured by MajestyGuard",
+                        _font(8.5 * lay.scale, QFont.Weight.Medium, spacing=0.5), self._ink(190, 1))
         painter.restore()
 
     def _status_label(self) -> str:
@@ -1314,6 +1363,7 @@ class SoftLockOverlay(QWidget):
             event.accept()
             return
         if key == Qt.Key.Key_Space:
+            self._tab_gate.reset()
             self._request_verification("overlay_key")
             event.accept()
             return

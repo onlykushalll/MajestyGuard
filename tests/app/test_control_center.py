@@ -234,3 +234,126 @@ def test_current_timeout_preset_is_highlighted_and_follows_changes(qapp, tmp_pat
     view.save_idle_timeout()
     assert current() == []
     view.close()
+
+
+# ---------------------------------------------------------------- tabbed UI
+import json
+import time
+
+
+class ToggleSupervisor(FakeSupervisor):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.windows_lock = False
+        self.refuse = False
+
+    def windows_lock_enabled(self):
+        return self.windows_lock
+
+    def set_windows_lock_enabled(self, enabled):
+        if self.refuse:
+            return False
+        self.windows_lock = enabled
+        return True
+
+
+def test_six_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About"]
+    assert [b.text() for b in view._nav] == titles
+    for index, title in enumerate(titles):
+        view._nav[index].click()
+        assert view.current_page() == index
+        assert view._page_title.text() == title
+        assert view._nav[index].isChecked()
+    view.show_page(99)                      # out of range clamps, never raises
+    assert view.current_page() == 5
+    view.show_page(-4)
+    assert view.current_page() == 0
+    view.close()
+
+
+def test_windows_lock_switch_reads_and_writes_the_supervisor(qapp, tmp_path):
+    sup = ToggleSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    assert view._windows_lock_toggle.isChecked() is False
+    view._windows_lock_toggle.click()
+    assert sup.windows_lock is True and view._windows_lock_toggle.isChecked()
+    sup.refuse = True
+    view._windows_lock_toggle.click()          # refused: the switch must snap back
+    assert sup.windows_lock is True and view._windows_lock_toggle.isChecked()
+    view.close()
+
+
+def test_windows_lock_switch_is_disabled_while_locked_or_unsupported(qapp, tmp_path):
+    class Locked(ToggleSupervisor):
+        def controls_locked(self):
+            return True
+
+    locked = ControlCenter(Locked(RuntimeStatus.RUNNING), tmp_path / "a.json")
+    assert not locked._windows_lock_toggle.isEnabled()
+    locked.close()
+    plain = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "b.json")
+    assert not plain._windows_lock_toggle.isEnabled()
+    plain.close()
+
+
+def test_activity_tab_shows_history_and_flags_tampering(qapp, tmp_path, monkeypatch):
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[2] / "daemon"))
+    import audit_log
+    log = audit_log.AuditLog(tmp_path / "audit.log")
+    log.record("soft_lock", reason="idle")
+    log.record("unlock_face")
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    assert view._stat_last.text() == "just now"
+    assert "intact" in view._integrity_title.text().lower()
+    path = tmp_path / "audit.log"
+    path.write_text(path.read_text().replace('"idle"', '"away"'))
+    view.refresh()
+    assert "altered" in view._integrity_title.text().lower()
+    view.close()
+
+
+def test_camera_tab_reflects_a_covered_lens_and_badges_the_tab(qapp, tmp_path):
+    (tmp_path / "camera_health.json").write_text(json.dumps({
+        "status": "degraded", "headline": "Camera view is dark", "hint": "Uncover the lens",
+        "last_backend": "dshow", "recoveries": 1, "next_retry_in_s": 3, "updated_at": time.time(), "events": ["x"],
+    }))
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    assert view._camera_headline.text() == "Camera view is dark"
+    assert view._stat_camera.text() == "Degraded"
+    assert view._nav[2].badge() == "!"
+    (tmp_path / "camera_health.json").write_text(json.dumps({
+        "status": "healthy", "headline": "", "hint": "", "last_backend": "dshow", "updated_at": time.time(),
+    }))
+    view.refresh()
+    assert view._stat_camera.text() == "Healthy" and view._nav[2].badge() == ""
+    view.close()
+
+
+def test_stale_camera_data_is_not_presented_as_live(qapp, tmp_path):
+    (tmp_path / "camera_health.json").write_text(json.dumps({
+        "status": "healthy", "last_backend": "dshow", "updated_at": time.time() - 3600,
+    }))
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.STOPPED), tmp_path / "settings.json")
+    assert view._camera_headline.text() == "No live camera data"
+    assert view._stat_camera.text() == "Idle"
+    view.close()
+
+
+def test_missing_enrollment_badges_the_enrollment_tab(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.STOPPED, enrollment_present=False), tmp_path / "settings.json")
+    assert view._nav[4].badge() == "!"
+    assert view._reenroll_btn.text() == "Enroll face"
+    assert view._side_pill.text() == "Enroll to start"
+    view.close()
+
+
+def test_timeout_stat_follows_a_saved_change(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    view.apply_timeout_preset(300)
+    assert view._stat_timeout.text() == "5 min"
+    view.apply_timeout_preset(90)
+    assert view._stat_timeout.text() == "1 min 30 s"
+    view.close()

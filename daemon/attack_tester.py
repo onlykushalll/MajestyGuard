@@ -247,7 +247,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run a controlled MajestyGuard attack scenario.")
     parser.add_argument("--attack", choices=[s.attack for s in ATTACK_SCENARIOS])
     parser.add_argument("--duration", type=float)
-    parser.add_argument("--log-path", default=str(Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard" / "daemon.log"))
+    parser.add_argument("--log-path", default=str(Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard" / "daemon.log"))
     parser.add_argument("--report-dir", default="tests")
     parser.add_argument("--notes", default="")
     parser.add_argument("--list", action="store_true")

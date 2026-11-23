@@ -40,7 +40,7 @@ class Supervisor:
         self._python = Path(python_executable)
         self._settings_path = Path(settings_path)
         self._local_app_data = Path(local_app_data) if local_app_data else Path(
-            os.environ.get("LOCALAPPDATA", "C:/tmp")
+            os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         )
         self._daemon_executable = Path(daemon_executable) if daemon_executable else None
         self._process: Optional[subprocess.Popen] = None

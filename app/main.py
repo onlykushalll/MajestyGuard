@@ -35,7 +35,7 @@ def default_paths(root: Path | None = None) -> tuple[Path, Path]:
         )
     else:
         application_root = Path(__file__).resolve().parents[1]
-    local_app_data = Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
+    local_app_data = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     return application_root, local_app_data / "MajestyGuard" / "settings.json"
 
 

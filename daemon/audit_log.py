@@ -2,8 +2,10 @@
 
 Each line is a JSON object chained to the previous one by SHA-256, so editing,
 deleting or reordering any earlier line breaks every hash after it and
-``verify_chain`` reports where. It is evidence, not prevention: a user-space
-process can always delete the whole file, but cannot quietly rewrite history.
+``verify_chain`` reports where. It is evidence, not prevention, and only against
+casual edits: the chain is unkeyed, so a process running as the same user can recompute
+every hash after an edit, and dropping the newest lines leaves a valid chain. Treat it
+as a convenience for spotting accidents, not as proof against a determined local attacker.
 
 Privacy: only event names and short non-biometric details are recorded.
 Never scores, embeddings, frames or anything that identifies a face.

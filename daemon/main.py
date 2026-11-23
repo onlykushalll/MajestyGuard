@@ -36,7 +36,7 @@ _ROOT_DIR = _DAEMON_DIR.parent
 _MODELS_DIR = resolve_resource_dir("models")
 sys.path.insert(0, str(_DAEMON_DIR))
 
-_LOG_DIR = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
+_LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _LOG_PATH = _LOG_DIR / "daemon.log"
 _MG_STATE_DIR = Path(
@@ -242,7 +242,7 @@ OVERLAY_WATCHDOG_ENABLED = os.environ.get("MG_OVERLAY_WATCHDOG", "0") == "1"
 OVERLAY_WATCHDOG_INTERVAL_S = _env_float("MG_OVERLAY_WATCHDOG_INTERVAL_S", 2.0, 0.5, 30.0)
 
 BIOMETRIC_PATH = (
-    Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
+    Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     / "MajestyGuard"
     / "biometric.mgd"
 )
@@ -272,12 +272,15 @@ def _resolve_dpapi_helper_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         candidates.append(Path(local_app_data) / "MajestyGuard" / "MajestyGuard.DpapiHelper.exe")
-    candidates.append(
-        Path(
-            r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper"
-            r"\MajestyGuard.DpapiHelper.exe"
+    if not getattr(sys, "frozen", False):
+        # Dev-tree build output only. C:\tmp is writable by every local user, so a packaged
+        # install must never resolve (and run) a helper from there.
+        candidates.append(
+            Path(
+                r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper"
+                r"\MajestyGuard.DpapiHelper.exe"
+            )
         )
-    )
     for candidate in candidates:
         if candidate.exists():
             log.info("DPAPI helper resolved to: %s", candidate)
@@ -600,7 +603,7 @@ class MajestyGuardDaemon:
         Pure disk I/O + parsing only -- must not touch self.face_eng, since it
         may not be initialized yet while this runs. Populates `out` with a
         result dict for _register_enrolled_embeddings to act on afterward."""
-        v2_path = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard" / "embeddings_v2.npy"
+        v2_path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard" / "embeddings_v2.npy"
         if v2_path.exists():
             try:
                 raw = v2_path.read_bytes()
@@ -2285,7 +2288,7 @@ if __name__ == "__main__":
         If we crash while locked, call LockWorkStation() to secure the system using Windows Lock.
         """
         try:
-            _state_dir = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
+            _state_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard"
             _state_dir.mkdir(parents=True, exist_ok=True)
             
             # Read current lock state to see if it was locked

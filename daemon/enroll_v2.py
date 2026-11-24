@@ -759,6 +759,24 @@ def _audit_event(event: str, **detail: Any) -> None:
         pass
 
 
+def _confirm_start_over_up_front() -> bool:
+    """Start over replaces the owner, so ask Windows BEFORE the scan, not after minutes of it."""
+    import enrollment_gate as gate
+
+    if gate.continuity_required():
+        return True
+    status, _ = gate.read_gallery(OUT_FILE)
+    if status == "none" and not gate.leftovers_exist(OUT_FILE):
+        return True                                   # nothing to replace, nothing to protect
+    if gate.authorize_reset_once():
+        return True
+    outcome, message = gate.refusal("reset_not_authorized")
+    print(message)
+    gate.write_result(OUT_DIR, outcome, message)
+    _audit_event("enroll_rejected", reason="reset_not_authorized")
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli", action="store_true", help="Force legacy OpenCV CLI window instead of Apple Face ID Studio")
@@ -771,6 +789,8 @@ def main() -> int:
     parser.add_argument("--duplicate-similarity", type=float, default=0.985)
     parser.add_argument("--min-quality", type=float, default=0.62)
     args = parser.parse_args()
+    if not _confirm_start_over_up_front():
+        return 1
     samples_per_angle = max(1, min(args.samples_per_angle, 6))
     angles = _angles_for_profile(args.profile)
     requested_max_templates = (
@@ -1107,9 +1127,9 @@ def main() -> int:
 
     verdict = _gate.check_continuity(arr, OUT_FILE)
     if not verdict.allowed:
-        print("This does not look like the face that is already enrolled, so nothing was replaced.")
-        print("If your look changed a lot, use 'Start over' in the Control Center (needs your Windows password).")
-        _gate.write_result(OUT_DIR, "rejected_different_person", "new face does not match the stored profile")
+        outcome, message = _gate.refusal(verdict.reason)
+        print(message)
+        _gate.write_result(OUT_DIR, outcome, message)
         _audit_event("enroll_rejected", reason=verdict.reason)
         return 1
     if verdict.reason == "continuity_waived":

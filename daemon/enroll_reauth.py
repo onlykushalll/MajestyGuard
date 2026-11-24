@@ -98,17 +98,20 @@ def _prompt(parent_hwnd: int) -> Optional[Credentials]:  # pragma: no cover - ne
 
 
 def _logon(user: str, domain: str, password: str) -> bool:  # pragma: no cover - needs Windows
-    import ctypes
-    from ctypes import wintypes
-
-    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel = ctypes.WinDLL("kernel32")
+    import win32api
+    import win32con
+    import win32security as security
     if not domain and "\\" in user:                # 'PC\\name' as returned by the dialog
         domain, user = user.split("\\", 1)
-    token = wintypes.HANDLE()
-    LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT = 2, 0
-    ok = advapi.LogonUserW(user, domain or None, password, LOGON32_LOGON_INTERACTIVE,
-                           LOGON32_PROVIDER_DEFAULT, ctypes.byref(token))
-    if ok:
-        kernel.CloseHandle(token)
-    return bool(ok)
+    token = security.LogonUser(user, domain or None, password, win32con.LOGON32_LOGON_INTERACTIVE,
+                               win32con.LOGON32_PROVIDER_DEFAULT)
+    try:
+        current = security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
+            def sid(handle):
+                return security.ConvertSidToStringSid(security.GetTokenInformation(handle, security.TokenUser)[0])
+            return sid(token) == sid(current)
+        finally:
+            current.Close()
+    finally:
+        token.Close()

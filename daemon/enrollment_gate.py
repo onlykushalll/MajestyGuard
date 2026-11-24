@@ -35,7 +35,44 @@ PER_TEMPLATE_MIN = 0.35
 FRACTION_MIN = 0.70
 KEEP_BACKUPS = 2
 
+
+def refusal(reason: str) -> tuple[str, str]:
+    if reason == "different_person":
+        return "rejected_different_person", "The new face did not match the stored profile. Nothing was replaced."
+    if reason == "reset_not_authorized":
+        return "reset_not_authorized", "Windows did not confirm this account. Nothing was replaced."
+    if reason == "existing_unreadable":
+        return "existing_unreadable", "The previous profile could not be read. Use Start over to recover it."
+    return "failed", "The new profile could not be validated. Nothing was replaced."
+
 Unprotect = Callable[[bytes], bytes]
+
+_RESET_DECISION: Optional[bool] = None
+
+
+def authorize_reset_once() -> bool:
+    """Ask Windows once per process: is the person at the keyboard this account's owner?
+
+    Cached, so the writer can ask before the scan starts and check_continuity later reuses the
+    answer instead of interrupting the person with a second prompt after minutes of capturing.
+    """
+    global _RESET_DECISION
+    if _RESET_DECISION is None:
+        try:
+            from enroll_reauth import verify_windows_password
+
+            _RESET_DECISION = bool(verify_windows_password())
+        except Exception:
+            _RESET_DECISION = False
+    return _RESET_DECISION
+
+
+def leftovers_exist(gallery_path: Path) -> bool:
+    """Is there any trace of an earlier profile (backups, metadata, the legacy store)?"""
+    gallery_path = Path(gallery_path)
+    return bool(list_backups(gallery_path)
+                or gallery_path.with_name(gallery_path.stem + "_meta.json").exists()
+                or gallery_path.with_name("biometric.mgd").exists())
 
 
 @dataclass(frozen=True)
@@ -66,7 +103,7 @@ def _normalised(arr: np.ndarray) -> Optional[np.ndarray]:
     if out.ndim != 2 or out.shape[0] < 1 or out.shape[1] < 2 or not np.all(np.isfinite(out)):
         return None
     norms = np.linalg.norm(out, axis=1, keepdims=True)
-    if float(norms.min()) < 1e-6:
+    if not np.all(np.isfinite(norms)) or float(norms.min()) < 1e-6:
         return None
     return out / norms
 
@@ -77,11 +114,15 @@ def read_gallery(path: Path, unprotect: Optional[Unprotect] = None) -> tuple[str
     Never falls back to treating the bytes as plaintext.
     """
     path = Path(path)
-    if not path.is_file():
-        return "none", None
     unprotect = unprotect or _default_unprotect
     try:
-        raw = unprotect(path.read_bytes())
+        blob = path.read_bytes()
+    except FileNotFoundError:
+        return ("unreadable" if path.is_symlink() else "none"), None
+    except OSError:
+        return "unreadable", None
+    try:
+        raw = unprotect(blob)
         arr = _normalised(np.load(io.BytesIO(raw), allow_pickle=False))
     except Exception:
         return "unreadable", None
@@ -94,27 +135,30 @@ def check_continuity(
     *,
     required: Optional[bool] = None,
     unprotect: Optional[Unprotect] = None,
+    authorize_reset: Optional[Callable[[], bool]] = None,
 ) -> Verdict:
     """May ``new_gallery`` replace whatever is stored at ``existing_path``?"""
     new = _normalised(new_gallery)
     if new is None:
         return Verdict(False, "invalid_new_gallery")
     status, old = read_gallery(existing_path, unprotect)
-    if status == "none":
+    existing_path = Path(existing_path)
+    if status == "none" and not leftovers_exist(existing_path):
         return Verdict(True, "first_enrollment")
-    if status == "unreadable":
-        # Nothing usable is protecting the PC today (the daemon already treats this as "not
-        # enrolled"), so there is no owner to be continuous with.
-        return Verdict(True, "existing_unreadable")
+    if not (continuity_required() if required is None else required):
+        # The environment requests recovery. Only the writer's own challenge authorizes it.
+        try:
+            approved = (authorize_reset or authorize_reset_once)()
+        except Exception:
+            approved = False
+        return Verdict(bool(approved), "continuity_waived" if approved else "reset_not_authorized")
+    if status != "ok" or old.shape[1] != new.shape[1]:
+        return Verdict(False, "existing_unreadable")
     best = (new @ old.T).max(axis=1)                    # each new template vs its closest old one
     median = float(np.median(best))
     fraction = float(np.mean(best >= PER_TEMPLATE_MIN))
     if median >= MEDIAN_BEST_MIN and fraction >= FRACTION_MIN:
         return Verdict(True, "continuity_ok", median, fraction)
-    if required is None:
-        required = continuity_required()
-    if not required:
-        return Verdict(True, "continuity_waived", median, fraction)
     return Verdict(False, "different_person", median, fraction)
 
 

@@ -1,4 +1,21 @@
-from app import reauth
+from daemon import enroll_reauth as reauth
+
+
+def test_logon_requires_same_windows_sid_and_releases_handles(monkeypatch):
+    import pytest
+    security = pytest.importorskip("win32security")
+    from unittest.mock import Mock
+
+    login, current = Mock(), Mock()
+    monkeypatch.setattr(security, "LogonUser", lambda *args: login)
+    monkeypatch.setattr(security, "OpenProcessToken", lambda *args: current)
+    monkeypatch.setattr(security, "ConvertSidToStringSid", str)
+    ids = {current: "current", login: "other"}
+    monkeypatch.setattr(security, "GetTokenInformation", lambda token, _: (ids[token], 0))
+    assert not reauth._logon("tester", ".", "test-only")
+    ids[login] = ids[current]
+    assert reauth._logon("tester", ".", "test-only")
+    assert login.Close.call_count == current.Close.call_count == 2
 
 
 def test_cancelled_dialog_is_refused():

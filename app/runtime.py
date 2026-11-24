@@ -304,9 +304,8 @@ class Supervisor:
         """Launch the guided enrollment tool at most once at a time.
 
         By default a new face may only replace the enrolled one if it is recognisably the same
-        person. ``start_over`` waives that, and the caller must have re-authenticated the user
-        with Windows first (see app.reauth). The setting is always passed explicitly so a stray
-        MG_ENROLL_CONTINUITY in this process's own environment cannot weaken the check.
+        person. Start over requests a Windows challenge from the gallery writer; the
+        environment carries a request, never authorization.
         """
         if self._enrollment_process is not None and self._enrollment_process.poll() is None:
             return False

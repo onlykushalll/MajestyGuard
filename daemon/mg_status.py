@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from windows_tools import system_tool
 import sys
 from pathlib import Path
 from typing import Iterable, Mapping
@@ -56,9 +57,9 @@ def _cyan(text: str) -> str:
 
 def _default_process_lines() -> list[str]:
     commands = [
-        ["wmic", "process", "get", "ProcessId,Name,CommandLine"],
+        [system_tool("wmic"), "process", "get", "ProcessId,Name,CommandLine"],
         [
-            "powershell",
+            system_tool("powershell"),
             "-NoProfile",
             "-Command",
             "Get-CimInstance Win32_Process | "
@@ -131,7 +132,7 @@ def _startup_fallback_path() -> Path:
 
 def _smart_app_control_status() -> str:
     command = [
-        "powershell",
+        system_tool("powershell"),
         "-NoProfile",
         "-Command",
         "$paths = @("

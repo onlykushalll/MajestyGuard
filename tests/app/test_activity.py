@@ -26,7 +26,7 @@ def test_digest_matches_the_daemon_so_verification_agrees():
 def test_intact_log_verifies_and_tampering_is_reported(tmp_path):
     path = _log(tmp_path, [("daemon_start", {"pid": 1}), ("soft_lock", {"reason": "idle"}), ("unlock_face", {})])
     ok, count, msg = activity.verify_integrity(path)
-    assert (ok, count) == (True, 3) and "intact" in msg
+    assert (ok, count) == (True, 3) and "consistent" in msg
     lines = path.read_text().splitlines()
     lines[1] = lines[1].replace('"idle"', '"manual"')
     path.write_text("\n".join(lines) + "\n")

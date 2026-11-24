@@ -307,7 +307,7 @@ def test_activity_tab_shows_history_and_flags_tampering(qapp, tmp_path, monkeypa
     log.record("unlock_face")
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
     assert view._stat_last.text() == "just now"
-    assert "intact" in view._integrity_title.text().lower()
+    assert "consistent" in view._integrity_title.text().lower()
     path = tmp_path / "audit.log"
     path.write_text(path.read_text().replace('"idle"', '"away"'))
     view.refresh()
@@ -424,13 +424,9 @@ def test_refresh_keeps_protection_alive_and_says_when_it_restarted(qapp, tmp_pat
     view.close()
 
 
-def test_start_over_needs_windows_password(qapp, tmp_path):
+def test_start_over_requests_writer_authorization(qapp, tmp_path):
     sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
     view = ControlCenter(sup, tmp_path / "settings.json")
-    view._reauth = lambda: False
-    view.start_over_enrollment()
-    assert sup.over_calls == 0 and "not confirmed" in view._enroll_sub.text()
-    view._reauth = lambda: True
     view.start_over_enrollment()
     assert sup.over_calls == 1 and sup.enrollment_calls == 0
     view.close()
@@ -445,12 +441,12 @@ def test_plain_reenroll_never_waives_the_identity_check(qapp, tmp_path):
     view.close()
 
 
-def test_start_over_without_a_profile_is_just_enrolling(qapp, tmp_path):
+def test_start_over_defers_missing_gallery_decision_to_writer(qapp, tmp_path):
     sup = RecoveringSupervisor(RuntimeStatus.STOPPED, enrollment_present=False)
     view = ControlCenter(sup, tmp_path / "settings.json")
     view._reauth = lambda: pytest.fail("no profile to protect, no password needed")
     view.start_over_enrollment()
-    assert sup.enrollment_calls == 1
+    assert sup.over_calls == 1
     view.close()
 
 

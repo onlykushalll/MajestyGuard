@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app import activity, reauth
+from app import activity
 from app import theme as theme_mod
 from app.cc_widgets import (
     Backdrop,
@@ -90,7 +90,7 @@ _PAGES = (
     ("overview", "Overview", "Your protection at a glance"),
     ("protection", "Protection", "How and when this PC locks"),
     ("camera", "Camera", "Health of the camera MajestyGuard watches"),
-    ("activity", "Activity", "A tamper-evident history of lock events"),
+    ("activity", "Activity", "Local history of lock events"),
     ("enrollment", "Enrollment", "Your face profile"),
     ("appearance", "Appearance", "Pick a colour theme"),
     ("about", "About", "Privacy, shortcuts and files"),
@@ -182,7 +182,6 @@ class ControlCenter(QMainWindow):
         self._quitting = False
         self._integrity_key: tuple | None = None
         self._integrity: tuple[bool, int, str] = (True, 0, "")
-        self._reauth = lambda: reauth.verify_windows_password(int(self.winId()))
         theme_mod.set_active(theme_mod.load_choice(self._settings_path.parent / _APPEARANCE_FILE))
         self._build_window()
         self._build_tray()
@@ -463,7 +462,7 @@ class ControlCenter(QMainWindow):
         row.addWidget(self._integrity_dot)
         col = QVBoxLayout()
         col.setSpacing(1)
-        self._integrity_title = _label("History is intact", "rowTitle", banner)
+        self._integrity_title = _label("Local history", "rowTitle", banner)
         self._integrity_meta = _label("", "rowMeta", banner, True)
         col.addWidget(self._integrity_title)
         col.addWidget(self._integrity_meta)
@@ -835,7 +834,8 @@ class ControlCenter(QMainWindow):
             self._integrity = activity.verify_integrity(path)
         ok, count, message = self._integrity
         self._integrity_dot.set_tone("ok" if ok else "bad")
-        self._integrity_title.setText("History is intact" if ok else "History may have been altered")
+        self._integrity_title.setText(("Stored records are consistent" if count else "No records to check")
+                                      if ok else "History may have been altered")
         self._integrity_meta.setText(
             (f"{count} records, each chained to the one before it." if count else message) if ok else message
         )
@@ -907,14 +907,6 @@ class ControlCenter(QMainWindow):
     def start_over_enrollment(self) -> None:
         """Replace the face profile wholesale. Only after Windows confirms the password."""
         if self._refuse_while_locked():
-            return
-        if not self._supervisor.enrollment_present():
-            self.start_reenrollment()
-            return
-        if not self._reauth():
-            message = "Windows password not confirmed. Your face profile was left as it was."
-            self._enroll_sub.setText(message)
-            self._timeout_note.setText(message)
             return
         if self._supervisor.start_enrollment(start_over=True):
             self._enroll_sub.setText("Starting over. Enrollment opened in a separate window.")

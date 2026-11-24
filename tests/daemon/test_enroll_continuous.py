@@ -346,6 +346,6 @@ def test_finish_refuses_to_replace_a_different_persons_gallery(tmp_path, monkeyp
         raise AssertionError("must not commit over a different person")
 
     res = run.finish(collector, dry_run=False, gallery_path=gallery, meta_path=meta, commit=boom)
-    assert not res.ok and "doesn't look like" in res.message
+    assert not res.ok and "did not match" in res.message
     assert gallery.read_bytes() == before
     assert gate.read_result(tmp_path)["outcome"] == "rejected_different_person"

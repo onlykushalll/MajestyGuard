@@ -55,7 +55,9 @@ def test_different_person_is_refused(tmp_path):
 def test_reset_waiver_allows_a_different_face(tmp_path):
     p = tmp_path / "embeddings_v2.npy"
     _save(p, _person(1))
-    v = gate.check_continuity(_person(2), p, unprotect=ident, required=False)
+    assert not gate.check_continuity(_person(2), p, unprotect=ident, required=False,
+                                     authorize_reset=lambda: False).allowed
+    v = gate.check_continuity(_person(2), p, unprotect=ident, required=False, authorize_reset=lambda: True)
     assert v.allowed and v.reason == "continuity_waived"
 
 
@@ -67,17 +69,29 @@ def test_mixed_gallery_with_one_matching_template_is_not_enough(tmp_path):
     assert not gate.check_continuity(sneaky, p, unprotect=ident, required=True).allowed
 
 
-def test_unreadable_existing_gallery_does_not_block_recovery(tmp_path):
+def test_unreadable_existing_gallery_requires_authenticated_recovery(tmp_path):
     p = tmp_path / "embeddings_v2.npy"
     _save(p, _person(1), garbage=True)
     v = gate.check_continuity(_person(2), p, unprotect=ident, required=True)
-    assert v.allowed and v.reason == "existing_unreadable"
+    assert not v.allowed and v.reason == "existing_unreadable"
+    assert gate.check_continuity(_person(2), p, unprotect=ident, required=False, authorize_reset=lambda: True).allowed
 
 
 def test_invalid_new_gallery_refused(tmp_path):
     bad = np.full((3, 512), np.nan)
     assert gate.check_continuity(bad, tmp_path / "x.npy", unprotect=ident).reason == "invalid_new_gallery"
     assert not gate.check_continuity(np.zeros((2, 512)), tmp_path / "x.npy", unprotect=ident).allowed
+
+
+def test_missing_gallery_with_backup_is_not_a_first_enrollment(tmp_path):
+    path, _ = _make_backups(tmp_path, 1)
+    assert not gate.check_continuity(_person(4), path, unprotect=ident, required=True).allowed
+
+
+def test_incompatible_galleries_do_not_crash_or_replace_owner(tmp_path):
+    path = tmp_path / "x.npy"
+    _save(path, _person(2))
+    assert not gate.check_continuity(np.ones((3, 32)), path, unprotect=ident, required=True).allowed
 
 
 def test_continuity_env_switch():
@@ -144,3 +158,41 @@ def test_result_file_roundtrip_and_staleness(tmp_path):
     assert gate.read_result(tmp_path, max_age_s=-1) is None
     (tmp_path / gate.RESULT_FILE).write_text("{oops")
     assert gate.read_result(tmp_path) is None
+
+
+def test_windows_challenge_is_asked_once_and_the_answer_is_reused(monkeypatch):
+    import enroll_reauth
+
+    calls = []
+    monkeypatch.setattr(enroll_reauth, "verify_windows_password", lambda *a: calls.append(1) or True)
+    monkeypatch.setattr(gate, "_RESET_DECISION", None)
+    assert gate.authorize_reset_once() and gate.authorize_reset_once()
+    assert calls == [1]
+
+
+def test_failed_challenge_stays_refused_for_the_process(monkeypatch):
+    import enroll_reauth
+
+    monkeypatch.setattr(enroll_reauth, "verify_windows_password", lambda *a: False)
+    monkeypatch.setattr(gate, "_RESET_DECISION", None)
+    assert gate.authorize_reset_once() is False
+    monkeypatch.setattr(enroll_reauth, "verify_windows_password", lambda *a: True)
+    assert gate.authorize_reset_once() is False
+
+
+def test_a_crashing_challenge_means_refused(monkeypatch):
+    import enroll_reauth
+
+    def boom(*a):
+        raise OSError("credui unavailable")
+
+    monkeypatch.setattr(enroll_reauth, "verify_windows_password", boom)
+    monkeypatch.setattr(gate, "_RESET_DECISION", None)
+    assert gate.authorize_reset_once() is False
+
+
+def test_leftovers_detects_backups_meta_and_legacy_store(tmp_path):
+    g = tmp_path / "embeddings_v2.npy"
+    assert not gate.leftovers_exist(g)
+    (tmp_path / "embeddings_v2_meta.json").write_text("{}")
+    assert gate.leftovers_exist(g)

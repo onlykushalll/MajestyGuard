@@ -66,6 +66,7 @@ _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
 
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
+from camera_io import read_bgr_frame, release_capture
 from cmd_server import CMDServer
 from camera_health import (
     BACKEND_ANY,
@@ -890,11 +891,17 @@ class MajestyGuardDaemon:
         for attempt in range(1, max_attempts + 1):
             log.info("Opening camera index %d (attempt %d/%d)", CAMERA_INDEX, attempt, max_attempts)
             for backend in health.backends():
-                cap = self._new_capture(backend)
-                if cap.isOpened():
-                    self._adopt_camera(cap, backend)
-                    return True
-                cap.release()
+                cap = None
+                try:
+                    cap = self._new_capture(backend)
+                    if cap.isOpened():
+                        self._adopt_camera(cap, backend)
+                        return True
+                except (cv2.error, OSError) as exc:
+                    log.warning("[Camera] %s could not open/configure the device: %s", backend, exc)
+                if self._cap is cap:
+                    self._cap = None
+                release_capture(cap)
             if attempt < max_attempts and retry_delay_s > 0:
                 time.sleep(retry_delay_s)
         self._last_camera_retry_at = time.monotonic()
@@ -909,9 +916,8 @@ class MajestyGuardDaemon:
         return False
 
     def _release_camera(self) -> None:
-        if self._cap:
-            self._cap.release()
-            self._cap = None
+        cap, self._cap = self._cap, None
+        release_capture(cap)
 
     def _queue_session_event(self, event: SessionEvent) -> None:
         self._session_events.put(event)
@@ -1160,8 +1166,8 @@ class MajestyGuardDaemon:
                 if not self._open_camera(max_attempts=max_att, retry_delay_s=delay):
                     time.sleep(0.5)
                     continue
-            ret, frame = self._cap.read()
-            if not ret or frame is None:
+            frame = read_bgr_frame(self._cap)
+            if frame is None:
                 self._handle_camera_read_failure()
                 time.sleep(0.5)
                 continue

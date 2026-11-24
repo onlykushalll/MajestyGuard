@@ -86,7 +86,7 @@ def verify_integrity(path: Path) -> tuple[bool, int, str]:
                 count += 1
     except OSError as exc:
         return False, count, f"Cannot read the log ({exc.__class__.__name__})"
-    return True, count, "History is intact"
+    return True, count, "Stored records are consistent"
 
 
 def _describe(event: str, detail: dict) -> tuple[str, str, str]:
@@ -129,6 +129,8 @@ def read_enroll_result(state_dir: Path, max_age_s: float = 900.0) -> "str | None
         return None
     return {
         "ok": "Last enrollment: saved.",
+        "reset_not_authorized": "Last enrollment: Windows did not confirm this account. Nothing was replaced.",
+        "existing_unreadable": "Last enrollment: previous profile unreadable. Use Start over to recover.",
         "rejected_different_person": "Last enrollment: not saved, the new face did not match your current profile. "
                                      "If your look changed a lot, use Start over.",
         "failed": "Last enrollment: failed. Your previous profile was kept.",

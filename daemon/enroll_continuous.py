@@ -219,9 +219,9 @@ def _check_owner_continuity(result: Any, gallery_path: Path) -> "FinishResult | 
         emb.fill(0)
     if verdict.allowed:
         return None
-    gate.write_result(Path(gallery_path).parent, "rejected_different_person", "new face does not match the stored profile")
-    return FinishResult(False, "This doesn't look like the face already enrolled, so nothing was replaced. "
-                               "If your look changed a lot, use Start over in the Control Center.")
+    outcome, message = gate.refusal(verdict.reason)
+    gate.write_result(Path(gallery_path).parent, outcome, message)
+    return FinishResult(False, message)
 
 
 def finish(

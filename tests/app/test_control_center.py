@@ -386,3 +386,85 @@ def test_unknown_theme_key_falls_back_to_default(qapp, tmp_path):
     view.apply_theme("nope")
     assert theme_mod.active().key == theme_mod.DEFAULT.key
     view.close()
+
+
+class RecoveringSupervisor(FakeSupervisor):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.over_calls = 0
+        self.maintained = 0
+        self.note = ""
+
+    def start_enrollment(self, *, start_over=False):
+        if start_over:
+            self.over_calls += 1
+        else:
+            self.enrollment_calls += 1
+        return True
+
+    def maintain(self):
+        self.maintained += 1
+        return ""
+
+    def recovery_note(self):
+        return self.note
+
+
+def test_refresh_keeps_protection_alive_and_says_when_it_restarted(qapp, tmp_path):
+    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    before = sup.maintained
+    sup.note = "Protection stopped unexpectedly and was restarted automatically."
+    view.refresh()
+    assert sup.maintained == before + 1
+    assert view._detail_label.text() == sup.note
+    sup.note = ""
+    view.refresh()
+    assert "stay inside the local daemon" in view._detail_label.text()
+    view.close()
+
+
+def test_start_over_needs_windows_password(qapp, tmp_path):
+    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._reauth = lambda: False
+    view.start_over_enrollment()
+    assert sup.over_calls == 0 and "not confirmed" in view._enroll_sub.text()
+    view._reauth = lambda: True
+    view.start_over_enrollment()
+    assert sup.over_calls == 1 and sup.enrollment_calls == 0
+    view.close()
+
+
+def test_plain_reenroll_never_waives_the_identity_check(qapp, tmp_path):
+    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._reauth = lambda: pytest.fail("re-enroll must not ask for or skip the password")
+    view.start_reenrollment()
+    assert sup.enrollment_calls == 1 and sup.over_calls == 0
+    view.close()
+
+
+def test_start_over_without_a_profile_is_just_enrolling(qapp, tmp_path):
+    sup = RecoveringSupervisor(RuntimeStatus.STOPPED, enrollment_present=False)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._reauth = lambda: pytest.fail("no profile to protect, no password needed")
+    view.start_over_enrollment()
+    assert sup.enrollment_calls == 1
+    view.close()
+
+
+def test_enrollment_tab_reports_the_last_attempt(qapp, tmp_path):
+    import json
+    import time
+
+    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view.show()
+    view.show_page(4)
+    assert not view._enroll_result.isVisible()
+    (tmp_path / "enroll_result.json").write_text(
+        json.dumps({"outcome": "rejected_different_person", "ts": time.time()}), encoding="utf-8")
+    view.refresh()
+    assert view._enroll_result.isVisible() and "did not match" in view._enroll_result.text()
+    view.close()

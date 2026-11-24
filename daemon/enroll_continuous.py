@@ -208,6 +208,22 @@ _FAIL_COPY = {
 }
 
 
+def _check_owner_continuity(result: Any, gallery_path: Path) -> "FinishResult | None":
+    """None when the new face may replace the stored one, else the refusal to show."""
+    import enrollment_gate as gate
+
+    emb = result.embeddings()
+    try:
+        verdict = gate.check_continuity(emb, gallery_path)
+    finally:
+        emb.fill(0)
+    if verdict.allowed:
+        return None
+    gate.write_result(Path(gallery_path).parent, "rejected_different_person", "new face does not match the stored profile")
+    return FinishResult(False, "This doesn't look like the face already enrolled, so nothing was replaced. "
+                               "If your look changed a lot, use Start over in the Control Center.")
+
+
 def finish(
     collector: CoverageCollector,
     *,
@@ -223,6 +239,9 @@ def finish(
         if dry_run:
             return FinishResult(True, f"Dry run: {len(result.selected)} templates validated; nothing was saved.",
                                 len(result.selected))
+        verdict = _check_owner_continuity(result, gallery_path)
+        if verdict is not None:
+            return verdict
         outcome = commit(result, collector.config, gallery_path=gallery_path, meta_path=meta_path)
         if not outcome.ok:
             tail = "" if getattr(outcome, "rolled_back", True) else " Restoring the previous gallery failed."

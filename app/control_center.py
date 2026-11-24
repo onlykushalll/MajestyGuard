@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app import activity
+from app import activity, reauth
 from app import theme as theme_mod
 from app.cc_widgets import (
     Backdrop,
@@ -182,6 +182,7 @@ class ControlCenter(QMainWindow):
         self._quitting = False
         self._integrity_key: tuple | None = None
         self._integrity: tuple[bool, int, str] = (True, 0, "")
+        self._reauth = lambda: reauth.verify_windows_password(int(self.winId()))
         theme_mod.set_active(theme_mod.load_choice(self._settings_path.parent / _APPEARANCE_FILE))
         self._build_window()
         self._build_tray()
@@ -502,6 +503,27 @@ class ControlCenter(QMainWindow):
         row.addWidget(self._reenroll_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         cbox.addLayout(row)
         box.addWidget(card)
+        self._enroll_result = _label("", "detail", page, True)
+        self._enroll_result.setVisible(False)
+        box.addWidget(self._enroll_result)
+        over, obox = _card(page, margins=(22, 16, 22, 16), spacing=10)
+        orow = QHBoxLayout()
+        orow.setSpacing(16)
+        ocopy = QVBoxLayout()
+        ocopy.setSpacing(2)
+        ocopy.addWidget(_label("Changed your look a lot?", "cardTitle", over))
+        ocopy.addWidget(_label(
+            "Re-enroll only replaces your profile when it is still recognisably you, so nobody else "
+            "can swap themselves in. Start over throws the old profile away and needs your Windows password.",
+            "detail", over, True))
+        orow.addLayout(ocopy, 1)
+        self._startover_btn = QPushButton("Start over...", over)
+        self._startover_btn.setObjectName("secondary")
+        self._startover_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._startover_btn.clicked.connect(self.start_over_enrollment)
+        orow.addWidget(self._startover_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        obox.addLayout(orow)
+        box.addWidget(over)
         tips, tbox = _card(page)
         tbox.addWidget(_label("For a profile that works everywhere", "cardTitle", tips))
         for tip in (
@@ -646,7 +668,7 @@ class ControlCenter(QMainWindow):
 
     # --------------------------------------------------------------- refresh
     def _apply_lock_state(self, locked: bool) -> None:
-        for widget in (self._reenroll_btn, self._timeout_input, self._save_timeout_button, *self._preset_buttons):
+        for widget in (self._reenroll_btn, self._startover_btn, self._timeout_input, self._save_timeout_button, *self._preset_buttons):
             widget.setEnabled(not locked)
         has_toggle = callable(getattr(self._supervisor, "set_windows_lock_enabled", None))
         self._windows_lock_toggle.setEnabled(has_toggle and not locked)
@@ -701,6 +723,12 @@ class ControlCenter(QMainWindow):
         return gallery
 
     def refresh(self) -> None:
+        maintain = getattr(self._supervisor, "maintain", None)
+        if callable(maintain):
+            try:
+                maintain()                      # restart a daemon that died on its own
+            except Exception:
+                pass
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
         if not enrolled:
@@ -710,6 +738,10 @@ class ControlCenter(QMainWindow):
         else:
             text, action, tone_key = _STATUS_COPY[status]
             detail = "Camera and biometric decisions stay inside the local daemon."
+            note = getattr(self._supervisor, "recovery_note", None)
+            recovered = note() if callable(note) else ""
+            if isinstance(recovered, str) and recovered:
+                detail = recovered
             pill, tone = _SIDE_PILL[status]
         self._status_label.setText(text)
         self._detail_label.setText(detail)
@@ -767,6 +799,10 @@ class ControlCenter(QMainWindow):
             self._camera_events.setText("\n".join(cam.events) if cam.events else "No events recorded.")
             self._nav[2].set_badge("" if healthy else "!", tone)
 
+        outcome = activity.read_enroll_result(self._state_dir())
+        self._enroll_result.setVisible(outcome is not None)
+        if outcome is not None:
+            self._enroll_result.setText(outcome)
         gallery = getattr(self, "_gallery_text", "")
         if enrolled:
             self._enroll_hero.set_colors(*_HERO["ok"])
@@ -867,6 +903,23 @@ class ControlCenter(QMainWindow):
         else:
             self._enroll_sub.setText("Enrollment is already running or unavailable.")
             self._timeout_note.setText("Enrollment is already running or unavailable.")
+
+    def start_over_enrollment(self) -> None:
+        """Replace the face profile wholesale. Only after Windows confirms the password."""
+        if self._refuse_while_locked():
+            return
+        if not self._supervisor.enrollment_present():
+            self.start_reenrollment()
+            return
+        if not self._reauth():
+            message = "Windows password not confirmed. Your face profile was left as it was."
+            self._enroll_sub.setText(message)
+            self._timeout_note.setText(message)
+            return
+        if self._supervisor.start_enrollment(start_over=True):
+            self._enroll_sub.setText("Starting over. Enrollment opened in a separate window.")
+        else:
+            self._enroll_sub.setText("Enrollment is already running or unavailable.")
 
     def open_diagnostics(self) -> None:
         directory = self._supervisor.open_log_directory()

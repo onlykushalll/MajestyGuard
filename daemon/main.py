@@ -599,6 +599,31 @@ class MajestyGuardDaemon:
             return None
 
     def _read_enrolled_embeddings_from_disk(self, out: dict) -> None:
+        """Read the gallery; if the live file is unusable, self-heal from our own newest valid
+        backup once (backups are DPAPI-protected copies this app made of an earlier good gallery,
+        so this cannot install a stranger's face) and read again."""
+        self._read_enrolled_embeddings_once(out)
+        if out.get("kind") not in ("none_plaintext_refused", "error"):
+            return
+        try:
+            import enrollment_gate
+
+            v2_path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard" / "embeddings_v2.npy"
+            used = enrollment_gate.restore_latest_valid_backup(
+                v2_path, v2_path.with_name("embeddings_v2_meta.json"))
+        except Exception:
+            log.exception("Gallery self-heal failed")
+            return
+        if used is not None:
+            log.warning("Gallery was unreadable; restored from backup %s", used.name)
+            try:
+                audit_log.record("gallery_restored", backup=used.name)
+            except Exception:
+                pass
+            out.clear()
+            self._read_enrolled_embeddings_once(out)
+
+    def _read_enrolled_embeddings_once(self, out: dict) -> None:
         """Runs on a background thread, in parallel with FaceEngine.initialize().
         Pure disk I/O + parsing only -- must not touch self.face_eng, since it
         may not be initialized yet while this runs. Populates `out` with a

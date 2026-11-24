@@ -88,3 +88,16 @@ def test_camera_health_snapshot_is_parsed_and_bad_files_ignored(tmp_path):
     assert activity.read_camera_health(p) is None
     p.write_text("{broken")
     assert activity.read_camera_health(p) is None
+
+
+def test_enrollment_events_have_plain_titles(tmp_path):
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "daemon"))
+    import audit_log
+
+    log = audit_log.AuditLog(tmp_path / "audit.log")
+    log.record("enroll_rejected", reason="different_person")
+    log.record("gallery_restored", backup="x")
+    items = activity.read_recent(tmp_path / "audit.log", 5)
+    assert [i.title for i in items] == ["Face profile restored from backup", "Re-enrollment refused"]
+    assert items[1].tone == "bad" and "did not match" in items[1].detail

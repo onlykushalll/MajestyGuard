@@ -378,3 +378,119 @@ def test_pause_that_loses_the_race_leaves_settings_unpaused(tmp_path, monkeypatc
     assert supervisor.pause() is False
     assert process.terminated is False
     assert load_settings(tmp_path / "settings.json").paused is False
+
+
+# ---- automatic recovery ------------------------------------------------------------
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _recovering_supervisor(tmp_path, monkeypatch, *, enrolled=True):
+    (tmp_path / "daemon").mkdir()
+    (tmp_path / "daemon" / "main.py").write_text("#", encoding="utf-8")
+    state = tmp_path / "MajestyGuard"
+    state.mkdir()
+    if enrolled:
+        (state / "embeddings_v2.npy").write_bytes(b"x")
+    clock = Clock()
+    sup = Supervisor(tmp_path, Path("python.exe"), state / "settings.json",
+                     local_app_data=tmp_path, clock=clock)
+    spawned = []
+    monkeypatch.setattr(sup, "_spawn", lambda c, e: spawned.append(FakeProcess()) or spawned[-1])
+    assert sup.start()
+    return sup, clock, spawned
+
+
+def test_dead_daemon_is_restarted_after_a_short_pause(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    assert sup.maintain() == ""                       # healthy: nothing to do
+    spawned[0].returncode = 1                         # crash
+    assert sup.maintain() == "waiting" and len(spawned) == 1
+    clock.now += 2.1
+    assert sup.maintain() == "restarted" and len(spawned) == 2
+    assert sup.status() is RuntimeStatus.RUNNING
+    assert "restarted automatically" in sup.recovery_note()
+
+
+def test_restart_pauses_grow_with_repeated_crashes(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    for expected_delay in (2.0, 5.0, 15.0):
+        spawned[-1].returncode = 1
+        assert sup.maintain() == "waiting"
+        clock.now += expected_delay - 0.5
+        assert sup.maintain() == "waiting"            # not yet
+        clock.now += 0.6
+        assert sup.maintain() == "restarted"
+
+
+def test_crash_loop_gives_up_and_a_manual_start_forgives(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    from app.runtime import RECOVERY_DELAYS_S
+
+    for n in range(1, 9):
+        spawned[-1].returncode = 1
+        result = sup.maintain()
+        if result == "gave_up":
+            break
+        clock.now += RECOVERY_DELAYS_S[min(n, len(RECOVERY_DELAYS_S)) - 1] + 0.1
+        assert sup.maintain() == "restarted"
+    assert result == "gave_up"
+    count = len(spawned)
+    clock.now += 500
+    assert sup.maintain() == "gave_up" and len(spawned) == count      # stays stopped
+    assert "keeps stopping" in sup.recovery_note()
+    assert sup.start() is True                                          # user presses Restart
+    assert sup.maintain() == ""
+    spawned[-1].returncode = 1
+    assert sup.maintain() == "waiting"                                  # recovery works again
+
+
+def test_stable_run_clears_crash_history(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    spawned[-1].returncode = 1
+    sup.maintain()
+    clock.now += 2.1
+    assert sup.maintain() == "restarted"
+    clock.now += 200                                  # ran fine for a while
+    assert sup.maintain() == ""
+    spawned[-1].returncode = 1
+    assert sup.maintain() == "waiting"
+    clock.now += 2.1                                  # back to the shortest pause, not the next step
+    assert sup.maintain() == "restarted"
+
+
+def test_user_stopped_or_paused_daemon_is_never_restarted(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    assert sup.stop() is True
+    clock.now += 500
+    assert sup.maintain() == "" and len(spawned) == 1
+    assert sup.start()
+    spawned[-1].returncode = 1
+    sup.pause()
+    assert sup.maintain() == "" and len(spawned) == 2
+
+
+def test_no_restart_without_an_enrollment(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch, enrolled=False)
+    spawned[0].returncode = 1
+    clock.now += 500
+    assert sup.maintain() == "" and len(spawned) == 1
+
+
+def test_start_over_is_the_only_way_to_waive_identity_continuity(tmp_path, monkeypatch):
+    (tmp_path / "daemon").mkdir()
+    (tmp_path / "daemon" / "enroll_v2.py").write_text("#", encoding="utf-8")
+    sup = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json", local_app_data=tmp_path)
+    seen = []
+    monkeypatch.setattr(sup, "_spawn_enrollment", lambda c, e: seen.append(e["MG_ENROLL_CONTINUITY"]) or FakeProcess())
+    monkeypatch.setenv("MG_ENROLL_CONTINUITY", "0")          # a hostile environment must not leak in
+    assert sup.start_enrollment() is True
+    sup._enrollment_process = None
+    assert sup.start_enrollment(start_over=True) is True
+    assert seen == ["1", "0"]

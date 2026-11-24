@@ -324,3 +324,28 @@ def test_session_zeroes_observation_embeddings():
 
     session(FakeCap(), Spy(collector), collector, should_stop=lambda: len(made) >= 15)
     assert made and all(float(np.abs(e).sum()) == 0.0 for e in made)
+
+
+def test_finish_refuses_to_replace_a_different_persons_gallery(tmp_path, monkeypatch):
+    import io
+
+    import enrollment_gate as gate
+
+    monkeypatch.setattr(gate, "_default_unprotect", lambda b: b)     # stand-in for DPAPI
+    collector = ec.CoverageCollector()
+    session(FakeCap(), ScriptedAnalyzer(collector), collector)
+    gallery, meta = tmp_path / "g.npy", tmp_path / "m.json"
+    other = np.random.default_rng(777).standard_normal((6, DIM)).astype(np.float32)
+    other /= np.linalg.norm(other, axis=1, keepdims=True)
+    buf = io.BytesIO()
+    np.save(buf, other, allow_pickle=False)
+    gallery.write_bytes(buf.getvalue())
+    before = gallery.read_bytes()
+
+    def boom(*a, **k):
+        raise AssertionError("must not commit over a different person")
+
+    res = run.finish(collector, dry_run=False, gallery_path=gallery, meta_path=meta, commit=boom)
+    assert not res.ok and "doesn't look like" in res.message
+    assert gallery.read_bytes() == before
+    assert gate.read_result(tmp_path)["outcome"] == "rejected_different_person"

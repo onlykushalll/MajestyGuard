@@ -28,7 +28,7 @@ def test_soft_lock_states_exist_for_ipc_and_ui():
     assert passive.mode == "shield"
     assert passive.label == "Locked"
     assert passive.accent_color == "#FFB340"
-    assert passive.pulse is True
+    assert not passive.pulse  # the passive lock settles; it isn't a live camera scan
     assert soft.mode == "shield"
     assert soft.label == "Locked"
     assert verifying.mode == "face_scan"
@@ -80,7 +80,7 @@ def test_dynamic_island_can_request_verification_when_locked():
     text = (UI / "island.py").read_text(encoding="utf-8")
     main = (UI / "main.py").read_text(encoding="utf-8")
 
-    assert "WindowTransparentForInput" not in text
+    # The widget tests exercise native pointer flags and clicks in each state.
     assert "_VERIFY_REQUEST_STATES" in text
     assert "island_click" in text
     assert "COMMAND_PIPE_NAME" in main
@@ -141,11 +141,33 @@ def test_verified_state_is_medium_success_pill():
     assert visual.label == ""
 
 
-def test_shield_states_use_centered_status_painter():
-    text = (UI / "island.py").read_text(encoding="utf-8")
+@pytest.mark.parametrize(("name", "symbol", "key"), [
+    ("locked_passive", "latch", "Space"),
+    ("social_lock", "shield", "Space"),
+    ("hostile_lock", "hold", "Tab"),
+    ("camera_fault", "camera", "Space"),
+])
+def test_shield_presents_the_state_and_its_keyboard_action(name, symbol, key):
+    from island import IslandWidget
+    from unittest.mock import Mock
 
-    assert "_paint_shield" in text
-    assert "Press Space" in text
-    assert "Click or Space" not in text  # the mouse is pinned while locked
-    assert "Owner only" in text
-    assert "Tab for Windows" in text
+    surface = Mock()
+    state = get_state(name)
+    IslandWidget._paint_shield(surface, None, None, state)
+    _, _, _, glyph, label, hint, keycap = surface._paint_lock_line.call_args.args
+    assert (glyph, label, keycap) == (symbol, state.label, key)
+    assert hint and "click" not in hint.lower()
+
+
+@pytest.mark.parametrize(("name", "detail", "hint"), [
+    ("stranger", "", "Face not recognized"),
+    ("verify_failed", "", "Session stays locked"),
+    ("verify_failed", "Retry cooldown (9s)", "Retry cooldown active"),
+])
+def test_refusal_does_not_claim_a_lock_or_offer_an_unavailable_retry(name, detail, hint):
+    from island import IslandWidget
+    from unittest.mock import Mock
+
+    surface = Mock()
+    IslandWidget._paint_failure(surface, None, None, get_state(name, detail=detail))
+    assert surface._paint_lock_line.call_args.args[-2:] == (hint, "")

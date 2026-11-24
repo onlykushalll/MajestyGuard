@@ -6,6 +6,63 @@ import main as daemon_main
 from companion_ipc import FaceState
 from main import MajestyGuardDaemon, State
 
+
+def test_cold_start_camera_time_excludes_idle_wait(monkeypatch):
+    from unittest.mock import Mock
+
+    daemon = Mock()
+    daemon._idle_check_mode = True
+    daemon._persistent_idle_loop = False
+    daemon.state = State.IDLE
+    daemon._stop.is_set.return_value = False
+    daemon._current_idle_timeout.return_value = 60
+    daemon._start_idle_probe.side_effect = lambda **kw: MajestyGuardDaemon._start_idle_probe(daemon, **kw)
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "CMDServer", Mock())
+    monkeypatch.setattr(daemon_main, "get_idle_seconds", lambda: 65)
+    monkeypatch.setattr(daemon_main.time, "sleep", lambda _: None)
+    ticks = iter([0.0, .4, 65.0, 65.3])
+    monkeypatch.setattr(daemon_main.time, "perf_counter",
+                        lambda: .6 if threading.current_thread().name.startswith("mg-warmup") else next(ticks))
+
+    MajestyGuardDaemon.start(daemon)
+
+    assert daemon._cold_start_ms == {
+        "model_load": 400, "warmup": 200, "camera_open": 300, "total": 900,
+    }
+    daemon._open_camera.assert_called_once_with()
+
+
+def test_late_idle_opens_camera_during_warmup_but_never_scans_early(monkeypatch):
+    from unittest.mock import Mock
+    daemon = Mock()
+    daemon._idle_check_mode = True
+    daemon._persistent_idle_loop = False
+    daemon.state = State.IDLE
+    daemon._stop = threading.Event()
+    daemon._current_idle_timeout.return_value = 60
+    daemon._start_idle_probe.side_effect = lambda **kw: MajestyGuardDaemon._start_idle_probe(daemon, **kw)
+    monkeypatch.setattr(daemon_main, "CMDServer", Mock())
+    monkeypatch.setattr(daemon_main, "get_idle_seconds", lambda: 65)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    camera_open, warm_done = threading.Event(), threading.Event()
+    def warm():
+        assert camera_open.wait(2)
+        warm_done.set()
+    def opening():
+        camera_open.set()
+        return True
+    def broadcast(name, **kw):
+        if name == "scanning":
+            assert warm_done.is_set()
+    daemon._warmup_inference.side_effect = warm
+    daemon._open_camera.side_effect = opening
+    daemon.ipc.broadcast_state.side_effect = broadcast
+    MajestyGuardDaemon.start(daemon)
+    daemon._run_loop.assert_called_once()
+
 @pytest.fixture(autouse=True)
 def mock_timer(monkeypatch):
     class FakeTimer:
@@ -307,6 +364,93 @@ def test_soft_lock_verification_timeout_returns_to_passive_state(monkeypatch):
 
     assert daemon._is_soft_lock_passive() is True
     assert daemon.ipc.states[-1] == ("verify_failed", {})
+
+
+def test_space_after_deadline_cannot_restart_verification_before_cooldown(monkeypatch):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    now["value"] = daemon._soft_lock_verify_until + 0.01
+
+    daemon._handle_ui_command("verify_requested", "space")
+
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_fail_streak == 1
+    assert daemon._verify_cooldown_until > now["value"]
+    assert daemon.face_eng.reset_liveness_calls == 1
+    assert daemon.ipc.states[-1][0] == "verify_failed"
+
+
+def test_space_crossing_deadline_during_dispatch_cannot_replace_pending_attempt(monkeypatch):
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 100.0)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    deadline = daemon._soft_lock_verify_until
+    times = iter((deadline, deadline + 0.01))
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: next(times, deadline + 0.01))
+
+    daemon._handle_ui_command("verify_requested", "space")
+    daemon._expire_soft_lock_verification_if_needed()
+
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_fail_streak == 1
+    assert daemon.face_eng.reset_liveness_calls == 1
+
+
+def test_owner_result_after_deadline_cannot_unlock(monkeypatch, tmp_path):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    deadline = daemon._soft_lock_verify_until
+    now["value"] = deadline - 0.1
+
+    def slow_owner_frame(_frame, *, liveness_mode):
+        assert liveness_mode == "full"
+        now["value"] = deadline + 0.01
+        return _result(score=0.99, liveness=0.99, quality=0.99, height=0.50)
+
+    monkeypatch.setattr(daemon.face_eng, "process_frame", slow_owner_frame)
+
+    daemon._tick_soft_lock(frame=object(), frame_no=1)
+
+    assert daemon.state == State.SOFT_LOCK
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_cooldown_until > now["value"]
+    assert [state for state, _ in daemon.ipc.states] == ["verifying_lock", "verify_failed"]
+
+
+def test_verification_timing_reports_first_stage_times_once(monkeypatch, tmp_path, caplog):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(daemon_main, "BURST_FAST_PATH_SECONDS", 0.5)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    now["value"] = 100.25
+    daemon._mark_verification_phase("camera_ready")
+    now["value"] = 100.50
+    daemon._mark_verification_phase("camera_ready")
+    daemon._mark_verification_phase("first_frame")
+    now["value"] = 101.0
+
+    def owner_frame(_frame, *, liveness_mode):
+        assert liveness_mode == "full"
+        now["value"] = 101.25
+        return _result(score=0.99, liveness=0.99, quality=0.99, height=0.50)
+
+    monkeypatch.setattr(daemon.face_eng, "process_frame", owner_frame)
+    with caplog.at_level("INFO", logger=daemon_main.log.name):
+        daemon._tick_soft_lock(frame=object(), frame_no=1)
+
+    attempts = [line for line in caplog.messages if line.startswith("[VerifyTiming]")]
+    assert attempts == [
+        "[VerifyTiming] outcome=owner_verified camera_ready_ms=250 first_frame_ms=500 "
+        "full_started_ms=1000 first_result_ms=1250 decision_ms=1250"
+    ]
+    assert daemon._verification_phase_ms is None
 
 
 def test_soft_lock_burst_uses_fast_liveness_before_full_path(monkeypatch):

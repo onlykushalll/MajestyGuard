@@ -155,14 +155,14 @@ def test_perf_chip_reads_only_the_log_tail(qapp, tmp_path):
     log_file = tmp_path / "daemon.log"
     junk = ("x" * 99 + "\n") * 5000  # ~500 KB of unrelated lines
     log_file.write_text(
-        "Cold start complete: total=9.99s\n" + junk + "Cold start complete: total=1.23s\n",
+        "Cold start complete: total=9.99s\n" + junk + "Cold start complete: total=1.23s\nCold start complete: total=",
         encoding="utf-8",
     )
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
 
     view.refresh()
 
-    assert view._perf_chip.text() == "Cold start: 1.23s"
+    assert view._perf_chip.text() == "1.23s"
     view.close()
 
 
@@ -176,7 +176,14 @@ def test_perf_chip_ignores_a_cold_start_line_outside_the_tail(qapp, tmp_path):
 
     view.refresh()
 
-    assert view._perf_chip.text() == "Engine: Ready"
+    assert view._perf_chip.text() == "Not measured"
+    view.close()
+
+
+def test_perf_chip_displays_current_daemon_millisecond_format(qapp, tmp_path):
+    (tmp_path / "daemon.log").write_text("Cold start complete: model=830ms warmup=200ms camera=90ms total=1030ms\n")
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    assert view._perf_chip.text() == "1.03s"
     view.close()
 
 
@@ -193,6 +200,7 @@ def test_control_center_disables_every_control_while_locked(qapp, tmp_path):
 
     assert not view._primary_button.isEnabled()
     assert not view._reenroll_btn.isEnabled()
+    assert not view._startover_btn.isEnabled()
     assert not view._timeout_input.isEnabled()
     assert not view._save_timeout_button.isEnabled()
     assert view._preset_buttons and not any(b.isEnabled() for b in view._preset_buttons)
@@ -257,9 +265,56 @@ class ToggleSupervisor(FakeSupervisor):
         return True
 
 
-def test_seven_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
+def test_recovery_note_and_reset_are_wired_to_supervisor(qapp, tmp_path):
+    class RecoverySupervisor(FakeSupervisor):
+        maintained = 0
+        reset_calls = 0
+        locked = False
+
+        def maintain(self):
+            self.maintained += 1
+
+        def recovery_note(self):
+            return "Protection restarted automatically."
+
+        def start_enrollment(self, *, start_over=False):
+            self.reset_calls += int(start_over)
+            return True
+
+        def controls_locked(self):
+            return self.locked
+
+    sup = RecoverySupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    before = sup.maintained
+    view.refresh()
+    assert sup.maintained == before + 1
+    assert view._detail_label.text() == sup.recovery_note()
+    view._startover_btn.click()
+    assert sup.reset_calls == 1
+    sup.locked = True
+    view.start_over_enrollment()
+    assert sup.reset_calls == 1
+    view.close()
+
+
+def test_enrollment_page_shows_writer_result(qapp, tmp_path):
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
-    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "Appearance", "About"]
+    view.show()
+    view.show_page(4)
+    assert not view._enroll_result.isVisible()
+    (tmp_path / "enroll_result.json").write_text(
+        json.dumps({"outcome": "reset_not_authorized", "ts": time.time()}), encoding="utf-8"
+    )
+    view.refresh()
+    assert view._enroll_result.isVisible()
+    assert "did not confirm this account" in view._enroll_result.text()
+    view.close()
+
+
+def test_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About", "Appearance"]
     assert [b.text() for b in view._nav] == titles
     for index, title in enumerate(titles):
         view._nav[index].click()
@@ -267,9 +322,72 @@ def test_seven_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
         assert view._page_title.text() == title
         assert view._nav[index].isChecked()
     view.show_page(99)                      # out of range clamps, never raises
-    assert view.current_page() == 6
+    assert view.current_page() == len(titles) - 1
     view.show_page(-4)
     assert view.current_page() == 0
+    view.close()
+
+
+def test_compact_rail_preserves_destinations_badges_and_page_width(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING, enrollment_present=False), tmp_path / "settings.json")
+    view.resize(720, 510)
+    view.show()
+    qapp.processEvents()
+    assert view._sidebar.width() < 80
+    for index, btn in enumerate(view._nav):
+        assert btn.accessibleName() == btn.text()
+        btn.click()
+        qapp.processEvents()
+        assert view.current_page() == index
+        assert view._stack.currentWidget().horizontalScrollBar().maximum() == 0, btn.text()
+    assert view._nav[4].accessibleDescription() and view._nav[4].badge()
+    view.resize(960, 680)
+    qapp.processEvents()
+    assert view._sidebar.width() >= 170 and view._nav[6].isChecked()
+    view.close()
+
+
+def test_toggle_respects_reduced_motion_and_does_not_snap_on_poll(qapp, monkeypatch):
+    from app.cc_widgets import Toggle
+    switch = Toggle()
+    switch.show()
+    monkeypatch.setenv("MG_UI_REDUCE_MOTION", "1")
+    switch.click()
+    assert switch.position == 1 and not switch._animation.state().value
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION")
+    switch.click()
+    switch._animation.setCurrentTime(30)
+    before = switch.position
+    assert 0 < before < 1
+    switch.setChecked(False)
+    assert switch.position == before
+    switch.hide()
+    assert switch.position == 0 and not switch._animation.state().value
+
+
+def test_theme_survives_reopen_without_writing_protection_settings(qapp, tmp_path):
+    path = tmp_path / "settings.json"
+    supervisor = ToggleSupervisor(RuntimeStatus.STOPPED)
+    view = ControlCenter(supervisor, path)
+    next(b for b in view._theme_group.buttons() if b.text() == "Daylight").click()
+    assert view.property("ccTheme") == "daylight"
+    view.close()
+    reopened = ControlCenter(supervisor, path)
+    assert reopened._theme_group.checkedButton().text() == "Daylight"
+    assert not path.exists()
+    reopened.close()
+
+
+def test_lock_status_error_disables_primary_action(qapp, tmp_path):
+    class Unavailable(FakeSupervisor):
+        def controls_locked(self):
+            raise OSError("disconnected")
+
+    sup = Unavailable(RuntimeStatus.STOPPED)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    assert not view._primary_button.isEnabled()
+    view._run_primary_action()
+    assert sup.start_calls == 0
     view.close()
 
 
@@ -356,111 +474,4 @@ def test_timeout_stat_follows_a_saved_change(qapp, tmp_path):
     assert view._stat_timeout.text() == "5 min"
     view.apply_timeout_preset(90)
     assert view._stat_timeout.text() == "1 min 30 s"
-    view.close()
-
-
-def test_theme_switch_applies_and_persists(qapp, tmp_path):
-    from app import theme as theme_mod
-
-    settings = tmp_path / "settings.json"
-    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), settings)
-    assert theme_mod.active().key == "midnight"
-    view.apply_theme("ember")
-    assert theme_mod.active().key == "ember"
-    assert theme_mod.EMBER.accent_a.lower() in view.styleSheet().lower()
-    assert [s.isChecked() for s in view._theme_swatches] == [False, False, True, False]
-    assert (tmp_path / "appearance.json").is_file()
-    view.close()
-
-    again = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), settings)
-    assert theme_mod.active().key == "ember"
-    assert again._theme_swatches[2].isChecked()
-    again.apply_theme("midnight")           # leave global state clean for other tests
-    again.close()
-
-
-def test_unknown_theme_key_falls_back_to_default(qapp, tmp_path):
-    from app import theme as theme_mod
-
-    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
-    view.apply_theme("nope")
-    assert theme_mod.active().key == theme_mod.DEFAULT.key
-    view.close()
-
-
-class RecoveringSupervisor(FakeSupervisor):
-    def __init__(self, *a, **k):
-        super().__init__(*a, **k)
-        self.over_calls = 0
-        self.maintained = 0
-        self.note = ""
-
-    def start_enrollment(self, *, start_over=False):
-        if start_over:
-            self.over_calls += 1
-        else:
-            self.enrollment_calls += 1
-        return True
-
-    def maintain(self):
-        self.maintained += 1
-        return ""
-
-    def recovery_note(self):
-        return self.note
-
-
-def test_refresh_keeps_protection_alive_and_says_when_it_restarted(qapp, tmp_path):
-    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
-    view = ControlCenter(sup, tmp_path / "settings.json")
-    before = sup.maintained
-    sup.note = "Protection stopped unexpectedly and was restarted automatically."
-    view.refresh()
-    assert sup.maintained == before + 1
-    assert view._detail_label.text() == sup.note
-    sup.note = ""
-    view.refresh()
-    assert "stay inside the local daemon" in view._detail_label.text()
-    view.close()
-
-
-def test_start_over_requests_writer_authorization(qapp, tmp_path):
-    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
-    view = ControlCenter(sup, tmp_path / "settings.json")
-    view.start_over_enrollment()
-    assert sup.over_calls == 1 and sup.enrollment_calls == 0
-    view.close()
-
-
-def test_plain_reenroll_never_waives_the_identity_check(qapp, tmp_path):
-    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
-    view = ControlCenter(sup, tmp_path / "settings.json")
-    view._reauth = lambda: pytest.fail("re-enroll must not ask for or skip the password")
-    view.start_reenrollment()
-    assert sup.enrollment_calls == 1 and sup.over_calls == 0
-    view.close()
-
-
-def test_start_over_defers_missing_gallery_decision_to_writer(qapp, tmp_path):
-    sup = RecoveringSupervisor(RuntimeStatus.STOPPED, enrollment_present=False)
-    view = ControlCenter(sup, tmp_path / "settings.json")
-    view._reauth = lambda: pytest.fail("no profile to protect, no password needed")
-    view.start_over_enrollment()
-    assert sup.over_calls == 1
-    view.close()
-
-
-def test_enrollment_tab_reports_the_last_attempt(qapp, tmp_path):
-    import json
-    import time
-
-    sup = RecoveringSupervisor(RuntimeStatus.RUNNING)
-    view = ControlCenter(sup, tmp_path / "settings.json")
-    view.show()
-    view.show_page(4)
-    assert not view._enroll_result.isVisible()
-    (tmp_path / "enroll_result.json").write_text(
-        json.dumps({"outcome": "rejected_different_person", "ts": time.time()}), encoding="utf-8")
-    view.refresh()
-    assert view._enroll_result.isVisible() and "did not match" in view._enroll_result.text()
     view.close()

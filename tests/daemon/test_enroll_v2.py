@@ -6,6 +6,24 @@ import numpy as np
 import enroll_v2
 
 
+def test_warmup_counts_camera_wait_and_clears_discarded_frames():
+    for read_duration in (0.0, 0.09):
+        elapsed = [0.0]
+        frames = []
+
+        def advance(amount):
+            elapsed[0] += amount
+
+        def read():
+            advance(read_duration)
+            frames.append(np.ones((2, 2), dtype=np.uint8))
+            return True, frames[-1]
+
+        enroll_v2._warm_camera(SimpleNamespace(read=read), now=lambda: elapsed[0], sleep=advance)
+        assert len(frames) == 30 and not any(f.any() for f in frames)
+        assert abs(elapsed[0] - max(2.0, 30 * read_duration)) < 1e-8
+
+
 def test_enrollment_requires_exactly_one_detected_face():
     owner = SimpleNamespace(name="owner")
     stranger = SimpleNamespace(name="stranger")

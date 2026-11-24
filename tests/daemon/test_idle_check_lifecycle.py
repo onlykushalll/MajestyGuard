@@ -74,12 +74,47 @@ def test_idle_check_owner_success_exits_back_to_monitor(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
     daemon = _bare_daemon()
 
+    camera_released = []
+    daemon._cap = SimpleNamespace(release=lambda: camera_released.append(True))
     daemon._finish_idle_check_owner(confidence=0.91, liveness=0.84)
 
+    assert camera_released == [True] and daemon._cap is None
     assert daemon.state == State.ACTIVE
     assert daemon._exit_at > now["value"]
     assert (tmp_path / "idle_check_result.txt").read_text(encoding="utf-8").strip() == "OWNER_VERIFIED"
     assert daemon.ipc.states[-1][0] == "active"
+
+
+def test_idle_probe_never_announces_scanning_after_camera_fault(monkeypatch, tmp_path):
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    daemon = _bare_daemon()
+    daemon._launch_ui = lambda: None
+    def unavailable():
+        daemon._enter_soft_lock("camera_unavailable")
+        daemon.ipc.broadcast_state("camera_fault")
+        return False
+    daemon._open_camera = unavailable
+    daemon._start_idle_probe()
+    assert daemon._idle_check_deadline == 0
+    assert (tmp_path / "idle_check_result.txt").read_text().strip() == "LOCKED"
+    assert [s for s, _ in daemon.ipc.states] == ["idle_detected", "locked_passive", "camera_fault"]
+
+
+def test_monitor_handoff_dwell_does_not_relock_or_reopen_camera(monkeypatch):
+    from unittest.mock import Mock
+    daemon = _bare_daemon()
+    daemon.state = State.ACTIVE
+    daemon._exit_at = 10
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 5)
+    daemon._drain_session_events = Mock()
+    daemon._drain_ui_commands = Mock()
+    daemon._stop_after_time_limit = lambda _: False
+    daemon._stop.wait = lambda _: daemon._stop.set()
+    daemon._open_camera = Mock()
+    daemon._maybe_enter_soft_lock_for_input_idle = Mock()
+    daemon._run_loop()
+    daemon._open_camera.assert_not_called()
+    daemon._maybe_enter_soft_lock_for_input_idle.assert_not_called()
 
 
 def test_idle_check_bypasses_motion_prefilter(monkeypatch):

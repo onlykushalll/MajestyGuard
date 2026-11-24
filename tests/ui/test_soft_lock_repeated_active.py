@@ -43,7 +43,9 @@ def test_repeated_active_during_dissolve_does_not_relock(qapp, hook_calls):
 
     overlay = soft_lock.SoftLockOverlay()
     overlay.apply_state(get_state("soft_locked"))
+    assert overlay._fade.state() == QAbstractAnimation.State.Running
     overlay.apply_state(get_state("active", 0.81, 0.90))
+    assert overlay._fade.state() == QAbstractAnimation.State.Stopped
     assert overlay._dissolve_anim.state() == QAbstractAnimation.State.Running
 
     generation = overlay._lock_generation
@@ -63,9 +65,39 @@ def test_repeated_lock_state_still_reasserts_lock_ownership(qapp, hook_calls):
     overlay = soft_lock.SoftLockOverlay()
     overlay.apply_state(get_state("soft_locked"))
     assert hook_calls.count("install") == 1
+    generation = overlay._lock_generation
 
     overlay.apply_state(get_state("soft_locked"))
 
+    assert overlay._lock_generation == generation
     assert hook_calls.count("install") == 2
     assert hook_calls[-1] == "taskbar:False"
+    overlay.hide()
+
+
+def test_reduced_motion_shortens_fades_and_keeps_hud_still(qapp, hook_calls, monkeypatch):
+    monkeypatch.setenv("MG_UI_REDUCE_MOTION", "1")
+    overlay = soft_lock.SoftLockOverlay()
+    assert overlay._fade.duration() < 180
+    assert overlay._dissolve_anim.duration() < 600
+    phase = overlay._phase
+    overlay._tick()
+    assert overlay._phase == phase
+    overlay.hide()
+
+
+def test_focus_recovery_ends_at_unlock_not_at_end_of_fade(qapp, hook_calls, monkeypatch):
+    from PyQt6.QtCore import QEvent
+
+    overlay = soft_lock.SoftLockOverlay()
+    overlay.apply_state(get_state("soft_locked"))
+    calls = []
+    monkeypatch.setattr(overlay, "_force_topmost", lambda: calls.append("topmost"))
+    monkeypatch.setattr(overlay, "activateWindow", lambda: calls.append("focus"))
+    overlay.event(QEvent(QEvent.Type.WindowDeactivate))
+    assert calls == ["topmost", "focus"]
+    overlay.apply_state(get_state("active"))
+    calls.clear()
+    overlay.event(QEvent(QEvent.Type.WindowDeactivate))
+    assert not calls
     overlay.hide()

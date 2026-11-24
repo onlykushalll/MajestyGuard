@@ -17,7 +17,7 @@ from typing import Optional
 
 _SYNCHRONIZE = 0x00100000
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_WAIT_TIMEOUT = 0x102
+_WAIT_OBJECT_0 = 0
 ENV_VAR = "MG_DAEMON_PID"
 
 
@@ -35,7 +35,8 @@ def process_alive(pid: int) -> bool:
             # access denied) means we cannot tell, so assume it is still there.
             return k32.GetLastError() != 87
         try:
-            return k32.WaitForSingleObject(ctypes.c_void_p(handle), 0) == _WAIT_TIMEOUT
+            # Only a signaled process handle proves exit. A failed probe does not.
+            return k32.WaitForSingleObject(ctypes.c_void_p(handle), 0) != _WAIT_OBJECT_0
         finally:
             k32.CloseHandle(ctypes.c_void_p(handle))
     except Exception:

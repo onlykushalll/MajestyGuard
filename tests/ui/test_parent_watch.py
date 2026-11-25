@@ -1,9 +1,27 @@
-import sys
-from pathlib import Path
+from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ui"))
+import pytest
 
-from parent_watch import OrphanGuard, configured_daemon_pid  # noqa: E402
+import parent_watch
+from parent_watch import OrphanGuard, configured_daemon_pid
+
+
+@pytest.mark.parametrize(
+    ("wait_result", "expected_alive"),
+    [(0, False), (0x102, True), (-1, True)],
+    ids=["signaled", "running", "wait-failed"],
+)
+def test_process_probe_only_reports_exit_for_a_signaled_handle(monkeypatch, wait_result, expected_alive):
+    closed = []
+    kernel32 = SimpleNamespace(
+        OpenProcess=lambda *_: 42,
+        WaitForSingleObject=lambda *_: wait_result,
+        CloseHandle=lambda handle: closed.append(handle.value),
+    )
+    monkeypatch.setattr(parent_watch.ctypes, "windll", SimpleNamespace(kernel32=kernel32), raising=False)
+
+    assert parent_watch.process_alive(1234) is expected_alive
+    assert closed == [42]
 
 
 def test_standalone_ui_never_exits():

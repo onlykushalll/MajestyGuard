@@ -155,14 +155,14 @@ def test_perf_chip_reads_only_the_log_tail(qapp, tmp_path):
     log_file = tmp_path / "daemon.log"
     junk = ("x" * 99 + "\n") * 5000  # ~500 KB of unrelated lines
     log_file.write_text(
-        "Cold start complete: total=9.99s\n" + junk + "Cold start complete: total=1.23s\n",
+        "Cold start complete: total=9.99s\n" + junk + "Cold start complete: total=1.23s\nCold start complete: total=",
         encoding="utf-8",
     )
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
 
     view.refresh()
 
-    assert view._perf_chip.text() == "Cold start: 1.23s"
+    assert view._perf_chip.text() == "1.23s"
     view.close()
 
 
@@ -176,7 +176,7 @@ def test_perf_chip_ignores_a_cold_start_line_outside_the_tail(qapp, tmp_path):
 
     view.refresh()
 
-    assert view._perf_chip.text() == "Engine: Ready"
+    assert view._perf_chip.text() == "Not measured"
     view.close()
 
 
@@ -257,9 +257,9 @@ class ToggleSupervisor(FakeSupervisor):
         return True
 
 
-def test_six_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
+def test_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
-    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About"]
+    titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About", "Appearance"]
     assert [b.text() for b in view._nav] == titles
     for index, title in enumerate(titles):
         view._nav[index].click()
@@ -267,9 +267,35 @@ def test_six_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
         assert view._page_title.text() == title
         assert view._nav[index].isChecked()
     view.show_page(99)                      # out of range clamps, never raises
-    assert view.current_page() == 5
+    assert view.current_page() == len(titles) - 1
     view.show_page(-4)
     assert view.current_page() == 0
+    view.close()
+
+
+def test_theme_survives_reopen_without_writing_protection_settings(qapp, tmp_path):
+    path = tmp_path / "settings.json"
+    supervisor = ToggleSupervisor(RuntimeStatus.STOPPED)
+    view = ControlCenter(supervisor, path)
+    next(b for b in view._theme_group.buttons() if b.text() == "Daylight").click()
+    assert view.property("ccTheme") == "daylight"
+    view.close()
+    reopened = ControlCenter(supervisor, path)
+    assert reopened._theme_group.checkedButton().text() == "Daylight"
+    assert not path.exists()
+    reopened.close()
+
+
+def test_lock_status_error_disables_primary_action(qapp, tmp_path):
+    class Unavailable(FakeSupervisor):
+        def controls_locked(self):
+            raise OSError("disconnected")
+
+    sup = Unavailable(RuntimeStatus.STOPPED)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    assert not view._primary_button.isEnabled()
+    view._run_primary_action()
+    assert sup.start_calls == 0
     view.close()
 
 

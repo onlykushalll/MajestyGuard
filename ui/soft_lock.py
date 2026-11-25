@@ -1257,24 +1257,14 @@ class SoftLockOverlay(QWidget):
                         Qt.AlignmentFlag.AlignLeft)
 
         if mode == "busy":
-            d = 18.0 * s
-            arc = QRectF(rect.right() - radius * 0.62 - d, rect.center().y() - d / 2.0, d, d)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QPen(self._accent(70), 2.4 * s))
-            painter.drawEllipse(arc)
-            pen = QPen(self._accent(230), 2.4 * s)
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            painter.setPen(pen)
-            painter.drawArc(arc, int(-((self._phase * 1080.0) % 360.0) * 16), 100 * 16)
-            path = QPainterPath()
-            path.addRoundedRect(rect.adjusted(-1.5, -1.5, 1.5, 1.5), radius + 1.5, radius + 1.5)
-            sweep_x = rect.left() + rect.width() * ((self._phase * 1.8) % 1.0)
-            sweep = QLinearGradient(sweep_x - 55.0, rect.top(), sweep_x + 55.0, rect.top())
-            sweep.setColorAt(0.0, self._accent(0))
-            sweep.setColorAt(0.5, self._accent(190))
-            sweep.setColorAt(1.0, QColor(100, 210, 255, 0))
-            painter.setPen(QPen(sweep, 2.0))
-            painter.drawPath(path)
+            # Local activity only: leave the glass edge and both labels still.
+            painter.setPen(Qt.PenStyle.NoPen)
+            x = rect.right() - radius * .62 - 19 * s
+            for i in range(4):
+                wave = .5 + .5 * math.cos(math.tau * (self._phase - i * .15))
+                h = (4 + 9 * wave) * s
+                painter.setBrush(self._ink(int(95 + 125 * wave)))
+                painter.drawRoundedRect(QRectF(x + i*5*s, rect.center().y()-h/2, 2.7*s, h), 1.35*s, 1.35*s)
         elif mode == "armed":
             ring = 0.5 + 0.5 * math.sin(self._phase * math.tau * 3.0)
             painter.setBrush(Qt.BrushStyle.NoBrush)

@@ -83,13 +83,13 @@ STATES: dict[str, IslandState] = {
     ),
     "welcome": IslandState(
         name="welcome",
-        width=168,
-        height=34,
-        bg_color="#0D1F0D",
-        border_color="#1A3A1A",
-        accent_color="#34C759",
-        label="Welcome",
-        label_color="#FFFFFF",
+        width=198,
+        height=48,
+        bg_color="#11131B",
+        border_color="#77717E",
+        accent_color="#FFBF88",
+        label="Welcome back",
+        label_color="#FFF6EA",
         mode="welcome",
     ),
     "stranger": IslandState(
@@ -102,7 +102,6 @@ STATES: dict[str, IslandState] = {
         label="Unknown face",
         label_color="#FFD0CC",
         mode="failure",
-        flash=True,
     ),
     "locked": IslandState(
         name="locked",
@@ -124,7 +123,6 @@ STATES: dict[str, IslandState] = {
         label="Locked",
         label_color="#EAF7FF",
         mode="shield",
-        pulse=True,
     ),
     "locked_passive": IslandState(
         name="locked_passive",
@@ -136,7 +134,6 @@ STATES: dict[str, IslandState] = {
         label="Locked",
         label_color="#FFE3B0",
         mode="shield",
-        pulse=True,
     ),
     "verifying_lock": IslandState(
         name="verifying_lock",
@@ -160,7 +157,6 @@ STATES: dict[str, IslandState] = {
         label="Privacy lock",
         label_color="#FFE3B0",
         mode="shield",
-        pulse=True,
     ),
     "hostile_lock": IslandState(
         name="hostile_lock",
@@ -172,8 +168,6 @@ STATES: dict[str, IslandState] = {
         label="Security lock",
         label_color="#FFD0CC",
         mode="shield",
-        pulse=True,
-        flash=True,
     ),
     "verify_failed": IslandState(
         name="verify_failed",
@@ -221,7 +215,6 @@ STATES: dict[str, IslandState] = {
         label="Camera unavailable",
         label_color="#FFE3B0",
         mode="shield",
-        pulse=True,
     ),
     "exit": IslandState(
         name="exit",

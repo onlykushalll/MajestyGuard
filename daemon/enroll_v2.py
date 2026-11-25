@@ -322,6 +322,19 @@ def _single_enrollment_face(faces: list[Any]) -> Any | None:
     return faces[0] if len(faces) == 1 else None
 
 
+def _warm_camera(cap, *, now=time.monotonic, sleep=time.sleep) -> None:
+    # A blocking capture already paces the exposure warm-up. Only wait the
+    # remaining portion of each 15 fps interval on fast/buffered backends.
+    for _ in range(30):
+        started = now()
+        _, frame = cap.read()
+        if isinstance(frame, np.ndarray):
+            frame.fill(0)
+        remaining = (1.0 / 15.0) - (now() - started)
+        if remaining > 0:
+            sleep(remaining)
+
+
 def _schedule_studio_analysis(studio: Any, raw_frame: np.ndarray, analyzer: Any) -> None:
     """Queue analysis from an intact copy before the preview zeroes its input.
 
@@ -813,8 +826,11 @@ def main() -> int:
 
     cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
     if not cap.isOpened():
+        cap.release()
         cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
+        cap.release()
+        liveness.close()
         print(f"Could not open camera {args.camera}.")
         return 1
 
@@ -833,9 +849,7 @@ def main() -> int:
     cap.set(cv2.CAP_PROP_FPS, 15)
 
     print("Warming camera for 2 seconds...")
-    for _ in range(30):
-        cap.read()
-        time.sleep(0.05)
+    _warm_camera(cap)
     print("Ready.")
     print()
 

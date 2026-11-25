@@ -502,6 +502,7 @@ class FaceIdRingCanvas(QWidget):
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         cx, cy = self.width() * 0.5, self.height() * 0.5
         outer_r = min(self.width(), self.height()) * 0.45
         viewport_r = outer_r - 12.0
@@ -551,18 +552,20 @@ class FaceIdRingCanvas(QWidget):
         progress_rect = QRectF(
             cx - outer_r, cy - outer_r, outer_r * 2.0, outer_r * 2.0
         )
-        painter.setPen(QPen(QColor("#DDE3EA"), 3.0))
-        painter.drawArc(progress_rect, 90 * 16, -360 * 16)
         progress_color = QColor(BLUE_HEX)
         if self._ready and self._aligned or self._capture_flash > 0.15:
             progress_color = QColor(GREEN_DEEP_HEX)
-        progress_pen = QPen(progress_color, 3.0)
-        progress_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(progress_pen)
-        if self._overall_progress > 0.0:
-            painter.drawArc(
-                progress_rect, 90 * 16, int(-360 * 16 * self._overall_progress)
-            )
+        # Segments reflect completed views only; preview motion cannot fill them.
+        steps = 36
+        for i in range(steps):
+            start = (90 - i * 360 / steps) * 16
+            span = (360 / steps - 2.3) * 16
+            painter.setPen(QPen(QColor("#CFD6DE"), 3.0, cap=Qt.PenCapStyle.RoundCap))
+            painter.drawArc(progress_rect, round(start), -round(span))
+            fraction = max(0., min(1., self._overall_progress * steps - i))
+            if fraction:
+                painter.setPen(QPen(progress_color, 4.0, cap=Qt.PenCapStyle.RoundCap))
+                painter.drawArc(progress_rect, round(start), -round(span * fraction))
 
         if self._dwell_progress > 0.01:
             dwell_pen = QPen(QColor(GREEN_DEEP_HEX), 2.5)
@@ -590,25 +593,30 @@ class FaceIdRingCanvas(QWidget):
         if dx == 0.0 and dy == 0.0:
             return
 
-        origin = QPointF(cx - dx * radius * 0.28, cy - dy * radius * 0.28)
-        tip = QPointF(cx + dx * radius * 0.28, cy + dy * radius * 0.28)
-        pen = QPen(QColor(BLUE_HEX), 3.0)
+        length = math.hypot(dx, dy)
+        ux, uy = dx / length, dy / length
+        mark = QPointF(cx + ux * radius * .78, cy + uy * radius * .78)
+        r = min(21., max(13., radius * .12))
+        painter.setPen(QPen(QColor(255, 255, 255, 175), 1))
+        painter.setBrush(QColor("#182437"))
+        painter.drawEllipse(mark, r, r)
+        origin = QPointF(mark.x() - ux*r*.48, mark.y() - uy*r*.48)
+        tip = QPointF(mark.x() + ux*r*.51, mark.y() + uy*r*.51)
+        pen = QPen(QColor("#F3F7FF"), 2.1)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen)
         painter.drawLine(origin, tip)
 
-        length = max(1.0, math.hypot(dx, dy))
-        ux, uy = dx / length, dy / length
         px, py = -uy, ux
-        head = radius * 0.065
-        wing = radius * 0.048
+        head = r * .44
+        wing = r * .30
         path = QPainterPath()
         path.moveTo(tip)
         path.lineTo(tip.x() - ux * head + px * wing, tip.y() - uy * head + py * wing)
         path.lineTo(tip.x() - ux * head - px * wing, tip.y() - uy * head - py * wing)
         path.closeSubpath()
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(BLUE_HEX))
+        painter.setBrush(QColor("#F3F7FF"))
         painter.drawPath(path)
 
 

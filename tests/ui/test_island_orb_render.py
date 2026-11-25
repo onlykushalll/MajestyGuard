@@ -333,3 +333,39 @@ def test_island_exit_sequence_duration_budget_fits_inside_daemon_teardown_window
         + island._PILL_FADE_MS
     )
     assert total_exit_ms <= 2250
+
+
+def test_fast_result_cannot_repaint_pending_scan_over_verified(qapp):
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("verifying_lock"))
+    widget.apply_state(get_state("active"))
+    for _ in range(24):
+        widget._tick_animations()
+    assert widget._visible_state.name == "active"
+    widget.close()
+
+
+def test_hidden_pill_stops_frame_clock_after_welcome(qapp):
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("locked_passive"))
+    widget.apply_state(get_state("active"))
+    widget._after_verified()
+    widget._begin_pill_fade()
+    for _ in range(48):
+        widget._tick_animations()
+    assert widget.isHidden()
+    assert not widget._main_timer.isActive()
+    widget.close()
+
+
+def test_reduced_motion_verified_uses_final_geometry_and_glyph(qapp):
+    widget = island.IslandWidget()
+    widget._reduce_motion = True
+    widget.apply_state(get_state("verifying_lock"))
+    widget.apply_state(get_state("active"))
+    for name in ("active", "welcome"):
+        assert (widget._anim_w, widget._anim_h) == (get_state(name).width, get_state(name).height)
+        if name == "active":
+            assert widget._checkmark_progress == 1.0
+            widget._after_verified()
+    widget.close()

@@ -309,6 +309,93 @@ def test_soft_lock_verification_timeout_returns_to_passive_state(monkeypatch):
     assert daemon.ipc.states[-1] == ("verify_failed", {})
 
 
+def test_space_after_deadline_cannot_restart_verification_before_cooldown(monkeypatch):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    now["value"] = daemon._soft_lock_verify_until + 0.01
+
+    daemon._handle_ui_command("verify_requested", "space")
+
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_fail_streak == 1
+    assert daemon._verify_cooldown_until > now["value"]
+    assert daemon.face_eng.reset_liveness_calls == 1
+    assert daemon.ipc.states[-1][0] == "verify_failed"
+
+
+def test_space_crossing_deadline_during_dispatch_cannot_replace_pending_attempt(monkeypatch):
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 100.0)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    deadline = daemon._soft_lock_verify_until
+    times = iter((deadline, deadline + 0.01))
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: next(times, deadline + 0.01))
+
+    daemon._handle_ui_command("verify_requested", "space")
+    daemon._expire_soft_lock_verification_if_needed()
+
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_fail_streak == 1
+    assert daemon.face_eng.reset_liveness_calls == 1
+
+
+def test_owner_result_after_deadline_cannot_unlock(monkeypatch, tmp_path):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    deadline = daemon._soft_lock_verify_until
+    now["value"] = deadline - 0.1
+
+    def slow_owner_frame(_frame, *, liveness_mode):
+        assert liveness_mode == "full"
+        now["value"] = deadline + 0.01
+        return _result(score=0.99, liveness=0.99, quality=0.99, height=0.50)
+
+    monkeypatch.setattr(daemon.face_eng, "process_frame", slow_owner_frame)
+
+    daemon._tick_soft_lock(frame=object(), frame_no=1)
+
+    assert daemon.state == State.SOFT_LOCK
+    assert daemon._soft_lock_verify_until == 0.0
+    assert daemon._verify_cooldown_until > now["value"]
+    assert [state for state, _ in daemon.ipc.states] == ["verifying_lock", "verify_failed"]
+
+
+def test_verification_timing_reports_first_stage_times_once(monkeypatch, tmp_path, caplog):
+    now = {"value": 100.0}
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(daemon_main, "BURST_FAST_PATH_SECONDS", 0.5)
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._start_soft_lock_verification("space")
+    now["value"] = 100.25
+    daemon._mark_verification_phase("camera_ready")
+    now["value"] = 100.50
+    daemon._mark_verification_phase("camera_ready")
+    daemon._mark_verification_phase("first_frame")
+    now["value"] = 101.0
+
+    def owner_frame(_frame, *, liveness_mode):
+        assert liveness_mode == "full"
+        now["value"] = 101.25
+        return _result(score=0.99, liveness=0.99, quality=0.99, height=0.50)
+
+    monkeypatch.setattr(daemon.face_eng, "process_frame", owner_frame)
+    with caplog.at_level("INFO", logger=daemon_main.log.name):
+        daemon._tick_soft_lock(frame=object(), frame_no=1)
+
+    attempts = [line for line in caplog.messages if line.startswith("[VerifyTiming]")]
+    assert attempts == [
+        "[VerifyTiming] outcome=owner_verified camera_ready_ms=250 first_frame_ms=500 "
+        "full_started_ms=1000 first_result_ms=1250 decision_ms=1250"
+    ]
+    assert daemon._verification_phase_ms is None
+
+
 def test_soft_lock_burst_uses_fast_liveness_before_full_path(monkeypatch):
     now = {"value": 100.0}
     monkeypatch.setattr(daemon_main.time, "monotonic", lambda: now["value"])

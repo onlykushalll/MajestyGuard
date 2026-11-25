@@ -355,6 +355,7 @@ class MajestyGuardDaemon:
         self._soft_lock_release_grace_until = 0.0
         self._soft_lock_verify_until = 0.0
         self._soft_lock_verification_started_at = 0.0
+        self._verification_phase_ms: dict[str, int] | None = None
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._verify_cooldown_until = 0.0
@@ -806,7 +807,9 @@ class MajestyGuardDaemon:
         diagnosis = tracker.diagnosis()
         audit_log.record("camera_fault", fault=tracker.fault.value)
         self._camera_fault_active = True
+        self._finish_verification_timing("camera_fault")
         self._soft_lock_verify_until = 0.0
+        self._soft_lock_verification_started_at = 0.0
         self._write_camera_health_snapshot()
         if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
             self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text())
@@ -952,13 +955,9 @@ class MajestyGuardDaemon:
         if self.state not in (State.SOFT_LOCK, State.SOCIAL_LOCK):
             log.debug("Ignoring verify_requested while state=%s", self.state.name)
             return
-        if getattr(self, "_camera_fault_active", False):
-            log.info("[CMD] verify_requested while camera faulted - retrying camera now")
-            self._camera_health_tracker().request_retry_now()
-            self._heal_camera_if_faulted()
-            if getattr(self, "_camera_fault_active", False):
-                return
-        if self._is_soft_lock_verifying():
+        # Commands are drained before the idle/passive loop settles expired attempts.
+        self._expire_soft_lock_verification_if_needed()
+        if getattr(self, "_soft_lock_verify_until", 0.0) > 0.0:
             log.info("[CMD] verify_requested ignored — verification already active")
             return
         cooldown_until = getattr(self, "_verify_cooldown_until", 0.0)
@@ -967,6 +966,12 @@ class MajestyGuardDaemon:
             log.info("[CMD] verify_requested ignored — cooldown active, %.1fs remaining", remaining)
             self.ipc.broadcast_state("verify_failed", detail=f"Retry cooldown ({remaining:.0f}s)")
             return
+        if getattr(self, "_camera_fault_active", False):
+            log.info("[CMD] verify_requested while camera faulted - retrying camera now")
+            self._camera_health_tracker().request_retry_now()
+            self._heal_camera_if_faulted()
+            if getattr(self, "_camera_fault_active", False):
+                return
         self._start_soft_lock_verification(detail or "ui")
 
     def schedule_exit(self) -> None:
@@ -1131,11 +1136,13 @@ class MajestyGuardDaemon:
                 if not self._open_camera(max_attempts=max_att, retry_delay_s=delay):
                     time.sleep(0.5)
                     continue
+            self._mark_verification_phase("camera_ready")
             ret, frame = self._cap.read()
             if not ret or frame is None:
                 self._handle_camera_read_failure()
                 time.sleep(0.5)
                 continue
+            self._mark_verification_phase("first_frame")
             self._camera_read_failures = 0
             if self._observe_frame_health(frame):
                 time.sleep(0.5)
@@ -1703,12 +1710,18 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("scanning")
 
     def _tick_soft_lock(self, frame: np.ndarray, frame_no: int) -> None:
+        if self._expire_soft_lock_verification_if_needed():
+            return
         if not self._is_soft_lock_verifying():
             self.ipc.broadcast_state(self._lock_overlay_state_name(), detail="Press Space to verify")
             return
 
         liveness_mode = self._soft_lock_liveness_mode()
+        self._mark_verification_phase(f"{liveness_mode}_started")
         result = self._require_face_engine().process_frame(frame, liveness_mode=liveness_mode)
+        self._mark_verification_phase("first_result")
+        if self._expire_soft_lock_verification_if_needed():
+            return
         self._broadcast_detection_result(result)
         self._log_frame_result("SoftLock", frame_no, result)
 
@@ -1811,16 +1824,18 @@ class MajestyGuardDaemon:
             and not self._is_soft_lock_verifying()
         )
 
-    def _expire_soft_lock_verification_if_needed(self) -> None:
+    def _expire_soft_lock_verification_if_needed(self) -> bool:
         verify_until = getattr(self, "_soft_lock_verify_until", 0.0)
         if verify_until <= 0.0 or time.monotonic() <= verify_until:
-            return
+            return False
+        self._finish_verification_timing("timeout")
         self._soft_lock_verify_until = 0.0
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
         self._stranger_frames = 0
         self._on_verify_inconclusive()
+        return True
 
     def _on_verify_inconclusive(self) -> None:
         now = time.monotonic()
@@ -1840,6 +1855,7 @@ class MajestyGuardDaemon:
         now = time.monotonic()
         self._soft_lock_verify_until = now + SOFT_LOCK_VERIFY_WINDOW_SECONDS
         self._soft_lock_verification_started_at = now
+        self._verification_phase_ms = {}
         audit_log.record("verify_requested", by=detail)
         self._soft_lock_owner_candidate_frames = 0
         self._soft_lock_fast_pass_frames = 0
@@ -1850,6 +1866,20 @@ class MajestyGuardDaemon:
             self.face_eng.reset_liveness()
         self.ipc.broadcast_state("verifying_lock", detail="Face verification")
         log.info("SoftLock: verification requested by %s", detail)
+
+    def _mark_verification_phase(self, phase: str) -> None:
+        phases = getattr(self, "_verification_phase_ms", None)
+        if phases is not None and phase not in phases:
+            phases[phase] = round((time.monotonic() - self._soft_lock_verification_started_at) * 1000)
+
+    def _finish_verification_timing(self, outcome: str) -> None:
+        phases = getattr(self, "_verification_phase_ms", None)
+        if phases is None:
+            return
+        self._mark_verification_phase("decision")
+        fields = " ".join(f"{phase}_ms={ms}" for phase, ms in phases.items())
+        log.info("[VerifyTiming] outcome=%s %s", outcome, fields)
+        self._verification_phase_ms = None
 
     def _lock_overlay_state_name(self) -> str:
         if self.state == State.SOCIAL_LOCK:
@@ -1885,6 +1915,7 @@ class MajestyGuardDaemon:
             self._write_idle_check_result("LOCKED")
 
     def _clear_soft_lock(self, *, confidence: float, liveness: float) -> None:
+        self._finish_verification_timing("owner_verified")
         self._soft_lock_verify_until = 0.0
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
@@ -1930,6 +1961,7 @@ class MajestyGuardDaemon:
 
     def _soft_lock_stranger(self) -> None:
         was_locked = self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK)
+        self._finish_verification_timing("stranger")
         self._soft_lock_verify_until = 0.0
         self._soft_lock_verification_started_at = 0.0
         self._soft_lock_owner_candidate_frames = 0
@@ -2151,6 +2183,7 @@ class MajestyGuardDaemon:
         self.state = new_state
         if old != new_state:
             audit_log.record("state", frm=old.name, to=new_state.name)
+            self._finish_verification_timing("state_changed")
         # getattr default handles bare/partially-constructed instances (e.g.
         # test helpers that skip __init__) so this never raises AttributeError.
         self._transition_generation = getattr(self, "_transition_generation", 0) + 1

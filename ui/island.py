@@ -106,6 +106,7 @@ class IslandWidget(QWidget):
         # Orb phase is wall-clock-like seconds, so each style's speed stays
         # meaningfully expressed in revolutions per second.
         self._phase = 0.0
+        self._welcome_started_at = None
         self._flash_count = 0
         self._reduce_motion = os.environ.get("MG_UI_REDUCE_MOTION", "0") == "1"
 
@@ -266,7 +267,7 @@ class IslandWidget(QWidget):
                 pass
 
         # Track when we enter verifying_lock state to enforce minimum duration
-        if state.name == "verifying_lock":
+        if state.name == "verifying_lock" and self._state.name != "verifying_lock":
             self._verify_start_time = time.monotonic()
 
         previous_mode = self._state.mode
@@ -290,6 +291,8 @@ class IslandWidget(QWidget):
         # status label; collapsing them to the idle pill clips that feedback.
         self._target_w = float(state.width)
         self._target_h = float(state.height)
+        if state.mode == "welcome":
+            self._welcome_started_at = time.monotonic()
         
         # Reset previous animation states
         self._anim_flash_active = False
@@ -390,8 +393,13 @@ class IslandWidget(QWidget):
                 pass
         self._in_exit_sequence = True
         self._show_welcome_after_verification = show_welcome
+        # A quick result supersedes any label still crossfading into view.
+        self._pending_state = None
+        self._anim_content_active = False
+        self._content_fading_out = False
+        self._content_slide_y = 0.0
         self._pill_opacity = 1.0
-        self._checkmark_progress = 0.0
+        self._checkmark_progress = 1.0 if self._reduce_motion else 0.0
 
         # Only an actual soft-lock return has an overlay to dissolve.
         if show_welcome and self._on_overlay_dissolve is not None:
@@ -414,6 +422,8 @@ class IslandWidget(QWidget):
             self._anim_morph_active = True
             self._anim_checkmark_active = True
             self._start_animation_timer()
+        else:
+            self._snap_exit_geometry()
 
         # After the confirmed dwell, either welcome a returned owner or fade.
         self._verified_dwell_timer.start(_VERIFIED_DURATION_MS)
@@ -427,6 +437,7 @@ class IslandWidget(QWidget):
     def _begin_welcome(self) -> None:
         """Transition pill to Welcome state."""
         welcome = get_state("welcome")
+        self._welcome_started_at = time.monotonic()
         self._state = welcome
         self._visible_state = welcome
         self._target_w = float(welcome.width)
@@ -438,9 +449,18 @@ class IslandWidget(QWidget):
             self._anim_morph_active = True
             self._anim_orb_active = True
             self._start_animation_timer()
+        else:
+            self._snap_exit_geometry()
 
         self.update()
         self._welcome_dwell_timer.start(_WELCOME_DWELL_MS)
+
+    def _snap_exit_geometry(self) -> None:
+        self._anim_w, self._anim_h = self._target_w, self._target_h
+        self._vel_w = self._vel_h = 0.0
+        self._anim_morph_active = False
+        self._update_mask()
+        self.update()
 
     def _begin_pill_fade(self) -> None:
         """Instant Sucking Blipp: Rapidly contract pill to a dot and snap hide."""
@@ -463,6 +483,9 @@ class IslandWidget(QWidget):
         self._pill_opacity = 1.0
         self._anim_pill_fade_active = False
         self._anim_checkmark_active = False
+        self._anim_orb_active = False
+        self._anim_morph_active = False
+        self._main_timer.stop()
         # Reset to idle
         idle = get_state("idle")
         self._state = idle
@@ -533,6 +556,8 @@ class IslandWidget(QWidget):
         if self._anim_orb_active:
             self._phase = (self._phase + frame_ms / 1000.0) % 60.0
             updated = True
+            if self._state.mode == "welcome" and self._welcome_time() >= 1.0:
+                self._anim_orb_active = False
 
         if self._anim_shake_active:
             self._shake_phase += (0.016 * dt_scale) / 0.45
@@ -545,7 +570,7 @@ class IslandWidget(QWidget):
                     self._deferred_lock_state = None
                     self.apply_state(deferred)
             else:
-                self._shake_offset = 12.0 * math.sin(self._shake_phase * math.pi * 5.0) * (1.0 - self._shake_phase)
+                self._shake_offset = 3.6 * math.sin(self._shake_phase * math.tau * 1.5) * (1.0 - self._shake_phase) ** 2
             updated = True
 
         target_hover = 1.0 if (self._hovered and self._state.name in _VERIFY_REQUEST_STATES and not self._reduce_motion) else 0.0
@@ -706,7 +731,7 @@ class IslandWidget(QWidget):
         width = int(round(self._anim_w)) + hover_w
         height = int(round(self._anim_h)) + hover_h
         # Draw centering the active pill width in our fixed 500px window
-        pill_x = (500 - width) // 2 + int(round(self._shake_offset))
+        pill_x = (500 - width) // 2
         rect = QRect(pill_x, _PAD - hover_h // 2, width, height)
         radius = self._corner_radius(height, state)
 
@@ -728,17 +753,8 @@ class IslandWidget(QWidget):
         if self._alpha <= 0.05:
             return
 
-        # Welcome state: subtle green glow
+        # The folded ribbon supplies its own light. Keep the silhouette quiet.
         if state.mode == "welcome":
-            accent = QColor(state.accent_color)
-            pulse = 0.7  # gentle static glow
-            accent.setAlpha(int(self._alpha * (12 + 8 * pulse)))
-            for offset in (6, 3):
-                glow_path = QPainterPath()
-                gr = rect.adjusted(-offset, -offset, offset, offset)
-                glow_path.addRoundedRect(float(gr.x()), float(gr.y()), float(gr.width()), float(gr.height()),
-                                         radius + offset, radius + offset)
-                painter.fillPath(glow_path, accent)
             return
 
         # Dot-scan (scanning) state: amber glow with pulse
@@ -955,6 +971,21 @@ class IslandWidget(QWidget):
         """3D depth-shaded dotted globe with a meridian sweep."""
         _, speed, _, spread, dot_px = _ORB_STYLES["searching"]
         phase = 0.0 if self._reduce_motion else self._phase
+        # A meridian moves across fixed latitude dots; the whole badge never spins.
+        painter.save()
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        shell = QRectF(cx-icon_radius, cy-icon_radius, icon_radius*2, icon_radius*2)
+        painter.setPen(QPen(QColor(233, 184, 123, int(98*self._content_alpha*self._alpha)), .85))
+        painter.drawEllipse(shell)
+        painter.setPen(Qt.PenStyle.NoPen)
+        meridian = math.sin(phase * math.tau * speed * 1.8)
+        light = QLinearGradient(shell.topLeft(), shell.topRight())
+        peak = .5 + .30*meridian
+        for pos, opacity in ((0, 0), (peak-.17, 0), (peak, 120), (peak+.17, 0), (1, 0)):
+            light.setColorAt(pos, QColor(251, 196, 114, int(opacity*self._alpha*self._content_alpha)))
+        painter.setBrush(light)
+        painter.drawEllipse(shell)
+        painter.restore()
         for latitude, count in ((-0.46, 4), (0.0, 6), (0.46, 4)):
             ring_radius = icon_radius * spread * math.sqrt(1.0 - latitude * latitude)
             ring_height = max(0.9, icon_radius * 0.095)
@@ -983,27 +1014,31 @@ class IslandWidget(QWidget):
             )
 
     def _paint_working_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
-        """Three 3D tilted orbital bands with depth-modulated particles and a core nucleus."""
-        _, speed, _, spread, dot_px = _ORB_STYLES["working"]
-        phase = 0.0 if self._reduce_motion else self._phase
-        self._paint_orb_dot(painter, cx, cy, dot_px * 1.12, 0.88)
-        for band, tilt in enumerate((-0.72, 0.0, 0.72)):
-            cos_tilt = math.cos(tilt)
-            sin_tilt = math.sin(tilt)
-            for index in range(5):
-                theta = math.tau * (index / 5 + phase * speed * (1.0 + band * 0.08))
-                x = math.cos(theta) * icon_radius * spread
-                y = math.sin(theta) * icon_radius * 0.28
-                z_depth = math.sin(theta)
-                depth_scale = (1.12 if index == 0 else 0.88) * (0.84 + 0.22 * (0.5 + 0.5 * z_depth))
-                depth_alpha = (0.52 + 0.38 * (0.5 + 0.5 * z_depth)) + 0.05 * band
-                self._paint_orb_dot(
-                    painter,
-                    cx + x * cos_tilt - y * sin_tilt,
-                    cy + x * sin_tilt + y * cos_tilt,
-                    dot_px * depth_scale,
-                    min(1.0, depth_alpha),
-                )
+        """Six satin aperture blades breathe around a fixed point of focus."""
+        phase = .25 if self._reduce_motion else self._phase
+        opening = .31 + .10 * math.cos(phase * math.tau * .64)
+        painter.save()
+        painter.setOpacity(painter.opacity() * self._alpha * self._content_alpha)
+        painter.translate(cx, cy)
+        painter.scale(icon_radius, icon_radius)
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(6):
+            painter.save()
+            painter.rotate(60 * i)
+            blade = QPainterPath(QPointF(0, -1))
+            blade.quadTo(.53, -.99, .866, -.5)
+            blade.lineTo(opening, .06)
+            blade.lineTo(.48 * opening, -.86 * opening)
+            blade.closeSubpath()
+            foil = QLinearGradient(QPointF(.1, -.98), QPointF(opening, .06))
+            foil.setColorAt(0, QColor(198-i*9, 239-i*5, 243-i*4))
+            foil.setColorAt(.42, QColor("#789BAA"))
+            foil.setColorAt(1, QColor("#364759"))
+            painter.fillPath(blade, foil)
+            painter.restore()
+        painter.setBrush(QColor("#D9F7F7"))
+        painter.drawEllipse(QPointF(), .09, .09)
+        painter.restore()
 
     def _paint_resolving_orb(self, painter: QPainter, cx: float, cy: float, icon_radius: float) -> None:
         """A calm, compact formation for the brief successful-return acknowledgement."""
@@ -1077,12 +1112,14 @@ class IslandWidget(QWidget):
         self._paint_orb_badge(painter, rect, state, "searching")
 
     def _paint_verified(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Checkmark draw animation with a soft emerald radial bloom."""
+        """Resolve to a seal and a word, optically centred as one unit."""
         progress = self._checkmark_progress
         if progress <= 0.0:
             return
 
-        cx = float(rect.center().x())
+        painter.setFont(_font(10, QFont.Weight.DemiBold))
+        title_width = painter.fontMetrics().horizontalAdvance("Verified")
+        cx = rect.center().x() - (title_width + 13) / 2
         cy = float(rect.center().y())
 
         # Soft emerald bloom behind the checkmark
@@ -1124,15 +1161,76 @@ class IslandWidget(QWidget):
             path.lineTo(end)
 
         painter.drawPath(path)
+        painter.save()
+        painter.setOpacity(painter.opacity() * self._alpha * self._content_alpha * min(1., progress * 2))
+        painter.setPen(QColor("#E2F9E9"))
+        painter.drawText(QRectF(cx + 17, rect.top(), title_width + 4, rect.height()),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "Verified")
+        painter.restore()
+
+    def _welcome_time(self) -> float:
+        if self._reduce_motion or self._welcome_started_at is None:
+            return 1.0
+        return min(1.0, max(0.0, (time.monotonic() - self._welcome_started_at) / .82))
 
     def _paint_welcome(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        """Welcome badge — final state before pill fades. 'resolving'
-        style: dots settled into a calm, converged formation, completing
-        the visual arc (listening -> working -> checkmark -> resolving ->
-        blipp exit) instead of a bare centered text label."""
-        if not state.label:
+        """First light: pleated spectral foil opens once, then rests."""
+        if not state.label or self._content_alpha <= 0 or rect.width() < 100:
             return
-        self._paint_orb_badge(painter, rect, state, "resolving", icon_diameter=26.0)
+        t = self._welcome_time()
+        eased = 1 - (1 - t) ** 3
+        painter.save()
+        capsule = QPainterPath()
+        capsule.addRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), rect.height()/2, rect.height()/2)
+        painter.setClipPath(capsule, Qt.ClipOperation.IntersectClip)
+        painter.setOpacity(painter.opacity() * self._alpha * self._content_alpha)
+        cx, cy = rect.left() + 38, rect.center().y() + 12
+        wash = QRadialGradient(QPointF(cx, cy), 58)
+        wash.setColorAt(0, QColor(234, 128, 104, 55))
+        wash.setColorAt(.55, QColor(156, 117, 204, 25))
+        wash.setColorAt(1, QColor(100, 122, 176, 0))
+        painter.fillPath(capsule, wash)
+
+        # Shared hinge, alternating lit/dark folds. In the final silhouette
+        # the tips form a single rising arc, not a ring of separate particles.
+        palette = ("#7893EC", "#A4A2F8", "#D2A8E6", "#F2AFBB", "#FFBC92", "#FFE4AF")
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(12):
+            f = i / 11
+            unfurl = 1 - (1 - min(1., max(0., (t - .13*f)/.87)))**3
+            a = math.radians(-99 + (-63 + 146*f) * (.075 + .925*unfurl))
+            span = math.radians(1.7 + 11.5*unfurl)
+            length = (20 + 7*math.sin(math.pi*f)) * (.72 + .28*unfurl)
+            def tip(angle, scale):
+                return QPointF(cx + math.cos(angle)*length*scale, cy + math.sin(angle)*length*scale)
+            left, ridge, right = tip(a-span*.55, .89), tip(a, 1), tip(a+span*.65, .91)
+            color = QColor(palette[i//2])
+            root = QPointF(cx + (f-.5)*4, cy)
+            for start, end, lit in ((left, ridge, False), (ridge, right, True)):
+                fold = QPainterPath(root)
+                fold.lineTo(start); fold.lineTo(end); fold.closeSubpath()
+                foil = QLinearGradient(root, ridge)
+                foil.setColorAt(0, color.darker(265))
+                foil.setColorAt(.54, color.darker(126 if lit else 190))
+                foil.setColorAt(1, color.lighter(118) if lit else color)
+                painter.fillPath(fold, foil)
+
+        reveal = 1 - (1 - min(1., t/.48))**3
+        painter.setOpacity(painter.opacity() * (.15 + .85*reveal))
+        painter.setFont(_font(12, QFont.Weight.DemiBold))
+        painter.setPen(QColor(state.label_color))
+        tx = cx + 30 + 6*(1-reveal)
+        painter.drawText(QRectF(tx, rect.top(), rect.right()-tx-6, rect.height()),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, state.label)
+        # An edge reflection travels under the type once; never a progress bar.
+        if 0 < t < 1:
+            x = rect.left() + rect.width() * (.22 + .68*eased)
+            glint = QLinearGradient(QPointF(x-26, 0), QPointF(x+18, 0))
+            glint.setColorAt(0, Qt.GlobalColor.transparent)
+            glint.setColorAt(.64, QColor(255, 221, 183, int(140*math.sin(math.pi*t))))
+            glint.setColorAt(1, Qt.GlobalColor.transparent)
+            painter.fillRect(QRectF(x-26, rect.bottom()-1.7, 44, 1.3), glint)
+        painter.restore()
 
     # ── Existing pill content modes (preserved) ─────────────────────────
 
@@ -1166,14 +1264,14 @@ class IslandWidget(QWidget):
         ring = QRectF(rect.left() + 14, rect.top() + 8, 38, 38)
         self._draw_scan_lens(painter, ring, quality, state.accent_color)
 
-        self._draw_text(painter, rect.adjusted(66, 6, -16, -28), state.label, state.label_color, 10)
+        self._draw_text(painter, rect.adjusted(60, 6, -116, -28), state.label, state.label_color, 10)
         detail = state.detail or "Hold center"
-        self._draw_text(painter, rect.adjusted(66, 24, -16, -10), detail, "#8E8E93", 8)
+        self._draw_text(painter, rect.adjusted(60, 24, -116, -10), detail, "#B1B5BE", 8)
 
         chips = [
-            ("ID", state.confidence if state.confidence is not None else 0.0),
-            ("LIVE", state.liveness if state.liveness is not None else 0.0),
-            ("POS", state.face_position if state.face_position is not None else 0.0),
+            ("ID", state.confidence),
+            ("LIVE", state.liveness),
+            ("POS", state.face_position),
         ]
         chip_x = rect.right() - 110
         chip_y = rect.top() + 9
@@ -1181,7 +1279,7 @@ class IslandWidget(QWidget):
             self._draw_score_chip(painter, chip_x, chip_y + idx * 13, label, value, state.accent_color)
 
     def _paint_face_scan(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        icon_size = min(rect.height() - 16, 32)
+        icon_size = min(rect.height() - 16, 39)
         icon_cx = rect.left() + 15 + icon_size / 2
         icon_cy = rect.center().y()
         self._paint_orb(painter, icon_cx, icon_cy, icon_size / 2, "working")
@@ -1221,7 +1319,7 @@ class IslandWidget(QWidget):
         phase = self._scan_phase if not self._reduce_motion else 0.72
         segment_width = max(24.0, rect.width() * 0.34)
         travel = max(1.0, rect.width() - segment_width)
-        x = rect.left() + travel * phase
+        x = rect.left() + travel * (.5 - .5 * math.cos(math.tau * phase))
         accent = QColor(state.accent_color)
         accent.setAlpha(int(self._alpha * self._content_alpha * 190))
         highlight = QLinearGradient(QPointF(x, rect.center().y()), QPointF(x + segment_width, rect.center().y()))
@@ -1361,58 +1459,95 @@ class IslandWidget(QWidget):
                         state.label, state.label_color, 10)
 
     def _paint_failure(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
-        accent = QColor(state.accent_color)
-        accent.setAlphaF(self._alpha * self._content_alpha)
-        content_w = 148
-        start_x = rect.center().x() - content_w / 2
-        icon = QRectF(start_x, rect.center().y() - 14, 28, 28)
-        painter.setPen(QPen(accent, 2.2))
-        painter.setBrush(QColor(255, 69, 58, int(self._alpha * self._content_alpha * 24)))
-        painter.drawRoundedRect(icon, 8, 8)
-
-        pen = QPen(accent, 2.6)
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-        painter.setPen(pen)
-        painter.drawLine(QPointF(icon.left() + 8, icon.top() + 8), QPointF(icon.right() - 8, icon.bottom() - 8))
-        painter.drawLine(QPointF(icon.right() - 8, icon.top() + 8), QPointF(icon.left() + 8, icon.bottom() - 8))
-
-        self._draw_text(painter, QRect(int(start_x + 40), rect.top(), 116, rect.height()),
-                        state.label, state.label_color, 9)
+        if state.name == "stranger":
+            title, hint = "No match", "Face not recognized"
+        else:
+            title = "Not verified"
+            hint = "Retry cooldown active" if state.detail.startswith("Retry cooldown") else "Session stays locked"
+        self._paint_lock_line(painter, rect, state, "reject", title, hint, "")
 
     def _paint_shield(self, painter: QPainter, rect: QRect, state: IslandState) -> None:
+        symbol, hint, key = {
+            "social_lock": ("shield", "Owner verification required", "Space"),
+            "hostile_lock": ("hold", "Use Windows sign-in", "Tab"),
+            "camera_fault": ("camera", "Retry camera check", "Space"),
+        }.get(state.name, ("latch", "Verify to resume", "Space"))
+        self._paint_lock_line(painter, rect, state, symbol, state.label, hint, key)
+
+    def _paint_lock_line(self, p, rect, state, symbol, title, hint, key):
+        # One anchored layout through the morph. Reveal once it has room;
+        # don't squeeze a long label into the preceding narrow pill.
+        aperture = min(1.0, max(0.0, (rect.width() / state.width - .66) / .34))
+        if aperture <= 0:
+            return
+        p.save()
+        p.setClipRect(rect.adjusted(8, 3, -8, -3), Qt.ClipOperation.IntersectClip)
+        p.setOpacity(p.opacity() * self._alpha * self._content_alpha * aperture)
+        cx, cy = rect.left() + 32.0, rect.center().y() + .5
         accent = QColor(state.accent_color)
-        accent.setAlphaF(self._alpha * self._content_alpha)
-        label = state.label
-        detail = {
-            "locked_passive": "Press Space",
-            "soft_locked": "Press Space",
-            "social_lock": "Owner only",
-            "hostile_lock": "Tab for Windows",
-            "camera_fault": "Space to retry",
-        }.get(state.name, state.detail)
-
-        content_w = 174 if state.name in {"locked_passive", "soft_locked", "camera_fault"} else 214
-        start_x = rect.center().x() - content_w / 2
-        badge = QRectF(start_x, rect.center().y() - 16, 32, 32)
-        painter.setPen(QPen(accent, 1.8))
-        painter.setBrush(QColor(accent.red(), accent.green(), accent.blue(),
-                                int(self._alpha * self._content_alpha * 18)))
-        painter.drawRoundedRect(badge, 12, 12)
-
-        # 'guarded' orb style: a near-static, evenly-spread particle ring
-        # instead of one bare dot -- same calm/stable role, consistent
-        # with the rest of the redesign's texture, while the badge ring
-        # and fill above (untouched) still carry the per-state accent
-        # color, matching the same "color stays on the container, icon
-        # stays monochrome" split already used for scanning/verifying/
-        # welcome.
-        self._paint_orb(painter, badge.center().x(), badge.center().y(), 11.0, "guarded")
-
-        text_x = int(start_x + 43)
-        self._draw_text(painter, QRect(text_x, rect.top() + 12, int(content_w - 44), 20),
-                        label, state.label_color, 10)
-        self._draw_text(painter, QRect(text_x, rect.top() + 31, int(content_w - 44), 16),
-                        detail, "#8E8E93", 7)
+        glass = QColor(accent)
+        glass.setAlpha(48)
+        finish = QLinearGradient(QPointF(cx-11, cy-13), QPointF(cx+11, cy+13))
+        finish.setColorAt(0, glass)
+        finish.setColorAt(.62, QColor(255, 255, 255, 9))
+        finish.setColorAt(1, QColor(255, 255, 255, 20))
+        p.setPen(QPen(QColor(255, 255, 255, 38), .8))
+        p.setBrush(finish)
+        p.drawEllipse(QPointF(cx, cy), 15.5, 15.5)
+        p.save()
+        p.translate(cx + (self._shake_offset if symbol == "reject" else 0), cy)
+        p.setPen(QPen(accent, 1.65, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if symbol == "latch":
+            p.drawArc(QRectF(-4, -8, 8, 10), 0, 180 * 16)
+            p.drawRoundedRect(QRectF(-6.5, -3.5, 13, 10.5), 2.5, 2.5)
+            p.drawLine(QPointF(0, .5), QPointF(0, 3))
+        elif symbol in ("shield", "hold"):
+            shield = QPainterPath(QPointF(0, -8))
+            shield.lineTo(7, -5)
+            shield.cubicTo(7, 2, 5.8, 5, 0, 8.5)
+            shield.cubicTo(-5.8, 5, -7, 2, -7, -5)
+            shield.closeSubpath()
+            p.drawPath(shield)
+            if symbol == "hold":
+                p.drawLine(QPointF(0, -3.5), QPointF(0, .5))
+                p.drawPoint(QPointF(0, 3))
+        elif symbol == "camera":
+            p.drawRoundedRect(QRectF(-7.5, -4.5, 15, 10), 2, 2)
+            p.drawEllipse(QPointF(), 2.5, 2.5)
+            p.drawLine(QPointF(-7, -7), QPointF(7, 7))
+        else:
+            # Broken scan brackets and a dash read as no match, not an emergency.
+            for dx in (-1, 1):
+                for dy in (-1, 1):
+                    p.drawPolyline([QPointF(dx * 7, dy * 3), QPointF(dx * 7, dy * 6),
+                                    QPointF(dx * 4, dy * 6)])
+            p.drawLine(QPointF(-2.8, 0), QPointF(2.8, 0))
+        p.restore()
+        align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        tx = int(cx + 24)
+        right = rect.right() - 16
+        if key:
+            p.setFont(_font(8, QFont.Weight.DemiBold))
+            kw = p.fontMetrics().horizontalAdvance(key) + 16
+            cap = QRectF(right - kw, cy - 10, kw, 20)
+            p.setBrush(QColor(255, 255, 255, 12))
+            p.setPen(QPen(QColor(255, 255, 255, 66), 1))
+            p.drawRoundedRect(cap, 5, 5)
+            p.setPen(QColor("#D7D9DA"))
+            p.drawText(cap.toRect(), Qt.AlignmentFlag.AlignCenter, key)
+            right = int(cap.left()) - 8
+        width = max(0, right - tx)
+        for text, px, weight, color, top, height in (
+            (title, 11, QFont.Weight.DemiBold, "#F4F5F5", -18, 22),
+            (hint, 8, QFont.Weight.Normal, "#B2B7BA", 3, 16),
+        ):
+            p.setFont(_font(px, weight))
+            p.setPen(QColor(color))
+            p.drawText(QRect(tx, int(cy + top), width, height), align,
+                       p.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width))
+        p.restore()
 
     # ── Drawing helpers ─────────────────────────────────────────────────
 
@@ -1461,8 +1596,9 @@ class IslandWidget(QWidget):
         painter.setBrush(core)
         painter.drawEllipse(rect.adjusted(14, 14, -14, -14))
 
-    def _draw_score_chip(self, painter: QPainter, x: int, y: int, label: str, value: float, color: str) -> None:
-        value = max(0.0, min(1.0, value))
+    def _draw_score_chip(self, painter: QPainter, x: int, y: int, label: str, value: float | None, color: str) -> None:
+        missing = value is None
+        value = max(0.0, min(1.0, value or 0.0))
         bg = QColor(255, 255, 255, int(self._alpha * self._content_alpha * 18))
         border = QColor(color)
         border.setAlpha(int(self._alpha * self._content_alpha * (70 + 60 * value)))
@@ -1477,6 +1613,9 @@ class IslandWidget(QWidget):
         painter.setFont(_font(6.5, QFont.Weight.Medium))
         painter.drawText(QRect(int(x + 6), int(y - 1), 32, 12), Qt.AlignmentFlag.AlignVCenter, label)
 
+        if missing:
+            painter.drawText(QRect(x + 39, y - 1, 41, 12), Qt.AlignmentFlag.AlignCenter, "--")
+            return
         fill = QColor(color)
         fill.setAlpha(int(self._alpha * self._content_alpha * 190))
         painter.setPen(Qt.PenStyle.NoPen)

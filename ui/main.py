@@ -355,4 +355,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        # All UI modules have imported, but no window, IPC client or hooks exist.
+        raise SystemExit(0)
     main()

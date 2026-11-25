@@ -45,3 +45,13 @@ def test_bundle_script_has_an_explicit_no_camera_smoke_test():
     assert "MG_ENABLE_LOCK" in text
     assert '"0"' in text
     assert 'MajestyGuard\\MajestyGuard.exe' in text
+
+
+def test_packager_checks_each_entrypoint_without_starting_protection():
+    text = (ROOT / "packaging" / "build_bundle.ps1").read_text(encoding="utf-8")
+    assert "foreach ($exe in @($ControlCenter, $Daemon, $Island))" in text
+    assert '"--collect-all", "onnxruntime"' not in text
+    assert '"--exclude-module", "onnx.reference"' in text
+    for path in ["daemon/main.py", "ui/main.py"]:
+        entry = (ROOT / path).read_text(encoding="utf-8").split('if __name__ == "__main__":')[-1]
+        assert entry.index('"--self-test"') < entry.rindex("main()")

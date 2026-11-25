@@ -260,6 +260,8 @@ def _build_analyzer(args, config: CoverageConfig):
     import cv2  # noqa: F401
     from diagnostic_common import enhance_frame, resolve_resource_dir
     from face_quality import measure_face_quality
+    from import_speedups import skip_unused_insightface_modules
+    skip_unused_insightface_modules()
     from insightface.app import FaceAnalysis
     from liveness_detector import LivenessDetector
 

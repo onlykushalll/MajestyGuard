@@ -14,12 +14,15 @@ param(
 
     [string]$OutputDir,
 
-    [switch]$CreateInstaller
+    [switch]$CreateInstaller,
+    [switch]$FinalizeExistingBundle,
+    [string]$VCRedistDir
 )
 
 $ErrorActionPreference = "Stop"
 $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+    if ($FinalizeExistingBundle) { throw "Pass the explicit -OutputDir of the existing build." }
     $OutputDir = Join-Path $Root "dist"
 }
 $PythonPath = (Resolve-Path $PythonPath).Path
@@ -66,75 +69,92 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller is required. Install packaging\requirements-build.txt into the selected Python environment."
 }
 
-if ((Test-Path -LiteralPath $BundleRoot) -and (Get-ChildItem -Force -LiteralPath $BundleRoot | Select-Object -First 1)) {
-    throw "Bundle directory is not empty. Pass a fresh -OutputDir to preserve previous builds."
+function New-FrozenBundle {
+    if ((Test-Path -LiteralPath $BundleRoot) -and (Get-ChildItem -Force -LiteralPath $BundleRoot | Select-Object -First 1)) {
+        throw "Bundle directory is not empty. Pass a fresh -OutputDir to preserve previous builds."
+    }
+    New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
+
+    $commonArguments = @(
+        "--noconfirm",
+        "--clean",
+        "--paths", $Root,
+        "--workpath", $BuildRoot,
+        "--specpath", $BuildRoot,
+        "--distpath", $BundleRoot
+    )
+
+    # Keep every executable in an onedir bundle. This avoids one-file archive
+    # extraction at launch and gives Qt's native DLLs a stable adjacent layout.
+    Invoke-PyInstaller ($commonArguments + @(
+        "--onedir",
+        "--windowed",
+        "--name", "MajestyGuard",
+        "--hidden-import", "ui.tokens",
+        (Join-Path $Root "app\main.py")
+    ))
+
+    Invoke-PyInstaller ($commonArguments + @(
+        "--onedir",
+        "--windowed",
+        "--name", "MajestyGuardDaemon",
+        "--paths", (Join-Path $Root "daemon"),
+        "--paths", (Join-Path $Root "ui"),
+        "--collect-data", "mediapipe",
+        "--collect-binaries", "onnxruntime",
+        "--exclude-module", "onnx.reference",
+        "--exclude-module", "onnxruntime.quantization",
+        "--exclude-module", "insightface.app.mask_renderer",
+        "--hidden-import", "enroll_continuous",
+        "--hidden-import", "coverage_enrollment_window",
+        "--add-data", "$ModelDir;models",
+        "--add-data", "$InsightFaceModelDir;models_insightface",
+        "--add-data", "$Root\ui;ui",
+        (Join-Path $Root "daemon\main.py")
+    ))
+
+    Invoke-PyInstaller ($commonArguments + @(
+        "--onedir",
+        "--windowed",
+        "--name", "MajestyGuardUI",
+        (Join-Path $Root "ui\main.py")
+    ))
 }
-New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
 
-$commonArguments = @(
-    "--noconfirm",
-    "--clean",
-    "--paths", $Root,
-    "--workpath", $BuildRoot,
-    "--specpath", $BuildRoot,
-    "--distpath", $BundleRoot
-)
-
-# Keep every executable in an onedir bundle. This avoids one-file archive
-# extraction at launch and gives Qt's native DLLs a stable adjacent layout.
-Invoke-PyInstaller ($commonArguments + @(
-    "--onedir",
-    "--windowed",
-    "--name", "MajestyGuard",
-    "--hidden-import", "ui.tokens",
-    (Join-Path $Root "app\main.py")
-))
-
-Invoke-PyInstaller ($commonArguments + @(
-    "--onedir",
-    "--windowed",
-    "--name", "MajestyGuardDaemon",
-    "--paths", (Join-Path $Root "daemon"),
-    "--paths", (Join-Path $Root "ui"),
-    "--collect-all", "mediapipe",
-    "--collect-all", "insightface",
-    "--collect-all", "onnxruntime",
-    "--hidden-import", "enroll_continuous",
-    "--hidden-import", "coverage_enrollment_window",
-    "--add-data", "$ModelDir;models",
-    "--add-data", "$InsightFaceModelDir;models_insightface",
-    "--add-data", "$Root\ui;ui",
-    (Join-Path $Root "daemon\main.py")
-))
-
-Invoke-PyInstaller ($commonArguments + @(
-    "--onedir",
-    "--windowed",
-    "--name", "MajestyGuardUI",
-    (Join-Path $Root "ui\main.py")
-))
+if (-not $FinalizeExistingBundle) { New-FrozenBundle }
 
 $ControlCenter = Join-Path $BundleRoot "MajestyGuard\MajestyGuard.exe"
+$Daemon = Join-Path $BundleRoot "MajestyGuardDaemon\MajestyGuardDaemon.exe"
+$Island = Join-Path $BundleRoot "MajestyGuardUI\MajestyGuardUI.exe"
 Require-File $ControlCenter "Control Center executable"
-Require-File (Join-Path $BundleRoot "MajestyGuardDaemon\MajestyGuardDaemon.exe") "daemon executable"
-Require-File (Join-Path $BundleRoot "MajestyGuardUI\MajestyGuardUI.exe") "overlay executable"
+Require-File $Daemon "daemon executable"
+Require-File $Island "overlay executable"
+$resources = Join-Path (Split-Path -Parent $Daemon) "_internal"
+& $PythonPath (Join-Path $PSScriptRoot "verify_model_bundle.py") $resources (Join-Path $Root "models\model_hashes.reference.json")
+if ($LASTEXITCODE -ne 0) { throw "Packaged model verification failed." }
+& (Join-Path $PSScriptRoot "install_bundle_crt.ps1") -DaemonDir (Split-Path -Parent $Daemon) -VCRedistDir $VCRedistDir
 
 # Import the packaged Qt widgets without creating QApplication, a window,
 # camera, daemon, or soft-lock instance.
 $previousLockSetting = $env:MG_ENABLE_LOCK
+$previousAppData = $env:LOCALAPPDATA
 try {
     $env:MG_ENABLE_LOCK = "0"
-    $smoke = Start-Process -FilePath $ControlCenter -ArgumentList "--self-test" -WindowStyle Hidden -PassThru
-    if (-not $smoke.WaitForExit(45000)) {
-        $smoke.Kill()
-        throw "Control Center packaged import smoke test timed out."
-    }
-    if ($smoke.ExitCode -ne 0) {
-        throw "Control Center packaged import smoke test failed with exit code $($smoke.ExitCode)."
+    $env:LOCALAPPDATA = (New-Item -ItemType Directory -Force -Path (Join-Path $OutputDir "smoke-state")).FullName
+    foreach ($exe in @($ControlCenter, $Daemon, $Island)) {
+        $smoke = Start-Process -FilePath $exe -ArgumentList "--self-test" -WindowStyle Hidden -PassThru
+        if (-not $smoke.WaitForExit(45000)) {
+            $smoke.Kill()
+            throw "Packaged import smoke test timed out: $exe"
+        }
+        if ($smoke.ExitCode -ne 0) {
+            throw "Packaged import smoke test failed ($($smoke.ExitCode)): $exe"
+        }
     }
 }
 finally {
     $env:MG_ENABLE_LOCK = $previousLockSetting
+    $env:LOCALAPPDATA = $previousAppData
 }
 
 if ($CreateInstaller) {

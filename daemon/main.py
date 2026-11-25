@@ -26,7 +26,8 @@ import audit_log
 import model_prehash
 
 # Start hashing the ONNX packs now so it overlaps with the heavy imports below.
-model_prehash.start(resolve_resource_dir("models_insightface"), resolve_resource_dir("models"))
+if sys.argv[1:] != ["--self-test"]:
+    model_prehash.start(resolve_resource_dir("models_insightface"), resolve_resource_dir("models"))
 
 import cv2
 import numpy as np
@@ -2337,6 +2338,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--self-test"]:
+        from import_speedups import skip_unused_insightface_modules
+        skip_unused_insightface_modules()
+        from insightface.app import FaceAnalysis
+        from mediapipe.python.solutions.face_mesh import FaceMesh
+        from onnxruntime import get_available_providers
+        sys.path.insert(0, str(resolve_resource_dir("ui")))
+        import coverage_enrollment_window
+        import enroll_continuous
+        raise SystemExit(0 if "CPUExecutionProvider" in get_available_providers() else 1)
     if "--enroll" in sys.argv:
         sys.argv.remove("--enroll")
         import enroll_continuous

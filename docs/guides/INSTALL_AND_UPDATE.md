@@ -3,12 +3,14 @@
 ## What the Installer Provides
 
 The installer deploys the active current-user MajestyGuard application to
-`%LOCALAPPDATA%\Programs\MajestyGuard` and starts the Control Center at that
-user's next Windows logon. It does not install a service, modify Windows sign-in,
+`%LOCALAPPDATA%\Programs\MajestyGuard` and adds a Start menu shortcut.
+It does not enable automatic startup, install a service, modify Windows sign-in,
 or activate a real Windows lock automatically.
 
-On first run, open the Control Center from the notification area. If enrollment
-is missing, select **Re-enroll face** and complete the guided local workflow.
+Open MajestyGuard from Start. If enrollment is missing, select **Enroll face**
+and follow the moving dot until the coverage ring fills. A normal update does
+not require re-enrollment. **Start over** is separate and, for an existing
+profile, requires confirmation of the current Windows account before scanning.
 Start protection only after reviewing the camera flow and soft-lock behavior on
 your own device.
 
@@ -39,9 +41,9 @@ under `%LOCALAPPDATA%\MajestyGuard`.
 
 ## Uninstalling
 
-Standard uninstall removes the installed application and the current-user
-startup registration. It preserves enrollment by default so a later reinstall
-can continue using the same local data.
+Standard uninstall removes the installed application and its Start menu shortcut.
+Choosing **No** at the optional data-removal prompt preserves enrollment.
+Silent uninstall also leaves enrollment intact.
 
 The uninstaller explicitly asks **Remove enrollment and diagnostic data?**.
 Choose **Yes** only when you intend to delete `embeddings_v2.npy`,

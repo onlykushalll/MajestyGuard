@@ -316,7 +316,7 @@ class Supervisor:
         if packaged_daemon is not None and packaged_daemon.is_file():
             cmd = [str(packaged_daemon), "--enroll"]
         else:
-            entrypoint = self._root / "daemon" / "enroll_v2.py"
+            entrypoint = self._root / "daemon" / "enroll_continuous.py"
             if not entrypoint.is_file():
                 return False
             cmd = [str(self._python), str(entrypoint)]

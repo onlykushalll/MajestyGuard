@@ -89,6 +89,22 @@ def continuity_required(env: Optional[Mapping[str, str]] = None) -> bool:
     return str(env.get(CONTINUITY_ENV, "1")).strip() != "0"
 
 
+def prepare_enrollment(path: Path) -> bool:
+    """Prompt before opening the camera for a replacement. The final writer still checks."""
+    if continuity_required():
+        return True
+    status, gallery = read_gallery(path)
+    if gallery is not None:
+        gallery.fill(0)
+    if status == "none" and not leftovers_exist(path):
+        return True
+    if authorize_reset_once():
+        return True
+    outcome, message = refusal("reset_not_authorized")
+    write_result(path.parent, outcome, message)
+    return False
+
+
 def _default_unprotect(data: bytes) -> bytes:
     import win32crypt  # type: ignore
 

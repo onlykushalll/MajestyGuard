@@ -2339,8 +2339,8 @@ def main() -> None:
 if __name__ == "__main__":
     if "--enroll" in sys.argv:
         sys.argv.remove("--enroll")
-        import enroll_v2
-        raise SystemExit(enroll_v2.main())
+        import enroll_continuous
+        raise SystemExit(enroll_continuous.main())
 
     import ctypes
     _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")

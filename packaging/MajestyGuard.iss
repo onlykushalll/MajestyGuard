@@ -25,12 +25,13 @@ Source: "{#BundleRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Name: "{autoprograms}\MajestyGuard"; Filename: "{app}\MajestyGuard\MajestyGuard.exe"
 
 [Code]
-function InitializeUninstall(): Boolean;
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   RemoveData: Integer;
   DataDirectory: String;
 begin
-  Result := True;
+  if (CurUninstallStep <> usPostUninstall) or UninstallSilent then
+    Exit;
   DataDirectory := ExpandConstant('{localappdata}\MajestyGuard');
 
   if not DirExists(DataDirectory) then
@@ -41,7 +42,7 @@ begin
     'This removes embeddings_v2.npy, biometric.mgd, settings, and local logs. ' +
     'Choose No to preserve enrollment for a future reinstall.',
     mbConfirmation,
-    MB_YESNO
+    MB_YESNO or MB_DEFBUTTON2
   );
   if RemoveData = IDYES then
     DelTree(DataDirectory, True, True, True);

@@ -30,5 +30,7 @@ def test_uninstall_preserves_enrollment_unless_explicitly_selected():
     text = (ROOT / "packaging" / "MajestyGuard.iss").read_text(encoding="utf-8")
 
     assert "Remove enrollment and diagnostic data" in text
+    assert "usPostUninstall" in text and "UninstallSilent" in text
+    assert "MB_DEFBUTTON2" in text
     assert "embeddings_v2.npy" in text
     assert "{localappdata}\\MajestyGuard" in text

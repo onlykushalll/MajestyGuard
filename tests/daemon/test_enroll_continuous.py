@@ -349,3 +349,15 @@ def test_finish_refuses_to_replace_a_different_persons_gallery(tmp_path, monkeyp
     assert not res.ok and "did not match" in res.message
     assert gallery.read_bytes() == before
     assert gate.read_result(tmp_path)["outcome"] == "rejected_different_person"
+
+
+def test_cancelled_reset_stops_before_models_or_camera(tmp_path, monkeypatch):
+    import enrollment_gate as gate
+    gallery = tmp_path / "embeddings_v2.npy"
+    gallery.write_bytes(b"unreadable existing gallery")
+    monkeypatch.setenv(gate.CONTINUITY_ENV, "0")
+    monkeypatch.setattr(gate, "authorize_reset_once", lambda: False)
+    monkeypatch.setattr(run, "_build_analyzer", lambda *_: pytest.fail("scan started after cancellation"))
+    assert run.main(["--gallery", str(gallery)]) == 1
+    assert gate.read_result(tmp_path)["outcome"] == "reset_not_authorized"
+    assert gallery.read_bytes() == b"unreadable existing gallery"

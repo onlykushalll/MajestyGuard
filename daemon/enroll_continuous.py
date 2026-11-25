@@ -288,6 +288,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--meta", type=Path, default=OUT_META_FILE)
     args = parser.parse_args(argv)
 
+    import enrollment_gate as gate
+    if not args.dry_run and not gate.prepare_enrollment(args.gallery):
+        return 1
+
     import cv2
     from diagnostic_common import resolve_resource_dir
 
@@ -303,26 +307,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     CoverageEnrollmentWindow = importlib.import_module("coverage_enrollment_window").CoverageEnrollmentWindow
 
     config = CoverageConfig()
-    analyzer, liveness = _build_analyzer(args, config)
-
-    cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        print(f"Could not open camera {args.camera}.")
-        try:
-            liveness.close()
-        except Exception:
-            pass
-        return 1
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 15)
-    for _ in range(10):                     # let auto-exposure settle
-        cap.read()
-
     qt_app = QApplication.instance() or QApplication(sys.argv)
     window = CoverageEnrollmentWindow()
+    window.title.setText("Preparing face setup")
+    window.hint.setText("Loading the recognition engine on this PC.")
     collector = CoverageCollector(config)
     stop = threading.Event()
     window.cancel_requested.connect(stop.set)
@@ -339,16 +327,36 @@ def main(argv: Optional[list[str]] = None) -> int:
         window.preview_signal.emit(img)
 
     def worker() -> None:
-        deadline = time.monotonic() + args.max_seconds if args.max_seconds > 0 else None
+        cap = liveness = None
         try:
+            analyzer, liveness = _build_analyzer(args, config)
+            if stop.is_set():
+                window.result_signal.emit(False, "Enrollment canceled. Nothing was saved.")
+                return
+            cap = cv2.VideoCapture(args.camera, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                cap = cv2.VideoCapture(args.camera)
+            if not cap.isOpened():
+                window.result_signal.emit(False, "Camera unavailable. Close other camera apps and try again.")
+                return
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cap.set(cv2.CAP_PROP_FPS, 15)
+            deadline = time.monotonic() + args.max_seconds if args.max_seconds > 0 else None
             outcome = run_session(
                 cap, analyzer, collector, emit_preview=emit_preview,
                 emit_feedback=window.feedback_signal.emit, should_stop=stop.is_set,
                 deadline=deadline, make_preview=make_preview,
             )
-            if outcome.reason == "complete":
+            if stop.is_set():
+                window.result_signal.emit(False, "Enrollment canceled. Nothing was saved.")
+            elif outcome.reason == "complete":
                 res = finish(collector, dry_run=args.dry_run, gallery_path=args.gallery, meta_path=args.meta)
                 status["code"] = 0 if res.ok else 1
+                if res.ok and not args.dry_run:
+                    gate.prune_backups([args.gallery, args.meta])
+                    gate.write_result(args.gallery.parent, "ok", f"{res.selected} templates")
                 window.result_signal.emit(res.ok, res.message)
             else:
                 copy = {
@@ -361,9 +369,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             collector.discard()
             window.result_signal.emit(False, f"Enrollment failed: {exc}. Nothing was saved.")
         finally:
-            cap.release()
+            collector.discard()
+            if cap is not None:
+                cap.release()
             try:
-                liveness.close()
+                if liveness is not None:
+                    liveness.close()
             except Exception:
                 pass
 
@@ -373,7 +384,6 @@ def main(argv: Optional[list[str]] = None) -> int:
     qt_app.exec()
     stop.set()
     thread.join(timeout=5.0)
-    collector.discard()
     return status["code"]
 
 

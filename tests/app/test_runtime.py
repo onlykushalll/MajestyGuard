@@ -88,7 +88,7 @@ def test_supervisor_stops_its_owned_daemon(tmp_path):
 
 
 def test_start_enrollment_refuses_a_second_concurrent_enrollment(tmp_path, monkeypatch):
-    enrollment_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enrollment_entry = tmp_path / "daemon" / "enroll_continuous.py"
     enrollment_entry.parent.mkdir()
     enrollment_entry.write_text("# test entrypoint", encoding="utf-8")
     supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
@@ -97,9 +97,9 @@ def test_start_enrollment_refuses_a_second_concurrent_enrollment(tmp_path, monke
     assert supervisor.start_enrollment() is False
 
 
-def test_start_enrollment_uses_existing_guided_script(tmp_path, monkeypatch):
+def test_start_enrollment_uses_continuous_coverage_script(tmp_path, monkeypatch):
     launched = {}
-    enrollment_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enrollment_entry = tmp_path / "daemon" / "enroll_continuous.py"
     enrollment_entry.parent.mkdir()
     enrollment_entry.write_text("# test entrypoint", encoding="utf-8")
     supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
@@ -234,7 +234,7 @@ def test_start_enrollment_uses_packaged_daemon_when_present(tmp_path, monkeypatc
 
 def test_start_enrollment_stops_running_daemon_and_resumes_after_completion(tmp_path, monkeypatch):
     daemon_entry = tmp_path / "daemon" / "main.py"
-    enroll_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enroll_entry = tmp_path / "daemon" / "enroll_continuous.py"
     daemon_entry.parent.mkdir(parents=True)
     daemon_entry.write_text("# daemon", encoding="utf-8")
     enroll_entry.write_text("# enroll", encoding="utf-8")
@@ -263,7 +263,7 @@ def test_start_enrollment_failure_does_not_leave_daemon_stopped(tmp_path, monkey
     """No enrollment script: the running daemon must be left alone."""
     daemon_entry = tmp_path / "daemon" / "main.py"
     daemon_entry.parent.mkdir(parents=True)
-    daemon_entry.write_text("# daemon", encoding="utf-8")  # no enroll_v2.py
+    daemon_entry.write_text("# daemon", encoding="utf-8")  # no enroll_continuous.py
     supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
     running_daemon = FakeProcess(returncode=None)
     supervisor._process = running_daemon
@@ -275,7 +275,7 @@ def test_start_enrollment_failure_does_not_leave_daemon_stopped(tmp_path, monkey
 
 def test_start_enrollment_spawn_failure_restores_the_daemon(tmp_path, monkeypatch):
     daemon_entry = tmp_path / "daemon" / "main.py"
-    enroll_entry = tmp_path / "daemon" / "enroll_v2.py"
+    enroll_entry = tmp_path / "daemon" / "enroll_continuous.py"
     daemon_entry.parent.mkdir(parents=True)
     daemon_entry.write_text("# daemon", encoding="utf-8")
     enroll_entry.write_text("# enroll", encoding="utf-8")
@@ -329,7 +329,7 @@ def test_stop_and_settings_changes_are_refused_while_locked(tmp_path):
 def test_enrollment_does_not_stop_a_locked_daemon(tmp_path, monkeypatch):
     supervisor, process, _ = _locked_supervisor(tmp_path)
     (tmp_path / "daemon").mkdir()
-    (tmp_path / "daemon" / "enroll_v2.py").write_text("# enroll", encoding="utf-8")
+    (tmp_path / "daemon" / "enroll_continuous.py").write_text("# enroll", encoding="utf-8")
     spawned = []
     monkeypatch.setattr(supervisor, "_spawn_enrollment", lambda *a: spawned.append(a) or FakeProcess())
 
@@ -485,7 +485,7 @@ def test_no_restart_without_an_enrollment(tmp_path, monkeypatch):
 
 def test_start_over_is_the_only_way_to_waive_identity_continuity(tmp_path, monkeypatch):
     (tmp_path / "daemon").mkdir()
-    (tmp_path / "daemon" / "enroll_v2.py").write_text("#", encoding="utf-8")
+    (tmp_path / "daemon" / "enroll_continuous.py").write_text("#", encoding="utf-8")
     sup = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json", local_app_data=tmp_path)
     seen = []
     monkeypatch.setattr(sup, "_spawn_enrollment", lambda c, e: seen.append(e["MG_ENROLL_CONTINUITY"]) or FakeProcess())

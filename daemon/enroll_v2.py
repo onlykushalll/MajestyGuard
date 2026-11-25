@@ -776,16 +776,10 @@ def _confirm_start_over_up_front() -> bool:
     """Start over replaces the owner, so ask Windows BEFORE the scan, not after minutes of it."""
     import enrollment_gate as gate
 
-    if gate.continuity_required():
+    if gate.prepare_enrollment(OUT_FILE):
         return True
-    status, _ = gate.read_gallery(OUT_FILE)
-    if status == "none" and not gate.leftovers_exist(OUT_FILE):
-        return True                                   # nothing to replace, nothing to protect
-    if gate.authorize_reset_once():
-        return True
-    outcome, message = gate.refusal("reset_not_authorized")
+    _, message = gate.refusal("reset_not_authorized")
     print(message)
-    gate.write_result(OUT_DIR, outcome, message)
     _audit_event("enroll_rejected", reason="reset_not_authorized")
     return False
 

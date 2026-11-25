@@ -180,6 +180,13 @@ def test_perf_chip_ignores_a_cold_start_line_outside_the_tail(qapp, tmp_path):
     view.close()
 
 
+def test_perf_chip_displays_current_daemon_millisecond_format(qapp, tmp_path):
+    (tmp_path / "daemon.log").write_text("Cold start complete: model=830ms warmup=200ms camera=90ms total=1030ms\n")
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    assert view._perf_chip.text() == "1.03s"
+    view.close()
+
+
 class LockedSupervisor(FakeSupervisor):
     def controls_locked(self):
         return True
@@ -193,6 +200,7 @@ def test_control_center_disables_every_control_while_locked(qapp, tmp_path):
 
     assert not view._primary_button.isEnabled()
     assert not view._reenroll_btn.isEnabled()
+    assert not view._startover_btn.isEnabled()
     assert not view._timeout_input.isEnabled()
     assert not view._save_timeout_button.isEnabled()
     assert view._preset_buttons and not any(b.isEnabled() for b in view._preset_buttons)
@@ -257,6 +265,53 @@ class ToggleSupervisor(FakeSupervisor):
         return True
 
 
+def test_recovery_note_and_reset_are_wired_to_supervisor(qapp, tmp_path):
+    class RecoverySupervisor(FakeSupervisor):
+        maintained = 0
+        reset_calls = 0
+        locked = False
+
+        def maintain(self):
+            self.maintained += 1
+
+        def recovery_note(self):
+            return "Protection restarted automatically."
+
+        def start_enrollment(self, *, start_over=False):
+            self.reset_calls += int(start_over)
+            return True
+
+        def controls_locked(self):
+            return self.locked
+
+    sup = RecoverySupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    before = sup.maintained
+    view.refresh()
+    assert sup.maintained == before + 1
+    assert view._detail_label.text() == sup.recovery_note()
+    view._startover_btn.click()
+    assert sup.reset_calls == 1
+    sup.locked = True
+    view.start_over_enrollment()
+    assert sup.reset_calls == 1
+    view.close()
+
+
+def test_enrollment_page_shows_writer_result(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    view.show()
+    view.show_page(4)
+    assert not view._enroll_result.isVisible()
+    (tmp_path / "enroll_result.json").write_text(
+        json.dumps({"outcome": "reset_not_authorized", "ts": time.time()}), encoding="utf-8"
+    )
+    view.refresh()
+    assert view._enroll_result.isVisible()
+    assert "did not confirm this account" in view._enroll_result.text()
+    view.close()
+
+
 def test_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
     titles = ["Overview", "Protection", "Camera", "Activity", "Enrollment", "About", "Appearance"]
@@ -271,6 +326,43 @@ def test_tabs_switch_by_click_and_shortcut_index(qapp, tmp_path):
     view.show_page(-4)
     assert view.current_page() == 0
     view.close()
+
+
+def test_compact_rail_preserves_destinations_badges_and_page_width(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING, enrollment_present=False), tmp_path / "settings.json")
+    view.resize(720, 510)
+    view.show()
+    qapp.processEvents()
+    assert view._sidebar.width() < 80
+    for index, btn in enumerate(view._nav):
+        assert btn.accessibleName() == btn.text()
+        btn.click()
+        qapp.processEvents()
+        assert view.current_page() == index
+        assert view._stack.currentWidget().horizontalScrollBar().maximum() == 0, btn.text()
+    assert view._nav[4].accessibleDescription() and view._nav[4].badge()
+    view.resize(960, 680)
+    qapp.processEvents()
+    assert view._sidebar.width() >= 170 and view._nav[6].isChecked()
+    view.close()
+
+
+def test_toggle_respects_reduced_motion_and_does_not_snap_on_poll(qapp, monkeypatch):
+    from app.cc_widgets import Toggle
+    switch = Toggle()
+    switch.show()
+    monkeypatch.setenv("MG_UI_REDUCE_MOTION", "1")
+    switch.click()
+    assert switch.position == 1 and not switch._animation.state().value
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION")
+    switch.click()
+    switch._animation.setCurrentTime(30)
+    before = switch.position
+    assert 0 < before < 1
+    switch.setChecked(False)
+    assert switch.position == before
+    switch.hide()
+    assert switch.position == 0 and not switch._animation.state().value
 
 
 def test_theme_survives_reopen_without_writing_protection_settings(qapp, tmp_path):
@@ -333,7 +425,7 @@ def test_activity_tab_shows_history_and_flags_tampering(qapp, tmp_path, monkeypa
     log.record("unlock_face")
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
     assert view._stat_last.text() == "just now"
-    assert "intact" in view._integrity_title.text().lower()
+    assert "consistent" in view._integrity_title.text().lower()
     path = tmp_path / "audit.log"
     path.write_text(path.read_text().replace('"idle"', '"away"'))
     view.refresh()

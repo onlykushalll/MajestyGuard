@@ -33,6 +33,25 @@ def test_orb_particle_seed_is_deterministic():
     assert a1 == a2
 
 
+def test_island_never_takes_focus_and_only_lock_actions_accept_pointer(qapp):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    requested = []
+    w = island.IslandWidget(on_verify_requested=requested.append)
+    try:
+        for state, interactive in (("scanning", False), ("locked_passive", True), ("active", False)):
+            w.apply_state(get_state(state))
+            flags = w.windowHandle().flags()
+            assert flags & Qt.WindowType.WindowDoesNotAcceptFocus
+            assert bool(flags & Qt.WindowType.WindowTransparentForInput) is not interactive
+            assert w.isVisible()
+            QTest.mouseClick(w, Qt.MouseButton.LeftButton)
+        assert requested == ["island_click"]
+    finally:
+        w.apply_state(get_state("idle"))
+        w.close()
+
+
 def test_orb_particle_seed_values_in_expected_ranges():
     for i in range(12):
         angle_offset, radius_frac, size_frac = island._orb_particle_seed(i)
@@ -342,6 +361,37 @@ def test_fast_result_cannot_repaint_pending_scan_over_verified(qapp):
     for _ in range(24):
         widget._tick_animations()
     assert widget._visible_state.name == "active"
+    widget.close()
+
+
+def test_scan_metric_updates_follow_pending_content_without_a_flash(qapp):
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("locked_passive"))
+    for _ in range(30):
+        widget._tick_animations()
+    widget.apply_state(get_state("verifying_lock", confidence=.60))
+    latest = get_state("verifying_lock", confidence=.74)
+    widget.apply_state(latest)
+    assert widget._visible_state.name == "locked_passive"
+    for _ in range(25):
+        widget._tick_animations()
+    assert widget._visible_state == latest
+    widget.close()
+
+
+@pytest.mark.parametrize("status", ["camera_fault", "hostile_lock", "idle"])
+def test_urgent_updates_discard_queued_scan_result(qapp, status):
+    widget = island.IslandWidget()
+    widget.apply_state(get_state("verifying_lock"))
+    widget.apply_state(get_state("social_lock"))
+    assert widget._defer_timer.isActive()
+    widget.apply_state(get_state(status))
+    widget._defer_timer.timeout.emit()
+    assert widget._visible_state.name == status
+    assert not widget._defer_timer.isActive()
+    assert widget._deferred_lock_state is None
+    if status == "idle":
+        assert widget.isHidden() and not widget._main_timer.isActive()
     widget.close()
 
 

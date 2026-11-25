@@ -47,6 +47,7 @@ _FRAME_MS = 16
 _SCAN_PERIOD_MS = 900
 _PAD = 8
 _VERIFY_REQUEST_STATES = {"locked_passive", "soft_locked", "social_lock"}
+_IMMEDIATE_STATES = {"idle", "hostile_lock", "camera_fault"}
 
 # Dot-pulse scanning constants
 _DOT_COUNT = 3
@@ -142,6 +143,7 @@ class IslandWidget(QWidget):
         self._anim_shake_active = False
         self._verify_start_time = 0.0
         self._deferred_lock_state = None
+        self._deferred_scan_result = None
         self._hovered = False
         self._hover_progress = 0.0
         self._content_slide_y = 0.0
@@ -156,12 +158,15 @@ class IslandWidget(QWidget):
             Qt.WindowType.FramelessWindowHint
             | Qt.WindowType.WindowStaysOnTopHint
             | Qt.WindowType.Tool
+            | Qt.WindowType.WindowDoesNotAcceptFocus
+            | Qt.WindowType.WindowTransparentForInput
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         # Use a fixed large canvas size to prevent OS-level window resize artifacts & DWM jitter
         self.setFixedSize(500, 120)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setCursor(Qt.CursorShape.ArrowCursor)
 
         app = QApplication.instance()
         if app is not None:
@@ -169,12 +174,27 @@ class IslandWidget(QWidget):
             if primary is not None:
                 primary.geometryChanged.connect(lambda *_: self._reposition())
 
+    def _route_pointer(self, state_name):
+        interactive = state_name in _VERIFY_REQUEST_STATES and self._on_verify_requested is not None
+        handle = self.windowHandle()
+        flag = Qt.WindowType.WindowTransparentForInput
+        if handle is not None and bool(handle.flags() & flag) == interactive:
+            # Change the native flag in-place. QWidget.setWindowFlag would hide
+            # the visible pill and restart the transition on Windows.
+            handle.setFlag(flag, not interactive)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if interactive else Qt.CursorShape.ArrowCursor)
+
     def _setup_timers(self) -> None:
         # Single unified timer for all 60fps animations to ensure exactly one update() per frame
         self._main_timer = QTimer(self)
         self._main_timer.setTimerType(Qt.TimerType.PreciseTimer)
         self._main_timer.setInterval(_FRAME_MS)
         self._main_timer.timeout.connect(self._tick_animations)
+
+        self._defer_timer = QTimer(self)
+        self._defer_timer.setSingleShot(True)
+        self._defer_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._defer_timer.timeout.connect(self._apply_deferred_scan_result)
 
         # Exit sequence single-shot timers (dwells)
         self._verified_dwell_timer = QTimer(self)
@@ -186,10 +206,25 @@ class IslandWidget(QWidget):
         self._welcome_dwell_timer.timeout.connect(self._begin_pill_fade)
 
     def apply_state(self, state: IslandState) -> None:
+        if state.name == "idle":
+            if self._state.name == "idle" and self.isHidden():
+                return
+            self._abort_exit_sequence()
+            self._cancel_deferred_result()
+            self._finish_exit_sequence()
+            return
+
         # If the state is completely identical, avoid redundant updates/repaints
         if state == self._state and not self._in_exit_sequence and not self._anim_shake_active:
-            if state.name == "idle":
-                self.hide()
+            return
+
+        if state.name == self._state.name not in ("active", "welcome"):
+            self._state = state
+            if self._pending_state is not None:
+                self._pending_state = state
+            elif self._visible_state.name == state.name:
+                self._visible_state = state
+                self.update()
             return
 
         # If we are in the exit sequence and a non-active state arrives, abort
@@ -197,7 +232,7 @@ class IslandWidget(QWidget):
             self._abort_exit_sequence()
 
         # If the stranger shake is running, defer applying any locked states until the shake completes
-        if self._anim_shake_active and state.name in {"locked_passive", "soft_locked", "social_lock", "hostile_lock", "locked"}:
+        if self._anim_shake_active and state.name in {"locked_passive", "soft_locked", "social_lock", "locked"}:
             self._deferred_lock_state = state
             return
 
@@ -217,23 +252,18 @@ class IslandWidget(QWidget):
                 return
 
 
-            else:
-                state = get_state("idle")
+            self.apply_state(get_state("idle"))
+            return
 
-
-        # Show/hide window based on active lock state
-        if state.name == "idle" and not self._in_exit_sequence:
-            self.hide()
-        else:
-            if self.isHidden():
-                self.show()
+        if self.isHidden():
+            self.show()
 
         # If we transition from verifying to a lock state (rejection), show stranger shake first!
         # (Skipped under reduced motion: no shake runs there, so the parked
         # target would never be consumed and the pill would stick on "stranger".)
         if (
             self._state.name == "verifying_lock"
-            and state.name in {"social_lock", "hostile_lock", "stranger"}
+            and state.name in {"social_lock", "stranger"}
             and not self._reduce_motion
         ):
             if getattr(self, "_deferred_lock_state", None) is None or state.name != "stranger":
@@ -241,30 +271,23 @@ class IslandWidget(QWidget):
             state = get_state("stranger")
 
         # Enforce minimum verification scan time (650ms) before transitioning out of verifying_lock
-        if self._state.name == "verifying_lock" and state.name != "verifying_lock":
+        immediate = state.name in _IMMEDIATE_STATES
+        if self._state.name == "verifying_lock" and not immediate and not self._reduce_motion:
             elapsed = time.monotonic() - getattr(self, "_verify_start_time", 0.0)
             min_duration = 0.65
             if elapsed < min_duration:
-                remaining_ms = int((min_duration - elapsed) * 1000)
-                if not hasattr(self, "_defer_timer") or self._defer_timer is None:
-                    self._defer_timer = QTimer(self)
-                    self._defer_timer.setSingleShot(True)
-                else:
-                    self._defer_timer.stop()
-                    try:
-                        self._defer_timer.timeout.disconnect()
-                    except Exception:
-                        pass
-                self._defer_timer.timeout.connect(lambda: self.apply_state(state))
-                self._defer_timer.start(remaining_ms)
+                self._deferred_scan_result = state
+                if not self._defer_timer.isActive():
+                    self._defer_timer.start(math.ceil((min_duration - elapsed) * 1000))
                 return
 
-        if hasattr(self, "_defer_timer") and self._defer_timer is not None and self._defer_timer.isActive():
+        if immediate:
+            self._cancel_deferred_result()
+        else:
             self._defer_timer.stop()
-            try:
-                self._defer_timer.timeout.disconnect()
-            except Exception:
-                pass
+            self._deferred_scan_result = None
+            if state.name != "stranger":
+                self._deferred_lock_state = None
 
         # Track when we enter verifying_lock state to enforce minimum duration
         if state.name == "verifying_lock" and self._state.name != "verifying_lock":
@@ -286,6 +309,7 @@ class IslandWidget(QWidget):
         )
 
         self._state = state
+        self._route_pointer(state.name)
         # State geometry is part of the visual contract. Lock states need the
         # larger layouts declared in states.py for their guarded icon and
         # status label; collapsing them to the idle pill clips that feedback.
@@ -343,13 +367,15 @@ class IslandWidget(QWidget):
 
         self._anim_orb_active = state.mode in {"dot_scan", "face_scan", "welcome"} and not self._reduce_motion
 
-        if content_changed and not self._reduce_motion:
+        if content_changed and not self._reduce_motion and not immediate:
             self._pending_state = state
             self._content_fading_out = True
             self._anim_content_active = True
         else:
             self._visible_state = state
             self._pending_state = None
+            self._anim_content_active = False
+            self._content_slide_y = 0.0
             self._content_alpha = 1.0
 
         if self._reduce_motion:
@@ -364,33 +390,21 @@ class IslandWidget(QWidget):
             
         self._start_animation_timer()
 
+    def _apply_deferred_scan_result(self) -> None:
+        state, self._deferred_scan_result = self._deferred_scan_result, None
+        if state is not None:
+            self.apply_state(state)
+
+    def _cancel_deferred_result(self) -> None:
+        self._defer_timer.stop()
+        self._deferred_scan_result = None
+        self._deferred_lock_state = None
+
     # ── Exit sequence orchestration ─────────────────────────────────────
 
     def _begin_exit_sequence(self, active_state: IslandState, *, show_welcome: bool) -> None:
         """Confirm a verification, optionally welcoming a returned owner."""
-        # _deferred_lock_state can go stale: the verifying_lock->stranger
-        # redirect sets it, but if the shared min-duration _defer_timer
-        # later gets rebound to a different target before "stranger" ever
-        # actually applies and shakes, the only code path that normally
-        # clears it (shake completing) never runs. Left alone it would
-        # get wrongly applied on some later, unrelated stranger shake.
-        # Reaching a genuine verified state supersedes any pending reason.
-        self._deferred_lock_state = None
-        # The min-duration _defer_timer can also be left armed and pointed
-        # at a stale target: "active" is handled via this early-return path
-        # BEFORE the redirect/defer logic ever runs, so an earlier deferred
-        # redirect (e.g. to a "stranger" shake) never gets canceled here.
-        # If left running, it fires for real later and calls
-        # apply_state(stranger) -- which, since _in_exit_sequence is about
-        # to become True, hits the very first check in apply_state and
-        # aborts this exit/welcome sequence to show the stale shake
-        # instead. Must be stopped whenever we commit to this path.
-        if hasattr(self, "_defer_timer") and self._defer_timer is not None:
-            self._defer_timer.stop()
-            try:
-                self._defer_timer.timeout.disconnect()
-            except Exception:
-                pass
+        self._cancel_deferred_result()
         self._in_exit_sequence = True
         self._show_welcome_after_verification = show_welcome
         # A quick result supersedes any label still crossfading into view.
@@ -407,6 +421,7 @@ class IslandWidget(QWidget):
 
         # Apply verified state (green border, checkmark only)
         self._state = active_state
+        self._route_pointer(active_state.name)
         self._visible_state = active_state
         self._target_w = float(active_state.width)
         self._target_h = float(active_state.height)
@@ -485,10 +500,18 @@ class IslandWidget(QWidget):
         self._anim_checkmark_active = False
         self._anim_orb_active = False
         self._anim_morph_active = False
+        self._anim_shake_active = False
+        self._shake_offset = 0.0
+        self._anim_content_active = False
+        self._pending_state = None
+        self._content_slide_y = 0.0
+        self._anim_scan_active = self._anim_dot_scan_active = False
+        self._anim_pulse_active = self._anim_flash_active = False
         self._main_timer.stop()
         # Reset to idle
         idle = get_state("idle")
         self._state = idle
+        self._route_pointer(idle.name)
         self._visible_state = idle
         self._anim_w = float(idle.width)
         self._anim_h = float(idle.height)

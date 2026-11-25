@@ -60,6 +60,24 @@ def compute(x: float, y: float, w: float, h: float) -> Layout:
     ruler = (card[0] + pad, top + card_h - 36.0 * s, card_w - 2.0 * pad, 20.0 * s)
 
     status = (x + margin, y + margin, 200.0 * s, 36.0 * s)      # top-left, clear of the island
+    if card_w < 630 * s:
+        # Portrait / high scaling: stop competing for a shrinking message column.
+        # Two full-width keyboard actions follow one stacked clock face.
+        s = min(s, max(.85, w / 540))
+        pad = 24 * s
+        ch, kh, gap = 201*s, 53*s, 8*s
+        status = cx-78*s, y+112, 156*s, 31*s
+        top = max(status[1]+status[3]+12*s, y+(h-ch-2*kh-2*gap)*.42)
+        left = cx - card_w/2
+        room = card_w-2*pad
+        card = left, top, card_w, ch
+        time_rect = left+pad, top+4*s, room, 64*s
+        divider = left+pad, top+70*s, room, 0.
+        date = left+pad, top+75*s, room, 18*s
+        message = left+pad, top+96*s, room, 66*s
+        ruler = left+pad, top+ch-29*s, room, 14*s
+        space_key = left, top+ch+gap, card_w, kh
+        tab_key = left, top+ch+2*gap+kh, card_w, kh
     brand_w, brand_h = 236.0 * s, 34.0 * s
     brand = (x + w - margin - brand_w, y + h - margin - brand_h, brand_w, brand_h)
     return Layout(

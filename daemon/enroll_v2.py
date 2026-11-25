@@ -762,6 +762,28 @@ def _rollback_enrollment_artifacts(backups: dict[Path, Path]) -> list[str]:
     return errors
 
 
+def _audit_event(event: str, **detail: Any) -> None:
+    """Best effort: enrollment runs with the daemon stopped, so the chain has a single writer."""
+    try:
+        import audit_log
+
+        audit_log.record(event, **detail)
+    except Exception:
+        pass
+
+
+def _confirm_start_over_up_front() -> bool:
+    """Start over replaces the owner, so ask Windows BEFORE the scan, not after minutes of it."""
+    import enrollment_gate as gate
+
+    if gate.prepare_enrollment(OUT_FILE):
+        return True
+    _, message = gate.refusal("reset_not_authorized")
+    print(message)
+    _audit_event("enroll_rejected", reason="reset_not_authorized")
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli", action="store_true", help="Force legacy OpenCV CLI window instead of Apple Face ID Studio")
@@ -774,6 +796,8 @@ def main() -> int:
     parser.add_argument("--duplicate-similarity", type=float, default=0.985)
     parser.add_argument("--min-quality", type=float, default=0.62)
     args = parser.parse_args()
+    if not _confirm_start_over_up_front():
+        return 1
     samples_per_angle = max(1, min(args.samples_per_angle, 6))
     angles = _angles_for_profile(args.profile)
     requested_max_templates = (
@@ -1107,6 +1131,18 @@ def main() -> int:
     arr = np.stack([sample.embedding.astype(np.float32) for sample in selected], axis=0)
     arr = arr / (np.linalg.norm(arr, axis=1, keepdims=True) + 1e-8)
 
+    import enrollment_gate as _gate
+
+    verdict = _gate.check_continuity(arr, OUT_FILE)
+    if not verdict.allowed:
+        outcome, message = _gate.refusal(verdict.reason)
+        print(message)
+        _gate.write_result(OUT_DIR, outcome, message)
+        _audit_event("enroll_rejected", reason=verdict.reason)
+        return 1
+    if verdict.reason == "continuity_waived":
+        print("Starting over: the previous profile will be replaced (identity check waived after Windows re-authentication).")
+
     backups = _backup_existing_artifacts()
     for original, backup in backups.items():
         print(f"Backed up {original.name} to {backup}")
@@ -1152,6 +1188,9 @@ def main() -> int:
         else:
             print("Enrollment artifacts restored to their prior state.")
         return 1
+    _gate.prune_backups([OUT_FILE, OUT_META_FILE])
+    _gate.write_result(OUT_DIR, "ok", f"{len(arr)} templates")
+    _audit_event("enroll_completed", templates=len(arr), identity=verdict.reason)
     print("Enrollment complete.")
     print(f"Captured {len(samples)} embeddings; selected {len(arr)} gallery templates.")
     print(f"Saved gallery to {OUT_FILE}")

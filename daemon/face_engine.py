@@ -25,6 +25,8 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Any, Optional
 import cv2
+from camera_io import read_bgr_frame, release_capture
+from windows_tools import system_tool
 
 import sys
 from importlib.abc import MetaPathFinder
@@ -636,6 +638,8 @@ class FaceEngine:
         self._cap = cv2.VideoCapture(self.camera_idx, cv2.CAP_DSHOW)  # DSHOW on Windows
         if not self._cap.isOpened():
             logger.error("Failed to open camera %d", self.camera_idx)
+            release_capture(self._cap)
+            self._cap = None
             return False
 
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
@@ -1034,14 +1038,7 @@ class FaceEngine:
     # ─────────────────────────────────────────────────────────────────
 
     def _read_frame(self) -> Optional[np.ndarray]:
-        if self._cap is None or not self._cap.isOpened():
-            return None
-        try:
-            ret, frame = self._cap.read()
-            return frame if ret else None
-        except cv2.error as e:
-            logger.error("Camera read failed: %s", e)
-            return None
+        return None if self._cap is None else read_bgr_frame(self._cap)
 
     def _is_obstructed(self, frame: np.ndarray) -> bool:
         """
@@ -1066,7 +1063,7 @@ class FaceEngine:
         """Return a stable camera DeviceID when WMI is available."""
         try:
             proc = subprocess.run(
-                ["wmic", "path", "Win32_PnPEntity", "where", "PNPClass='Camera'", "get", "Name,DeviceID"],
+                [system_tool("wmic"), "path", "Win32_PnPEntity", "where", "PNPClass='Camera'", "get", "Name,DeviceID"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -1076,7 +1073,7 @@ class FaceEngine:
             if proc.returncode != 0 or not stdout.strip():
                 proc = subprocess.run(
                     [
-                        "powershell",
+                        system_tool("powershell"),
                         "-NoProfile",
                         "-Command",
                         "Get-CimInstance -ClassName Win32_PnPEntity -Filter 'PNPClass=''Camera''' | ForEach-Object { $_.Name + ' ' + $_.DeviceID }",
@@ -1441,7 +1438,7 @@ class FaceEngine:
         if vector.size == 0 or not np.all(np.isfinite(vector)):
             return None
         norm = float(np.linalg.norm(vector))
-        if norm <= 1e-8:
+        if not np.isfinite(norm) or norm <= 1e-8:
             return None
         return vector / norm
 

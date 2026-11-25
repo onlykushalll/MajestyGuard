@@ -31,6 +31,7 @@ import time
 import logging
 import subprocess
 import winreg
+from windows_tools import system_tool
 from typing import Optional
 
 logger = logging.getLogger("MajestyGuard.VirtualCameraDetector")
@@ -335,7 +336,7 @@ class VirtualCameraDetector:
                 "$devices | Select-Object Name,Id | ConvertTo-Json"
             )
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                [system_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=3  # 3s max — never block camera loop
             )
             if result.returncode == 0 and result.stdout.strip():
@@ -355,12 +356,7 @@ class VirtualCameraDetector:
     def _pnputil_command(self) -> list:
         """Absolute pnputil.exe path (bare PATH lookups can fail inside
         detached/hidden processes whose environment is minimal)."""
-        candidate = os.path.join(
-            os.environ.get("SystemRoot", r"C:\Windows"), "System32", "pnputil.exe"
-        )
-        if os.path.exists(candidate):
-            return [candidate]
-        return ["pnputil"]
+        return [system_tool("pnputil")]
 
     def _enumerate_pnputil_cameras(self):
         """Memoised for 2 s: one detection used to run pnputil twice."""
@@ -455,7 +451,7 @@ class VirtualCameraDetector:
         # Primary: wmic — fast, ~100ms, no PS startup cost
         try:
             result = subprocess.run(
-                ["wmic", "path", "Win32_PnPEntity",
+                [system_tool("wmic"), "path", "Win32_PnPEntity",
                  "where", "PNPClass='Camera'",
                  "get", "Name", "/format:list"],
                 capture_output=True, text=True, timeout=3
@@ -481,7 +477,7 @@ class VirtualCameraDetector:
                 "$devices | Select-Object -ExpandProperty Name"
             )
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                [system_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=3
             )
             names = [n.strip() for n in result.stdout.strip().splitlines() if n.strip()]
@@ -518,7 +514,7 @@ class VirtualCameraDetector:
                 "Select-Object FriendlyName,HardwareID | ConvertTo-Json"
             )
             result = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                [system_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=3  # 3s max
             )
 

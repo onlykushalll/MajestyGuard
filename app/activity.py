@@ -25,6 +25,9 @@ _EVENTS = {
     "verify_failed": ("Face not recognized", "warn"),
     "camera_fault": ("Camera problem", "warn"),
     "windows_lock": ("Handed over to the Windows lock", "info"),
+    "enroll_completed": ("Face profile saved", "ok"),
+    "enroll_rejected": ("Re-enrollment refused", "bad"),
+    "gallery_restored": ("Face profile restored from backup", "warn"),
 }
 _HIDDEN = {"state"}  # one line per internal transition is noise, not history
 
@@ -83,7 +86,7 @@ def verify_integrity(path: Path) -> tuple[bool, int, str]:
                 count += 1
     except OSError as exc:
         return False, count, f"Cannot read the log ({exc.__class__.__name__})"
-    return True, count, "History is intact"
+    return True, count, "Stored records are consistent"
 
 
 def _describe(event: str, detail: dict) -> tuple[str, str, str]:
@@ -103,9 +106,35 @@ def _describe(event: str, detail: dict) -> tuple[str, str, str]:
         tone = "bad" if isinstance(streak, int) and streak >= 4 else tone
     elif event == "camera_fault":
         note = _FAULTS.get(str(detail.get("fault", "")), str(detail.get("fault", "")).replace("_", " "))
+    elif event == "enroll_rejected":
+        note = "the new face did not match the enrolled one"
+    elif event == "gallery_restored":
+        note = "the live profile was unreadable"
     elif event == "verify_requested":
         note = {"overlay_key": "SPACE on the lock screen"}.get(str(detail.get("by", "")), "")
     return title, note, tone
+
+
+def read_enroll_result(state_dir: Path, max_age_s: float = 900.0) -> "str | None":
+    """One line about the last enrollment attempt (written by the enrollment tool), or None.
+
+    Reads enroll_result.json, which never holds biometric data.
+    """
+    try:
+        data = json.loads((Path(state_dir) / "enroll_result.json").read_text(encoding="utf-8"))
+        if time.time() - float(data["ts"]) > max_age_s:
+            return None
+        outcome = str(data.get("outcome", ""))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {
+        "ok": "Last enrollment: saved.",
+        "reset_not_authorized": "Last enrollment: Windows did not confirm this account. Nothing was replaced.",
+        "existing_unreadable": "Last enrollment: previous profile unreadable. Use Start over to recover.",
+        "rejected_different_person": "Last enrollment: not saved, the new face did not match your current profile. "
+                                     "If your look changed a lot, use Start over.",
+        "failed": "Last enrollment: failed. Your previous profile was kept.",
+    }.get(outcome)
 
 
 def read_recent(path: Path, limit: int = 40) -> list[Activity]:

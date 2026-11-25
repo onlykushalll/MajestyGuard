@@ -138,6 +138,24 @@ def test_monitor_keeps_same_idle_stretch_latched_after_owner_success(monkeypatch
     assert watcher._idle_fired is True
 
 
+def test_quiet_owner_is_rechecked_once_per_interval(monkeypatch):
+    monitor = _load_monitor_module()
+    watcher = monitor.MonitorDaemon()
+    watcher._idle_timeout = 60
+    clock = [100.]
+    monkeypatch.setattr(monitor.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(monitor, "_read_lock_state", lambda: "UNLOCKED")
+    monkeypatch.setattr(monitor, "_read_idle_check_result", lambda: "OWNER_VERIFIED")
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 999.)
+    launches = []
+    running = type("Running", (), {"poll": lambda self: None})()
+    monkeypatch.setattr(monitor, "_launch_full_daemon", lambda: launches.append(True) or running)
+    watcher._daemon_proc = type("Exited", (), {"poll": lambda self: 0})()
+    for clock[0] in (100., 159.9, 160., 161.):
+        watcher._tick()
+    assert launches == [True]
+
+
 def test_tick_terminates_prewarmed_daemon_if_user_active_before_full_idle(monkeypatch, tmp_path):
     """If the user goes active again before reaching the full idle
     timeout, a pre-warmed daemon that positively reports PREWARMING (hasn't opened the

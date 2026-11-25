@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -36,7 +37,7 @@ _ROOT_DIR = _DAEMON_DIR.parent
 _MODELS_DIR = resolve_resource_dir("models")
 sys.path.insert(0, str(_DAEMON_DIR))
 
-_LOG_DIR = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
+_LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard"
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _LOG_PATH = _LOG_DIR / "daemon.log"
 _MG_STATE_DIR = Path(
@@ -66,6 +67,7 @@ _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
 
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
+from camera_io import read_bgr_frame, release_capture
 from cmd_server import CMDServer
 from camera_health import (
     BACKEND_ANY,
@@ -242,7 +244,7 @@ OVERLAY_WATCHDOG_ENABLED = os.environ.get("MG_OVERLAY_WATCHDOG", "0") == "1"
 OVERLAY_WATCHDOG_INTERVAL_S = _env_float("MG_OVERLAY_WATCHDOG_INTERVAL_S", 2.0, 0.5, 30.0)
 
 BIOMETRIC_PATH = (
-    Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
+    Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     / "MajestyGuard"
     / "biometric.mgd"
 )
@@ -272,12 +274,15 @@ def _resolve_dpapi_helper_path() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if local_app_data:
         candidates.append(Path(local_app_data) / "MajestyGuard" / "MajestyGuard.DpapiHelper.exe")
-    candidates.append(
-        Path(
-            r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper"
-            r"\MajestyGuard.DpapiHelper.exe"
+    if not getattr(sys, "frozen", False):
+        # Dev-tree build output only. C:\tmp is writable by every local user, so a packaged
+        # install must never resolve (and run) a helper from there.
+        candidates.append(
+            Path(
+                r"C:\tmp\MajestyGuard\build\Debug\MajestyGuard.DpapiHelper"
+                r"\MajestyGuard.DpapiHelper.exe"
+            )
         )
-    )
     for candidate in candidates:
         if candidate.exists():
             log.info("DPAPI helper resolved to: %s", candidate)
@@ -415,54 +420,43 @@ class MajestyGuardDaemon:
         t0 = time.perf_counter()
         self._load_cv_engine()
         t_model = time.perf_counter()
-        self._warmup_inference()
-        t_warm = time.perf_counter()
-        t_cam = t_warm
+        open_begin = open_end = t_model
+
+        def warm():
+            self._warmup_inference()
+            return time.perf_counter()
 
         if self._idle_check_mode and not getattr(self, "_persistent_idle_loop", False):
-            self._set_idle_check_phase("PREWARMING")
-            target_idle = self._current_idle_timeout()
-            log.info("Models preloaded in background. Waiting for system idle >= %.1fs...", target_idle)
-            self._set_idle_check_phase("WAITING_FOR_IDLE")
-            while not self._stop.is_set() and get_idle_seconds() < self._current_idle_timeout():
-                time.sleep(0.05)
-
-            if not self._stop.is_set():
-                log.info("System idle threshold reached (%.1fs) — launching Dynamic Island", get_idle_seconds())
-                self._set_idle_check_phase("STARTING_UI")
-                self._launch_ui()
-                self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
-
-                self._set_idle_check_phase("CAMERA_OPENING")
-                self._open_camera()
-                t_cam = time.perf_counter()
-                if hasattr(self.ipc, "wait_for_client"):
-                    self.ipc.wait_for_client(timeout=0.35)
-                time.sleep(0.15)
-                self.ipc.broadcast_state("scanning", detail="Verifying...")
-
-                self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
-                self._set_idle_check_phase("PROBING")
-                log.info("Idle owner probe armed for %.1fs", IDLE_OWNER_PROBE_SECONDS)
-        elif getattr(self, "_persistent_idle_loop", False):
-            self._set_idle_check_phase("WAITING_FOR_IDLE")
-            log.info(
-                "Persistent idle-guard ready: camera parked until system idle >= %.1fs",
-                self._current_idle_timeout(),
-            )
-        elif self._should_open_camera_on_start():
-            self._open_camera()
-            t_cam = time.perf_counter()
+            # Only synthetic inference runs on the worker. The daemon thread
+            # owns camera open/read/release throughout, including on driver faults.
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="mg-warmup") as pool:
+                warmed = pool.submit(warm)
+                self._set_idle_check_phase("WAITING_FOR_IDLE")
+                while not self._stop.is_set() and get_idle_seconds() < self._current_idle_timeout():
+                    self._stop.wait(.05)
+                if not self._stop.is_set():
+                    open_begin, open_end = self._start_idle_probe(ready=warmed.result)
+                t_warm = warmed.result()
         else:
-            # A daemon restored directly into a passive soft lock must remain
-            # camera-cold until its owned UI requests a bounded verification.
-            log.info("Passive soft-lock startup: camera parked until verification request")
+            t_warm = warm()
+            if getattr(self, "_persistent_idle_loop", False):
+                self._set_idle_check_phase("WAITING_FOR_IDLE")
+                log.info("Persistent idle-guard ready: camera parked until system idle >= %.1fs",
+                         self._current_idle_timeout())
+            elif self._should_open_camera_on_start():
+                open_begin = time.perf_counter()
+                self._open_camera()
+                open_end = time.perf_counter()
+            else:
+                log.info("Passive soft-lock startup: camera parked until verification request")
 
+        camera_open_s = open_end - open_begin
+        overlap = max(0., min(t_warm, open_end) - open_begin)
         self._cold_start_ms = {
             "model_load": round((t_model - t0) * 1000),
             "warmup": round((t_warm - t_model) * 1000),
-            "camera_open": round((t_cam - t_warm) * 1000),
-            "total": round((t_cam - t0) * 1000),
+            "camera_open": round(camera_open_s * 1000),
+            "total": round((t_warm - t0 + camera_open_s - overlap) * 1000),
         }
         log.info(
             "Cold start complete: model=%dms warmup=%dms camera=%dms total=%dms",
@@ -597,11 +591,36 @@ class MajestyGuardDaemon:
             return None
 
     def _read_enrolled_embeddings_from_disk(self, out: dict) -> None:
+        """Read the gallery; if the live file is unusable, self-heal from our own newest valid
+        backup once (backups are DPAPI-protected copies this app made of an earlier good gallery,
+        so this cannot install a stranger's face) and read again."""
+        self._read_enrolled_embeddings_once(out)
+        if out.get("kind") not in ("none_plaintext_refused", "error"):
+            return
+        try:
+            import enrollment_gate
+
+            v2_path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard" / "embeddings_v2.npy"
+            used = enrollment_gate.restore_latest_valid_backup(
+                v2_path, v2_path.with_name("embeddings_v2_meta.json"))
+        except Exception:
+            log.exception("Gallery self-heal failed")
+            return
+        if used is not None:
+            log.warning("Gallery was unreadable; restored from backup %s", used.name)
+            try:
+                audit_log.record("gallery_restored", backup=used.name)
+            except Exception:
+                pass
+            out.clear()
+            self._read_enrolled_embeddings_once(out)
+
+    def _read_enrolled_embeddings_once(self, out: dict) -> None:
         """Runs on a background thread, in parallel with FaceEngine.initialize().
         Pure disk I/O + parsing only -- must not touch self.face_eng, since it
         may not be initialized yet while this runs. Populates `out` with a
         result dict for _register_enrolled_embeddings to act on afterward."""
-        v2_path = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard" / "embeddings_v2.npy"
+        v2_path = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard" / "embeddings_v2.npy"
         if v2_path.exists():
             try:
                 raw = v2_path.read_bytes()
@@ -865,11 +884,17 @@ class MajestyGuardDaemon:
         for attempt in range(1, max_attempts + 1):
             log.info("Opening camera index %d (attempt %d/%d)", CAMERA_INDEX, attempt, max_attempts)
             for backend in health.backends():
-                cap = self._new_capture(backend)
-                if cap.isOpened():
-                    self._adopt_camera(cap, backend)
-                    return True
-                cap.release()
+                cap = None
+                try:
+                    cap = self._new_capture(backend)
+                    if cap.isOpened():
+                        self._adopt_camera(cap, backend)
+                        return True
+                except (cv2.error, OSError) as exc:
+                    log.warning("[Camera] %s could not open/configure the device: %s", backend, exc)
+                if self._cap is cap:
+                    self._cap = None
+                release_capture(cap)
             if attempt < max_attempts and retry_delay_s > 0:
                 time.sleep(retry_delay_s)
         self._last_camera_retry_at = time.monotonic()
@@ -884,9 +909,8 @@ class MajestyGuardDaemon:
         return False
 
     def _release_camera(self) -> None:
-        if self._cap:
-            self._cap.release()
-            self._cap = None
+        cap, self._cap = self._cap, None
+        release_capture(cap)
 
     def _queue_session_event(self, event: SessionEvent) -> None:
         self._session_events.put(event)
@@ -1073,6 +1097,8 @@ class MajestyGuardDaemon:
             self._whcdf_stop.set()
         if getattr(self, "session_monitor", None):
             self.session_monitor.stop()
+        # Before the pipe closes: the overlay is asked to exit over it.
+        self._stop_owned_overlay()
         if hasattr(self, "ipc"):
             self.ipc.stop()
         if getattr(self, "command_ipc", None):
@@ -1080,7 +1106,6 @@ class MajestyGuardDaemon:
         if getattr(self, "service_ipc", None):
             self.service_ipc.stop()
         self._release_camera()
-        self._stop_owned_overlay()
         if getattr(self, "face_eng", None):
             self.face_eng.shutdown()
         FaceState.clear()
@@ -1106,6 +1131,11 @@ class MajestyGuardDaemon:
                 break
             if self._stop_after_time_limit(run_started_at):
                 break
+            if self.state == State.ACTIVE and self._idle_check_mode and hasattr(self, "_exit_at"):
+                # Only the Island's confirmation is still running. Do not reopen
+                # the camera or interpret the same idle interval as a new lock.
+                self._stop.wait(0.05)
+                continue
             loop_start = time.monotonic()
             if self._expire_idle_check_if_needed():
                 self._pace(loop_start)
@@ -1137,8 +1167,8 @@ class MajestyGuardDaemon:
                     time.sleep(0.5)
                     continue
             self._mark_verification_phase("camera_ready")
-            ret, frame = self._cap.read()
-            if not ret or frame is None:
+            frame = read_bgr_frame(self._cap)
+            if frame is None:
                 self._handle_camera_read_failure()
                 time.sleep(0.5)
                 continue
@@ -1208,17 +1238,24 @@ class MajestyGuardDaemon:
             return True
 
         log.info("System idle threshold reached (%.1fs >= %.1fs) — starting owner probe", idle_seconds, target_idle)
+        self._start_idle_probe()
+        return True
+
+    def _start_idle_probe(self, *, ready=None) -> tuple[float, float]:
         self._set_idle_check_phase("STARTING_UI")
         self._launch_ui()
         self.ipc.broadcast_state("idle_detected", detail="System Idle Detected")
         self._set_idle_check_phase("CAMERA_OPENING")
-        if not self._open_camera():
-            return True
-        time.sleep(0.15)
-        self.ipc.broadcast_state("scanning", detail="Verifying...")
-        self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
-        self._set_idle_check_phase("PROBING")
-        return True
+        started = time.perf_counter()
+        opened = self._open_camera()  # overlaps startup of the UI process; IPC retains the latest state
+        ended = time.perf_counter()
+        if ready is not None:
+            ready()
+        if opened:
+            self._idle_check_deadline = time.monotonic() + IDLE_OWNER_PROBE_SECONDS
+            self._set_idle_check_phase("PROBING")
+            self.ipc.broadcast_state("scanning", detail="Verifying...")
+        return started, ended
 
     def _handle_passive_soft_lock(self, loop_start: float) -> None:
         now = time.monotonic()
@@ -1305,6 +1342,14 @@ class MajestyGuardDaemon:
             return
         # Ask the UI to leave through its normal shutdown (restores taskbar, cursor clip,
         # hooks, gestures). terminate() skips all of that, so it is only the fallback.
+        # The authenticated pipe carries the request that works while the lock overlay is
+        # up; the flag file is only honoured by a UI that is not locking the screen.
+        ipc = getattr(self, "ipc", None)
+        if ipc is not None:
+            try:
+                ipc.broadcast_state("exit")
+            except Exception:
+                log.debug("exit broadcast failed", exc_info=True)
         flag = _MG_STATE_DIR / "ui_quit.flag"
         try:
             flag.write_text("quit\n", encoding="utf-8")
@@ -1448,6 +1493,7 @@ class MajestyGuardDaemon:
             self._write_idle_check_result("OWNER_VERIFIED")
             self._release_camera()
             self._defer_input_idle_soft_lock()
+            self._soft_lock_release_grace_until = time.monotonic() + self._current_idle_timeout()
             self.state = State.IDLE
             log.info("Idle owner probe passed; camera released and parked for next idle cycle")
             return
@@ -1455,6 +1501,7 @@ class MajestyGuardDaemon:
             return
         self._idle_check_deadline = 0.0
         self._write_idle_check_result("OWNER_VERIFIED")
+        self._release_camera()
         self._exit_at = time.monotonic() + IDLE_CHECK_SUCCESS_EXIT_SECONDS
         log.info("Idle owner probe passed; returning to lightweight monitor")
 
@@ -1943,6 +1990,8 @@ class MajestyGuardDaemon:
 
         if getattr(self, "_idle_check_mode", False):
             log.info("[ClearSoftLock] Lock lifted — scheduling teardown in 3s")
+            self._release_camera()
+            self._write_idle_check_result("OWNER_VERIFIED")
             self._exit_at = time.monotonic() + 3.0
 
     @staticmethod
@@ -2290,8 +2339,8 @@ def main() -> None:
 if __name__ == "__main__":
     if "--enroll" in sys.argv:
         sys.argv.remove("--enroll")
-        import enroll_v2
-        raise SystemExit(enroll_v2.main())
+        import enroll_continuous
+        raise SystemExit(enroll_continuous.main())
 
     import ctypes
     _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")
@@ -2309,7 +2358,7 @@ if __name__ == "__main__":
         If we crash while locked, call LockWorkStation() to secure the system using Windows Lock.
         """
         try:
-            _state_dir = Path(os.environ.get("LOCALAPPDATA", "C:/tmp")) / "MajestyGuard"
+            _state_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard"
             _state_dir.mkdir(parents=True, exist_ok=True)
             
             # Read current lock state to see if it was locked

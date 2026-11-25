@@ -6,6 +6,63 @@ import main as daemon_main
 from companion_ipc import FaceState
 from main import MajestyGuardDaemon, State
 
+
+def test_cold_start_camera_time_excludes_idle_wait(monkeypatch):
+    from unittest.mock import Mock
+
+    daemon = Mock()
+    daemon._idle_check_mode = True
+    daemon._persistent_idle_loop = False
+    daemon.state = State.IDLE
+    daemon._stop.is_set.return_value = False
+    daemon._current_idle_timeout.return_value = 60
+    daemon._start_idle_probe.side_effect = lambda **kw: MajestyGuardDaemon._start_idle_probe(daemon, **kw)
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "CMDServer", Mock())
+    monkeypatch.setattr(daemon_main, "get_idle_seconds", lambda: 65)
+    monkeypatch.setattr(daemon_main.time, "sleep", lambda _: None)
+    ticks = iter([0.0, .4, 65.0, 65.3])
+    monkeypatch.setattr(daemon_main.time, "perf_counter",
+                        lambda: .6 if threading.current_thread().name.startswith("mg-warmup") else next(ticks))
+
+    MajestyGuardDaemon.start(daemon)
+
+    assert daemon._cold_start_ms == {
+        "model_load": 400, "warmup": 200, "camera_open": 300, "total": 900,
+    }
+    daemon._open_camera.assert_called_once_with()
+
+
+def test_late_idle_opens_camera_during_warmup_but_never_scans_early(monkeypatch):
+    from unittest.mock import Mock
+    daemon = Mock()
+    daemon._idle_check_mode = True
+    daemon._persistent_idle_loop = False
+    daemon.state = State.IDLE
+    daemon._stop = threading.Event()
+    daemon._current_idle_timeout.return_value = 60
+    daemon._start_idle_probe.side_effect = lambda **kw: MajestyGuardDaemon._start_idle_probe(daemon, **kw)
+    monkeypatch.setattr(daemon_main, "CMDServer", Mock())
+    monkeypatch.setattr(daemon_main, "get_idle_seconds", lambda: 65)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    camera_open, warm_done = threading.Event(), threading.Event()
+    def warm():
+        assert camera_open.wait(2)
+        warm_done.set()
+    def opening():
+        camera_open.set()
+        return True
+    def broadcast(name, **kw):
+        if name == "scanning":
+            assert warm_done.is_set()
+    daemon._warmup_inference.side_effect = warm
+    daemon._open_camera.side_effect = opening
+    daemon.ipc.broadcast_state.side_effect = broadcast
+    MajestyGuardDaemon.start(daemon)
+    daemon._run_loop.assert_called_once()
+
 @pytest.fixture(autouse=True)
 def mock_timer(monkeypatch):
     class FakeTimer:

@@ -47,6 +47,9 @@ def stylesheet(p):
     QLabel#rowTitle {{ font:600 13px {font}; }}
     QLabel#pageSub, QLabel#detail, QLabel#brandSub, QLabel#rowMeta {{ color:{p.muted}; }}
     QLabel#mono {{ color:{p.muted}; font:12px 'Cascadia Mono', Consolas, monospace; }}
+    QLineEdit#folderPath {{ background:{p.bg}; color:{p.text}; border:1px solid {p.line};
+      border-radius:4px; padding:6px; font:12px 'Cascadia Mono', Consolas, monospace; }}
+    QLineEdit#folderPath:focus {{ border:1px solid {p.accent}; }}
     QLabel#chip, QLabel#pill, QLabel#keycap {{ color:{p.text}; background:{p.raised};
       border:1px solid {p.line}; border-radius:5px; padding:4px 8px; font-size:11px; }}
     QFrame#hair {{ background:{p.line}; min-height:1px; max-height:1px; border:0; }}

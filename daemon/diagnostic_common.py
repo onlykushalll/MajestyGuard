@@ -45,9 +45,9 @@ def load_embeddings_array(path: Path) -> np.ndarray:
         import win32crypt  # type: ignore
 
         decrypted = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
-        return np.load(io.BytesIO(decrypted))
+        return np.load(io.BytesIO(decrypted), allow_pickle=False)
     except Exception:
-        return np.load(io.BytesIO(raw))
+        return np.load(io.BytesIO(raw), allow_pickle=False)
 
 
 def load_enrollment_metadata(path: Path) -> dict:

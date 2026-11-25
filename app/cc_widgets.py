@@ -11,7 +11,7 @@ import os
 
 from app.cc_theme import theme_for
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, pyqtProperty
+from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, pyqtProperty
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -23,7 +23,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import QAbstractButton, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
 
 try:  # package layout in the repo / bundle, flat layout when run from ui/
     from ui import tokens as tok
@@ -103,6 +103,8 @@ class StatusOrb(QWidget):
         self._timer.timeout.connect(self._tick)
 
     def set_state_visual(self, color_hex: str, *, animated: bool, symbol: str = "stopped") -> None:
+        if (self._symbol, self._color, self._animated) == (symbol, QColor(color_hex), animated):
+            return
         self._symbol = symbol
         self._color = QColor(color_hex)
         self._animated = animated
@@ -151,8 +153,23 @@ class StatusOrb(QWidget):
             vx, vy = math.sin(angle), -math.cos(angle)
             painter.drawLine(QPointF(vx * (17.6 if major else 19), vy * (17.6 if major else 19)),
                              QPointF(vx * 20.8, vy * 20.8))
-        painter.setPen(QPen(with_alpha(self._color, 150), .8))
-        painter.drawEllipse(QPointF(), 14, 14)
+        # Six iris blades, drawn around a clear centre for the actual state symbol.
+        # Only startup turns the iris; a running guard is not necessarily using the camera.
+        painter.save()
+        if self._symbol == "starting":
+            painter.rotate(math.degrees(self._phase))
+        blade = QPainterPath(QPointF(-1, -16.5))
+        blade.cubicTo(4.5, -17.1, 9.9, -14.3, 13.7, -9.0)
+        blade.lineTo(5.0, -7.2)
+        blade.cubicTo(2.4, -10.5, .4, -13.5, -1, -16.5)
+        blade.closeSubpath()
+        for _ in range(6):
+            sheen = QLinearGradient(-1, -17, 10, -7)
+            sheen.setColorAt(0, with_alpha(self._color, 160))
+            sheen.setColorAt(1, with_alpha(self._color, 40))
+            painter.fillPath(blade, sheen)
+            painter.rotate(60)
+        painter.restore()
         pen = QPen(QColor(theme_for(self).text), 1.7, Qt.PenStyle.SolidLine,
                    Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
         painter.setPen(pen)
@@ -232,6 +249,7 @@ class NavButton(QAbstractButton):
         super().__init__(parent)
         self._kind = kind
         self.setText(text)
+        self.setAccessibleName(text)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(44)
@@ -239,10 +257,12 @@ class NavButton(QAbstractButton):
         self.setAutoExclusive(True)
         self._badge = ""
         self._badge_tone = "warn"
+        self.compact = False
 
     def set_badge(self, text: str, tone: str = "warn") -> None:
         if (text, tone) != (self._badge, self._badge_tone):
             self._badge, self._badge_tone = text, tone
+            self.setAccessibleDescription("Needs attention" if text else "")
             self.update()
 
     def badge(self) -> str:
@@ -262,18 +282,25 @@ class NavButton(QAbstractButton):
         painter.setPen(QPen(QColor(palette.accent), 1) if self.hasFocus() else Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, 6, 6)
         colour = QColor(palette.accent if selected else palette.muted)
-        draw_icon(painter, self._kind, QRectF(rect.left() + 16, rect.center().y() - 10, 20, 20), colour)
+        icon_x = rect.center().x() - 10 if self.compact else rect.left() + 16
+        draw_icon(painter, self._kind, QRectF(icon_x, rect.center().y() - 10, 20, 20), colour)
+        if selected:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(palette.accent))
+            painter.drawRoundedRect(QRectF(rect.left()+1, rect.center().y()-7, 2.5, 14), 1.25, 1.25)
         font = QFont(self.font())
         font.setPixelSize(14)
         font.setWeight(QFont.Weight.DemiBold if selected else QFont.Weight.Medium)
         painter.setFont(font)
         painter.setPen(QColor(palette.text if selected else palette.muted))
-        painter.drawText(QRectF(rect.left() + 48, rect.top(), rect.width() - (80 if self._badge else 54), rect.height()),
-                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
+        if not self.compact:
+            painter.drawText(QRectF(rect.left() + 48, rect.top(), rect.width() - (70 if self._badge else 50), rect.height()),
+                             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
         if self._badge:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(TONE_COLOUR.get(self._badge_tone, AMBER))
-            painter.drawEllipse(QPointF(rect.right() - 16, rect.center().y()), 4.5, 4.5)
+            point = rect.topRight() + QPointF(-6, 6) if self.compact else QPointF(rect.right()-12, rect.center().y())
+            painter.drawEllipse(point, 3.5, 3.5)
         painter.end()
 
 
@@ -287,10 +314,10 @@ class Toggle(QAbstractButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._pos = 0.0
-        self._timer = QTimer(self)
-        self._timer.setInterval(16)
-        self._timer.timeout.connect(self._step)
-        self.toggled.connect(lambda _c: self._timer.start())
+        self._animation = QPropertyAnimation(self, b"position", self)
+        self._animation.setDuration(145)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.toggled.connect(self._move_thumb)
 
     def _get_pos(self) -> float:
         return self._pos
@@ -302,18 +329,27 @@ class Toggle(QAbstractButton):
     position = pyqtProperty(float, _get_pos, _set_pos)
 
     def setChecked(self, checked: bool) -> None:  # type: ignore[override]
+        if self.isChecked() == checked:
+            return  # A status poll must not cut short an in-flight user gesture.
         super().setChecked(checked)
-        self._pos = 1.0 if checked else 0.0   # no animation for programmatic sync
-        self._timer.stop()
-        self.update()
+        self._settle()
 
-    def _step(self) -> None:
-        target = 1.0 if self.isChecked() else 0.0
-        self._pos += (target - self._pos) * 0.35
-        if abs(target - self._pos) < 0.02:
-            self._pos = target
-            self._timer.stop()
-        self.update()
+    def _settle(self):
+        self._animation.stop()
+        self.position = float(self.isChecked())
+
+    def _move_thumb(self, checked):
+        self._animation.stop()
+        if not self.isVisible() or os.environ.get("MG_UI_REDUCE_MOTION") == "1":
+            self._settle()
+            return
+        self._animation.setStartValue(self.position)
+        self._animation.setEndValue(float(checked))
+        self._animation.start()
+
+    def hideEvent(self, event):
+        self._settle()
+        super().hideEvent(event)
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
@@ -334,7 +370,8 @@ class Toggle(QAbstractButton):
         d = rect.height() - 6
         x = rect.left() + 3 + (rect.width() - d - 6) * t
         painter.setPen(QPen(QColor(120, 132, 160, 70), 1.0))
-        painter.setBrush(QColor(palette.ink if t > 0.5 else palette.text))
+        off_thumb, on_thumb = QColor(palette.text), QColor(palette.ink)
+        painter.setBrush(QColor.fromRgbF(*(a + (b-a)*t for a, b in zip(off_thumb.getRgbF()[:3], on_thumb.getRgbF()[:3]))))
         painter.drawEllipse(QRectF(x, rect.top() + 3, d, d))
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -369,6 +406,30 @@ class Dot(QWidget):
         painter.setBrush(colour)
         painter.drawEllipse(c, 3.6, 3.6)
         painter.end()
+
+
+class EventMarker(QWidget):
+    """One segment of the activity timeline. The node aligns with the row title."""
+
+    def __init__(self, tone, *, first, last, parent):
+        super().__init__(parent)
+        self._tone, self._first, self._last = tone, first, last
+        self.setFixedWidth(18)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x, y = self.width() / 2, 18.
+        p.setPen(QPen(QColor(theme_for(self).line), 1))
+        if not self._first:
+            p.drawLine(QPointF(x, 0), QPointF(x, y-5))
+        if not self._last:
+            p.drawLine(QPointF(x, y+5), QPointF(x, self.height()))
+        colour = TONE_COLOUR.get(self._tone, BLUE)
+        p.setPen(QPen(colour, 1.5))
+        p.setBrush(colour if self._first else QColor(theme_for(self).bg))
+        p.drawEllipse(QPointF(x, y), 3.1, 3.1)
 
 
 def make_tray_icon(accent_hex: str) -> QIcon:

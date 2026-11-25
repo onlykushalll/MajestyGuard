@@ -70,3 +70,12 @@ def test_quit_flag_is_consumed_once(tmp_path):
     assert not flag.exists()
     assert quit_requested(str(flag)) is False
     assert quit_requested(None) is False
+
+
+def test_quit_flag_is_ignored_while_lock_overlay_is_visible(tmp_path):
+    from parent_watch import quit_requested
+    flag = tmp_path / "ui_quit.flag"
+    flag.write_text("quit\n")
+    assert quit_requested(str(flag), overlay_visible=True) is False
+    assert not flag.exists()                  # discarded, so it cannot fire after the overlay hides
+    assert quit_requested(str(flag), overlay_visible=False) is False

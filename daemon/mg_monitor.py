@@ -246,6 +246,7 @@ class MonitorDaemon:
         self._prewarm_lead_s = read_prewarm_lead_seconds()
         self._daemon_proc = None
         self._idle_fired = False
+        self._presence_recheck_at = 0.0
         self._last_watchdog_launch = 0.0
         self._relaunch_times: list[float] = []
 
@@ -345,16 +346,18 @@ class MonitorDaemon:
                             exc_info=True,
                         )
             self._idle_fired = False
+            self._presence_recheck_at = 0.0
             return
 
         if daemon_running:
             return  # Daemon already handling it
 
-        if self._idle_fired:
-            return  # Already fired this idle stretch
+        if self._idle_fired and (not self._presence_recheck_at or time.monotonic() < self._presence_recheck_at):
+            return
 
         # Idle pre-warm threshold reached — launch full daemon
         self._idle_fired = True
+        self._presence_recheck_at = 0.0
         log.info(
             "Idle pre-warm threshold reached (%.0fs >= %.0fs, target %.0fs) — launching full daemon",
             idle_seconds, prewarm_threshold, self._idle_timeout,
@@ -371,6 +374,7 @@ class MonitorDaemon:
             log.info("Full daemon exited (code=%s) — resuming idle watch", ret)
             self._daemon_proc = None
             self._idle_fired = _read_idle_check_result() == "OWNER_VERIFIED"
+            self._presence_recheck_at = time.monotonic() + self._idle_timeout if self._idle_fired else 0.0
             return False
         return True
 

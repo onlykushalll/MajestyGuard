@@ -8,6 +8,7 @@ glass shield while background apps keep running.
 from __future__ import annotations
 
 import math
+import os
 import ctypes
 import atexit
 import time
@@ -604,6 +605,7 @@ class SoftLockOverlay(QWidget):
         self._noise_image = self._build_noise_texture()
         self._noise = QPixmap.fromImage(self._noise_image)
         self._phase = 0.0
+        self._reduce_motion = os.environ.get("MG_UI_REDUCE_MOTION") == "1"
         self._opacity_value = 0.0
         self._allow_close = False
         self._lock_shown_at = None
@@ -650,11 +652,11 @@ class SoftLockOverlay(QWidget):
         self._timer.timeout.connect(self._tick)
 
         self._fade = QPropertyAnimation(self, b"overlayOpacity", self)
-        self._fade.setDuration(180)
+        self._fade.setDuration(90 if self._reduce_motion else 180)
         self._fade.setEasingCurve(QEasingCurve.Type.OutCubic)
 
         self._dissolve_anim = QPropertyAnimation(self, b"overlayOpacity", self)
-        self._dissolve_anim.setDuration(600)
+        self._dissolve_anim.setDuration(120 if self._reduce_motion else 600)
         self._dissolve_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def _fit_virtual_screen(self) -> None:
@@ -771,10 +773,14 @@ class SoftLockOverlay(QWidget):
 
     def _resume_lock_state(self, *, new_lock: bool) -> None:
         """Cancel an obsolete unlock animation and restore lock ownership."""
-        self._lock_generation += 1
-        if self._dissolve_anim.state() != QAbstractAnimation.State.Stopped:
+        relocking = self._dissolve_anim.state() != QAbstractAnimation.State.Stopped
+        if new_lock or relocking:
+            self._lock_generation += 1
+        if relocking:
             self._dissolve_anim.stop()
             self._animate_opacity(self._opacity_value, 1.0)
+            if self._background.isNull():
+                QTimer.singleShot(0, self._capture_background)
         self._timer.start()
         _install_hooks(self)
         _set_taskbar_visible(False)
@@ -807,12 +813,12 @@ class SoftLockOverlay(QWidget):
         # Privacy: the real screen is never read. The lock backdrop is a
         # generated light field, so nothing of the desktop behind it (colours,
         # windows, layout) can show through. Apps keep running underneath.
-        shot_image = self._ambient_image(rect.width(), rect.height())
         noise_image = self._noise_image
         self._background = QPixmap()
 
         def _worker():
             try:
+                shot_image = self._ambient_image(rect.width(), rect.height())
                 lens_src = None
                 if _glass is not None and _glass.glass_enabled():
                     try:
@@ -960,6 +966,7 @@ class SoftLockOverlay(QWidget):
             return
         _uninstall_hooks()
         _set_taskbar_visible(True)
+        self._fade.stop()  # avoid competing writers if a fast check ends mid-entry
         self._dissolve_generation = self._lock_generation
         self._dissolve_anim.setStartValue(self._opacity_value)
         self._dissolve_anim.setEndValue(0.0)
@@ -992,7 +999,8 @@ class SoftLockOverlay(QWidget):
         self._fade.start()
 
     def _tick(self) -> None:
-        self._phase = (self._phase + 0.012) % 1.0
+        if not self._reduce_motion:
+            self._phase = (self._phase + 0.012) % 1.0
         now = time.monotonic()
         due_win32 = (now - getattr(self, "_last_win32_reassert_at", 0.0)) >= 0.22
 
@@ -1037,18 +1045,33 @@ class SoftLockOverlay(QWidget):
 
     def _use_windows_lock(self) -> None:
         import ctypes
+        import logging
         _uninstall_hooks()
-        hwnd = ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None)
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 5)
-        hwnd2 = ctypes.windll.user32.FindWindowW("Shell_SecondaryTrayWnd", None)
-        if hwnd2:
-            ctypes.windll.user32.ShowWindow(hwnd2, 5)
+        _set_taskbar_visible(True)
+        try:
+            locked = bool(ctypes.windll.user32.LockWorkStation())
+        except Exception:
+            locked = False
+        if not locked:
+            # Fail closed. LockWorkStation can be refused (the DisableLockWorkstation policy,
+            # a session that is not interactive). Hiding the overlay anyway would hand the
+            # desktop to whoever pressed TAB twice, so take the lock back instead.
+            logging.getLogger("MajestyGuard.UI").error(
+                "LockWorkStation failed (GetLastError=%d) - keeping the lock overlay up",
+                ctypes.windll.kernel32.GetLastError(),
+            )
+            self._tab_gate.reset()
+            self._resume_lock_state(new_lock=False)
+            self._force_topmost()
+            self.raise_()
+            self.activateWindow()
+            self.update()
+            return
+        # The Windows lock is engaging: only now tell the daemon and let go of the screen.
         if self._on_windows_lock_used:
             self._on_windows_lock_used()
         self.hide()
         self._lock_shown_at = None
-        ctypes.windll.user32.LockWorkStation()
 
     def getOverlayOpacity(self) -> float:
         return self._opacity_value
@@ -1095,6 +1118,8 @@ class SoftLockOverlay(QWidget):
 
     def _content_alpha(self) -> float:
         """0 -> 1 over 220 ms after the state changes, so copy fades in."""
+        if self._reduce_motion:
+            return 1.0
         return max(0.0, min(1.0, (time.monotonic() - self._state_changed_at) / 0.22))
 
     def _mark_key(self, key: str) -> None:
@@ -1149,12 +1174,12 @@ class SoftLockOverlay(QWidget):
             painter.drawPath(path)
 
         # Time, left; hairline; date + state message, right.
-        time_font = _font(58 * s, QFont.Weight.Light, tabular=True, spacing=-1.6)
+        time_font = _font(58 * s, QFont.Weight.Light, tabular=True)
         self._draw_text(painter, QRectF(*lay.time), now.strftime("%H:%M"), time_font, self._ink(235),
                         Qt.AlignmentFlag.AlignHCenter)
-        dx, dy, _dw, dh = lay.divider
+        dx, dy, dw, dh = lay.divider
         painter.setPen(QPen(self._ink(30), 1.0))
-        painter.drawLine(QPointF(dx, dy), QPointF(dx, dy + dh))
+        painter.drawLine(QPointF(dx, dy), QPointF(dx + dw, dy + dh))
 
         fade = self._content_alpha()
         self._draw_text(painter, QRectF(*lay.date), now.strftime("%A, %B %d").upper(),
@@ -1185,7 +1210,7 @@ class SoftLockOverlay(QWidget):
         step = 7.0 * s
         count = max(8, int(w // step))
         step = w / count
-        frac = (now.second + now.microsecond / 1e6) / 60.0
+        frac = (now.second + (0 if self._reduce_motion else now.microsecond / 1e6)) / 60.0
         marker = x0 + w * frac
         base = y0 + h
         painter.save()
@@ -1235,16 +1260,22 @@ class SoftLockOverlay(QWidget):
 
         k = 0.5 if mode == "dim" else 1.0
         fade = self._content_alpha()
-        # Engraved key outline: no fill, so the glass shows through it.
+        # Treat the available verification key as the primary physical keycap.
         cap_h = rect.height() * 0.54
         cap_font = _font(9 * s, QFont.Weight.DemiBold, spacing=0.6)
         painter.setFont(cap_font)
         cap_w = max(cap_h * 1.25, painter.fontMetrics().horizontalAdvance(model.key) + 24.0 * s)
         cap = QRectF(rect.left() + radius * 0.6, rect.center().y() - cap_h / 2.0, cap_w, cap_h)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
+        pressed_at = self._key_flash.get(model.key)
+        press = (max(0., 1.-(time.monotonic()-pressed_at)/.18)
+                 if pressed_at is not None and not self._reduce_motion else 0.)
+        cap.translate(0., 1.6*s*press)
+        primary = model.key == "SPACE" and mode == "idle"
+        painter.setBrush(self._ink(212) if primary else QColor(255, 255, 255, int(36 + 50*press)))
         painter.setPen(QPen(self._ink(int(95 * k)), 1.3))
         painter.drawRoundedRect(cap, 10.0 * s, 10.0 * s)
-        self._draw_text(painter, cap, model.key, cap_font, self._ink(int(225 * k), 1))
+        self._draw_text(painter, cap, model.key, cap_font,
+                        QColor(255, 255, 255) if primary else self._ink(int(225 * k), 1))
 
         pad_r = radius * 0.62 + (26.0 * s if mode == "busy" else 0.0)
         tx = cap.right() + 14.0 * s
@@ -1270,14 +1301,6 @@ class SoftLockOverlay(QWidget):
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(*_tok.AMBER, int(110 + 120 * ring)), 2.2))
             painter.drawRoundedRect(rect.adjusted(-1.0, -1.0, 1.0, 1.0), radius + 1.0, radius + 1.0)
-
-        flashed = self._key_flash.get(model.key)
-        if flashed is not None:
-            elapsed = time.monotonic() - flashed
-            if elapsed < 0.22:
-                path = QPainterPath()
-                path.addRoundedRect(rect, radius, radius)
-                painter.fillPath(path, QColor(255, 255, 255, int(150 * (1.0 - elapsed / 0.22))))
 
     def _paint_corner_status(self, painter: QPainter) -> None:
         lay = self._layout()
@@ -1313,16 +1336,8 @@ class SoftLockOverlay(QWidget):
     def _paint_brand_signature(self, painter: QPainter) -> None:
         lay = self._layout()
         rect = QRectF(*lay.brand)
-        painter.save()
-        if not self._draw_lens(painter, rect, rect.height() / 2.0, tint_alpha=0.30, spec_gain=0.9, bulge=0.04):
-            path = QPainterPath()
-            path.addRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
-            painter.fillPath(path, QColor(255, 255, 255, 100))
-            painter.setPen(QPen(QColor(255, 255, 255, 160), 1.0))
-            painter.drawPath(path)
-        self._draw_text(painter, rect.adjusted(14.0 * lay.scale, 0, -14.0 * lay.scale, 0), "Secured by MajestyGuard",
-                        _font(8.5 * lay.scale, QFont.Weight.Medium, spacing=0.5), self._ink(190, 1))
-        painter.restore()
+        self._draw_text(painter, rect, "Secured by MajestyGuard",
+                        _font(9.5 * lay.scale, QFont.Weight.Medium), self._ink(195, 1), Qt.AlignmentFlag.AlignRight)
 
     def _status_label(self) -> str:
         return _layout.status_label(self._state.name)
@@ -1377,7 +1392,8 @@ class SoftLockOverlay(QWidget):
             self.raise_()
 
     def changeEvent(self, event) -> None:  # type: ignore[override]
-        if self.isVisible() and event.type() == QEvent.Type.WindowStateChange and self.isMinimized():
+        if (self.isVisible() and self._state.name in _LOCK_NAMES
+                and event.type() == QEvent.Type.WindowStateChange and self.isMinimized()):
             self.showFullScreen()
             self._force_topmost()
             self.raise_()
@@ -1385,7 +1401,7 @@ class SoftLockOverlay(QWidget):
         super().changeEvent(event)
 
     def event(self, event) -> bool:  # type: ignore[override]
-        if self.isVisible() and event.type() == QEvent.Type.WindowDeactivate:
+        if self.isVisible() and self._state.name in _LOCK_NAMES and event.type() == QEvent.Type.WindowDeactivate:
             self._force_topmost()
             self.raise_()
             self.activateWindow()

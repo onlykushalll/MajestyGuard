@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QPushButton,
@@ -33,7 +34,7 @@ from PyQt6.QtWidgets import (
 
 from app import activity
 from app.cc_theme import THEMES, stylesheet
-from app.cc_widgets import Dot, NavButton, StatusOrb, Surface, Toggle, WorkspaceBackground, make_tray_icon
+from app.cc_widgets import Dot, EventMarker, NavButton, StatusOrb, Surface, Toggle, WorkspaceBackground, make_tray_icon
 from app.runtime import RuntimeStatus
 
 
@@ -70,7 +71,7 @@ _PAGES = (
     ("overview", "Overview", "Your protection at a glance"),
     ("protection", "Protection", "How and when this PC locks"),
     ("camera", "Camera", "Health of the camera MajestyGuard watches"),
-    ("activity", "Activity", "A tamper-evident history of lock events"),
+    ("activity", "Activity", "Local history of lock events"),
     ("enrollment", "Enrollment", "Your face profile"),
     ("about", "About", "Privacy, shortcuts and files"),
     ("appearance", "Appearance", "Control Center theme"),
@@ -129,10 +130,11 @@ class ActivityList(QWidget):
         for index, item in enumerate(items):
             row = QWidget(self)
             line = QHBoxLayout(row)
-            line.setContentsMargins(2, 9, 2, 9)
+            line.setContentsMargins(2, 0, 2, 0)
             line.setSpacing(12)
-            line.addWidget(Dot(item.tone, parent=row), 0, Qt.AlignmentFlag.AlignTop)
+            line.addWidget(EventMarker(item.tone, first=index == 0, last=index == len(items)-1, parent=row))
             text = QVBoxLayout()
+            text.setContentsMargins(0, 9, 0, 9)
             text.setSpacing(1)
             title = QLabel(item.title, row)
             title.setObjectName("rowTitle")
@@ -145,13 +147,10 @@ class ActivityList(QWidget):
             line.addLayout(text, 1)
             when = QLabel(activity.ago(item.ts), row)
             when.setObjectName("rowMeta")
+            when.setContentsMargins(0, 9, 0, 0)
             self._times.append(when)
             line.addWidget(when, 0, Qt.AlignmentFlag.AlignTop)
             self._layout.addWidget(row)
-            if index < len(items) - 1:
-                rule = QFrame(self)
-                rule.setObjectName("hair")
-                self._layout.addWidget(rule)
 
 
 def _card(parent: QWidget, *, radius: float = 22.0, margins=(22, 18, 22, 18), spacing: int = 10):
@@ -212,7 +211,8 @@ class ControlCenter(QMainWindow):
         outer = QHBoxLayout(root)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        outer.addWidget(self._build_sidebar(root))
+        self._sidebar = self._build_sidebar(root)
+        outer.addWidget(self._sidebar)
 
         content = QVBoxLayout()
         content.setContentsMargins(24, 22, 24, 14)
@@ -240,12 +240,23 @@ class ControlCenter(QMainWindow):
         side, box = _card(parent, margins=(12, 21, 12, 14), spacing=2)
         side.setObjectName("sidebar")
         side.setFixedWidth(182)
-        brand = _label("MajestyGuard", "brand", side)
-        brand.setContentsMargins(12, 0, 0, 0)
-        box.addWidget(brand)
-        sub = _label("Control Center", "brandSub", side)
-        sub.setContentsMargins(12, 0, 0, 0)
-        box.addWidget(sub)
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(9)
+        mark = QLabel(side)
+        mark.setFixedSize(34, 38)
+        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark.setPixmap(make_tray_icon("#C1C8BD").pixmap(QSize(32, 32), side.devicePixelRatioF()))
+        mark.setToolTip("MajestyGuard Control Center")
+        brand_row.addWidget(mark)
+        self._brand_text = QWidget(side)
+        brand = QVBoxLayout(self._brand_text)
+        brand.setContentsMargins(0, 0, 0, 0)
+        brand.setSpacing(0)
+        brand.addWidget(_label("MajestyGuard", "brand", side))
+        brand.addWidget(_label("Control Center", "brandSub", side))
+        brand_row.addWidget(self._brand_text)
+        brand_row.addStretch(1)
+        box.addLayout(brand_row)
         box.addSpacing(20)
 
         self._nav: list[NavButton] = []
@@ -262,10 +273,29 @@ class ControlCenter(QMainWindow):
             self._nav.append(btn)
             box.addWidget(btn)
         box.addStretch(1)
-        box.addWidget(_label("This device", "rowMeta", side))
+        self._device_caption = _label("This device", "rowMeta", side)
+        box.addWidget(self._device_caption)
         self._side_pill = _label("", "pill", side)
         box.addWidget(self._side_pill, 0, Qt.AlignmentFlag.AlignLeft)
+        self._compact_status = Dot(parent=side)
+        box.addWidget(self._compact_status, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._compact_status.hide()
         return side
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, "_sidebar"):
+            return
+        compact = self.width() < 840
+        if compact == self._nav[0].compact:
+            return
+        self._sidebar.setFixedWidth(64 if compact else 182)
+        for nav in self._nav:
+            nav.compact = compact
+            nav.update()
+        for label in (self._brand_text, self._device_caption, self._side_pill):
+            label.setVisible(not compact)
+        self._compact_status.setVisible(compact)
 
     def _page(self) -> tuple[QWidget, QVBoxLayout]:
         page = QWidget(self)
@@ -277,7 +307,7 @@ class ControlCenter(QMainWindow):
 
     def _page_overview(self) -> QWidget:
         page, box = self._page()
-        hero, hero_box = _card(page, radius=28, margins=(26, 22, 26, 22))
+        hero, hero_box = _card(page, margins=(24, 19, 24, 18))
         hero.setObjectName("statusBand")
         row = QHBoxLayout()
         copy = QVBoxLayout()
@@ -287,14 +317,15 @@ class ControlCenter(QMainWindow):
         copy.addWidget(self._status_label)
         self._detail_label = _label("", "detail", hero, True)
         copy.addWidget(self._detail_label)
-        row.addLayout(copy, 1)
-        self._orb_widget = StatusOrb(70, hero)
-        row.addWidget(self._orb_widget, 0, Qt.AlignmentFlag.AlignTop)
-        hero_box.addLayout(row)
         self._primary_button = QPushButton(hero)
         self._primary_button.setObjectName("primary")
         self._primary_button.clicked.connect(self._run_primary_action)
-        hero_box.addWidget(self._primary_button, 0, Qt.AlignmentFlag.AlignLeft)
+        copy.addSpacing(6)
+        copy.addWidget(self._primary_button, 0, Qt.AlignmentFlag.AlignLeft)
+        row.addLayout(copy, 1)
+        self._orb_widget = StatusOrb(112, hero)
+        row.addWidget(self._orb_widget, 0, Qt.AlignmentFlag.AlignVCenter)
+        hero_box.addLayout(row)
         chips = QHBoxLayout()
         chips.setSpacing(8)
         self._gallery_chip, self._lock_chip, self._perf_chip = (
@@ -321,7 +352,10 @@ class ControlCenter(QMainWindow):
         self._stat_last = self._stat_card(page, stats, "LAST UNLOCK", 3)
         box.addLayout(stats)
 
-        recent, recent_box = _card(page, margins=(22, 16, 22, 10), spacing=2)
+        recent = QWidget(page)
+        recent_box = QVBoxLayout(recent)
+        recent_box.setContentsMargins(2, 4, 2, 0)
+        recent_box.setSpacing(4)
         top = QHBoxLayout()
         top.addWidget(_label("Recent activity", "cardTitle", recent))
         top.addStretch(1)
@@ -477,7 +511,7 @@ class ControlCenter(QMainWindow):
         row.addWidget(self._integrity_dot)
         col = QVBoxLayout()
         col.setSpacing(1)
-        self._integrity_title = _label("History is intact", "rowTitle", banner)
+        self._integrity_title = _label("Local history", "rowTitle", banner)
         self._integrity_meta = _label("", "rowMeta", banner, True)
         col.addWidget(self._integrity_title)
         col.addWidget(self._integrity_meta)
@@ -504,7 +538,7 @@ class ControlCenter(QMainWindow):
         row.addWidget(self._enroll_dot, 0, Qt.AlignmentFlag.AlignTop)
         text = QVBoxLayout()
         text.setSpacing(3)
-        self._enroll_title = _label("Face profile ready", "status", card)
+        self._enroll_title = _label("Face profile ready", "status", card, True)
         self._enroll_sub = _label("", "detail", card, True)
         text.addWidget(self._enroll_title)
         text.addWidget(self._enroll_sub)
@@ -515,8 +549,20 @@ class ControlCenter(QMainWindow):
         row.addWidget(self._reenroll_btn, 0, Qt.AlignmentFlag.AlignVCenter)
         cbox.addLayout(row)
         box.addWidget(card)
+        self._enroll_result = _label("", "detail", page, True)
+        self._enroll_result.hide()
+        box.addWidget(self._enroll_result)
+        reset, reset_box = _card(page)
+        reset_box.addWidget(_label("Replace face profile", "cardTitle", reset))
+        reset_box.addWidget(_label("Use this if your existing profile no longer matches. "
+                                   "Windows confirms your account before the new scan starts.", "detail", reset, True))
+        self._startover_btn = QPushButton("Start over...", reset)
+        self._startover_btn.setObjectName("secondary")
+        self._startover_btn.clicked.connect(self.start_over_enrollment)
+        reset_box.addWidget(self._startover_btn, 0, Qt.AlignmentFlag.AlignLeft)
+        box.addWidget(reset)
         tips, tbox = _card(page)
-        tbox.addWidget(_label("For a profile that works everywhere", "cardTitle", tips))
+        tbox.addWidget(_label("For a profile that works everywhere", "cardTitle", tips, True))
         for tip in (
             "Sit where you normally sit, at your usual distance from the screen.",
             "Use the light you usually work in, then add a second pass in dimmer or brighter light.",
@@ -543,7 +589,13 @@ class ControlCenter(QMainWindow):
         box.addWidget(priv)
         files, fbox = _card(page)
         fbox.addWidget(_label("Where things live", "cardTitle", files))
-        fbox.addWidget(_label(str(self._state_dir()), "mono", files, True))
+        directory = QLineEdit(str(self._state_dir()), files)
+        directory.setReadOnly(True)
+        directory.setObjectName("folderPath")
+        directory.setAccessibleName("Local data folder")
+        directory.setToolTip(directory.text())
+        directory.setCursorPosition(0)
+        fbox.addWidget(directory)
         self._diag_btn = QPushButton("Open diagnostics", files)
         self._diag_btn.setObjectName("secondary")
         self._diag_btn.clicked.connect(self.open_diagnostics)
@@ -670,7 +722,8 @@ class ControlCenter(QMainWindow):
 
     # --------------------------------------------------------------- refresh
     def _apply_lock_state(self, locked: bool) -> None:
-        for widget in (self._reenroll_btn, self._timeout_input, self._save_timeout_button, *self._preset_buttons):
+        for widget in (self._reenroll_btn, self._startover_btn, self._timeout_input,
+                       self._save_timeout_button, *self._preset_buttons):
             widget.setEnabled(not locked)
         has_toggle = callable(getattr(self._supervisor, "set_windows_lock_enabled", None))
         self._windows_lock_toggle.setEnabled(has_toggle and not locked)
@@ -719,14 +772,24 @@ class ControlCenter(QMainWindow):
                     if "total=" in line and "Cold start complete:" in line:
                         fields = line.split("total=", 1)[1].split()
                         if fields and fields[0].endswith("s"):
-                            perf_text = fields[0]
-                            break
+                            token = fields[0]
+                            try:
+                                seconds = (int(token[:-2]) / 1000 if token.endswith("ms")
+                                           else float(token[:-1]))
+                            except ValueError:
+                                continue
+                            if 0 <= seconds < float("inf"):
+                                perf_text = f"{seconds:.2f}s"
+                                break
             except OSError:
                 pass
         self._perf_chip.setText(perf_text)
         return gallery
 
     def refresh(self) -> None:
+        maintain = getattr(self._supervisor, "maintain", None)
+        if callable(maintain):
+            maintain()
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
         if not enrolled:
@@ -742,6 +805,9 @@ class ControlCenter(QMainWindow):
                 RuntimeStatus.PAUSED: "Presence checks are paused until you resume.",
                 RuntimeStatus.DEGRADED: "Protection stopped unexpectedly. Restart to resume checks.",
             }[status]
+            note = getattr(self._supervisor, "recovery_note", None)
+            if callable(note):
+                detail = note() or detail
             pill, tone = _SIDE_PILL[status]
         self._status_label.setText(text)
         self._detail_label.setText(detail)
@@ -752,6 +818,9 @@ class ControlCenter(QMainWindow):
         self._orb_widget.set_state_visual(color, animated=enrolled and status is RuntimeStatus.STARTING,
                                           symbol=status.name.lower() if enrolled else "enroll")
         self._side_pill.setText(pill)
+        self._compact_status.set_tone(tone)
+        self._compact_status.setAccessibleName(pill)
+        self._compact_status.setToolTip(pill)
         if color != self._tray_color:
             self.setProperty("statusInk", color)
             self._orb_widget.parentWidget().update()
@@ -801,6 +870,9 @@ class ControlCenter(QMainWindow):
             self._nav[2].set_badge("" if healthy else "!", tone)
 
         gallery = getattr(self, "_gallery_text", "")
+        outcome = activity.read_enroll_result(state)
+        self._enroll_result.setText(outcome or "")
+        self._enroll_result.setVisible(outcome is not None)
         if enrolled:
             self._enroll_dot.set_tone("ok")
             self._enroll_title.setText("Face profile ready")
@@ -832,7 +904,8 @@ class ControlCenter(QMainWindow):
             self._integrity = activity.verify_integrity(path)
         ok, count, message = self._integrity
         self._integrity_dot.set_tone("ok" if ok else "bad")
-        self._integrity_title.setText("History is intact" if ok else "History may have been altered")
+        self._integrity_title.setText(("Stored records are consistent" if count else "No records to check")
+                                      if ok else "History may have been altered")
         self._integrity_meta.setText(
             (f"{count} records, each chained to the one before it." if count else message) if ok else message
         )
@@ -889,6 +962,14 @@ class ControlCenter(QMainWindow):
         else:
             self._enroll_sub.setText("Enrollment is already running or unavailable.")
             self._timeout_note.setText("Enrollment is already running or unavailable.")
+
+    def start_over_enrollment(self) -> None:
+        if self._refuse_while_locked():
+            return
+        if self._supervisor.start_enrollment(start_over=True):
+            self._enroll_sub.setText("Enrollment opened in a separate window.")
+        else:
+            self._enroll_sub.setText("Enrollment is already running or unavailable.")
 
     def open_diagnostics(self) -> None:
         directory = self._supervisor.open_log_directory()

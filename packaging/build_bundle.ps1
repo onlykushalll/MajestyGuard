@@ -44,6 +44,17 @@ function Invoke-PyInstaller {
     }
 }
 
+if ($CreateInstaller) {
+    $compiler = Get-Command ISCC.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $isccPath = if ($compiler) { $compiler.Path } else {
+        @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+          "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+          "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+    }
+    if (-not $isccPath) { throw "Install Inno Setup 6 or put ISCC.exe on PATH before building the installer." }
+}
+
 Require-File (Join-Path $ModelDir "antispoof_minifasv2.onnx") "anti-spoof model"
 Require-File (Join-Path $ModelDir "face_detection_yunet_2023mar.onnx") "face detector model"
 Require-File (Join-Path $ModelDir "midas_v21_small_256.onnx") "depth liveness model"
@@ -55,19 +66,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller is required. Install packaging\requirements-build.txt into the selected Python environment."
 }
 
-New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
-foreach ($artifact in @(
-    (Join-Path $BundleRoot "MajestyGuard.exe"),
-    (Join-Path $BundleRoot "MajestyGuard"),
-    (Join-Path $BundleRoot "MajestyGuardUI.exe"),
-    (Join-Path $BundleRoot "MajestyGuardUI"),
-    (Join-Path $BundleRoot "MajestyGuardDaemon.exe"),
-    (Join-Path $BundleRoot "MajestyGuardDaemon")
-)) {
-    if (Test-Path -LiteralPath $artifact) {
-        Remove-Item -LiteralPath $artifact -Recurse -Force
-    }
+if ((Test-Path -LiteralPath $BundleRoot) -and (Get-ChildItem -Force -LiteralPath $BundleRoot | Select-Object -First 1)) {
+    throw "Bundle directory is not empty. Pass a fresh -OutputDir to preserve previous builds."
 }
+New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
 
 $commonArguments = @(
     "--noconfirm",
@@ -85,7 +87,6 @@ Invoke-PyInstaller ($commonArguments + @(
     "--windowed",
     "--name", "MajestyGuard",
     "--hidden-import", "ui.tokens",
-    "--collect-all", "PyQt6",
     (Join-Path $Root "app\main.py")
 ))
 
@@ -98,8 +99,8 @@ Invoke-PyInstaller ($commonArguments + @(
     "--collect-all", "mediapipe",
     "--collect-all", "insightface",
     "--collect-all", "onnxruntime",
-    "--collect-all", "PyQt6",
-    "--hidden-import", "enroll_v2",
+    "--hidden-import", "enroll_continuous",
+    "--hidden-import", "coverage_enrollment_window",
     "--add-data", "$ModelDir;models",
     "--add-data", "$InsightFaceModelDir;models_insightface",
     "--add-data", "$Root\ui;ui",
@@ -110,7 +111,6 @@ Invoke-PyInstaller ($commonArguments + @(
     "--onedir",
     "--windowed",
     "--name", "MajestyGuardUI",
-    "--collect-all", "PyQt6",
     (Join-Path $Root "ui\main.py")
 ))
 
@@ -124,9 +124,13 @@ Require-File (Join-Path $BundleRoot "MajestyGuardUI\MajestyGuardUI.exe") "overla
 $previousLockSetting = $env:MG_ENABLE_LOCK
 try {
     $env:MG_ENABLE_LOCK = "0"
-    & $ControlCenter --self-test
-    if ($LASTEXITCODE -ne 0) {
-        throw "Control Center packaged import smoke test failed with exit code $LASTEXITCODE."
+    $smoke = Start-Process -FilePath $ControlCenter -ArgumentList "--self-test" -WindowStyle Hidden -PassThru
+    if (-not $smoke.WaitForExit(45000)) {
+        $smoke.Kill()
+        throw "Control Center packaged import smoke test timed out."
+    }
+    if ($smoke.ExitCode -ne 0) {
+        throw "Control Center packaged import smoke test failed with exit code $($smoke.ExitCode)."
     }
 }
 finally {
@@ -134,20 +138,12 @@ finally {
 }
 
 if ($CreateInstaller) {
-    $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
-    if ($null -eq $iscc) {
-        $defaultIscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
-        if (Test-Path -LiteralPath $defaultIscc -PathType Leaf) {
-            $iscc = Get-Item -LiteralPath $defaultIscc
-        }
-    }
-    if ($null -eq $iscc) {
-        throw "Inno Setup 6 (ISCC.exe) is required for -CreateInstaller. Build the bundle succeeded; install Inno Setup and rerun with -CreateInstaller."
-    }
-    & $iscc.Source (Join-Path $PSScriptRoot "MajestyGuard.iss") "/DBundleRoot=$BundleRoot"
+    $installerDir = Join-Path $OutputDir "installer"
+    & $isccPath "/O$installerDir" "/DBundleRoot=$BundleRoot" (Join-Path $PSScriptRoot "MajestyGuard.iss")
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup failed with exit code $LASTEXITCODE."
     }
+    Require-File (Join-Path $installerDir "MajestyGuard-Setup.exe") "compiled installer"
 }
 
 Write-Host "Bundle ready: $BundleRoot"

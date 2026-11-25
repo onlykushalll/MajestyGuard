@@ -16,7 +16,7 @@ import numpy as np
 
 
 DEFAULT_META_PATH = (
-    Path(os.environ.get("LOCALAPPDATA", "C:/tmp"))
+    Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     / "MajestyGuard"
     / "embeddings_v2_meta.json"
 )

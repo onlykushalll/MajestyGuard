@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from app.config import (
     MAX_IDLE_TIMEOUT_SECONDS,
@@ -24,6 +25,15 @@ class RuntimeStatus(Enum):
     DEGRADED = "degraded"
 
 
+# A daemon that dies unexpectedly is restarted with growing pauses; too many deaths in a short
+# window means something is really wrong (bad camera driver, corrupt install), so stop and say so
+# instead of restarting forever.
+RECOVERY_DELAYS_S = (2.0, 5.0, 15.0, 45.0, 120.0)
+CRASH_WINDOW_S = 600.0
+MAX_CRASHES_IN_WINDOW = 6
+STABLE_AFTER_S = 120.0
+
+
 class Supervisor:
     """Own the daemon lifecycle without becoming a biometric decision-maker."""
 
@@ -35,17 +45,25 @@ class Supervisor:
         *,
         local_app_data: Optional[Path] = None,
         daemon_executable: Optional[Path] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._root = Path(root)
         self._python = Path(python_executable)
         self._settings_path = Path(settings_path)
         self._local_app_data = Path(local_app_data) if local_app_data else Path(
-            os.environ.get("LOCALAPPDATA", "C:/tmp")
+            os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))
         )
         self._daemon_executable = Path(daemon_executable) if daemon_executable else None
         self._process: Optional[subprocess.Popen] = None
         self._enrollment_process: Optional[subprocess.Popen] = None
         self._resume_after_enrollment: bool = False
+        self._clock = clock
+        self._started_at: Optional[float] = None
+        self._crashes: list[float] = []
+        self._noted_dead: Optional[subprocess.Popen] = None
+        self._next_restart_at: float = 0.0
+        self._gave_up = False
+        self._last_recovery_at: Optional[float] = None
 
     def status(self) -> RuntimeStatus:
         if self._enrollment_process is not None and self._enrollment_process.poll() is not None:
@@ -62,6 +80,57 @@ class Supervisor:
         return (state_dir / "embeddings_v2.npy").is_file() or (state_dir / "biometric.mgd").is_file()
 
     def start(self) -> bool:
+        """Start protection on the user's request (forgives earlier crashes)."""
+        started = self._launch()
+        if started:
+            self._crashes.clear()
+            self._gave_up = False
+        return started
+
+    def maintain(self) -> str:
+        """Keep protection alive. Call every couple of seconds.
+
+        Returns '' (nothing to do), 'waiting' (restart scheduled), 'restarted' or 'gave_up'.
+        Never restarts anything the user stopped or paused, and never without an enrollment.
+        """
+        process = self._process
+        if process is None:
+            return ""
+        now = self._clock()
+        if process.poll() is None:
+            if self._started_at is not None and now - self._started_at >= STABLE_AFTER_S:
+                self._crashes.clear()
+                self._gave_up = False
+            return ""
+        if load_settings(self._settings_path).paused or not self.enrollment_present():
+            return ""
+        if self._gave_up:
+            return "gave_up"
+        if self._noted_dead is not process:
+            self._noted_dead = process
+            self._crashes = [c for c in self._crashes if now - c < CRASH_WINDOW_S] + [now]
+            if len(self._crashes) > MAX_CRASHES_IN_WINDOW:
+                self._gave_up = True
+                return "gave_up"
+            delay = RECOVERY_DELAYS_S[min(len(self._crashes), len(RECOVERY_DELAYS_S)) - 1]
+            self._next_restart_at = now + delay
+        if now < self._next_restart_at:
+            return "waiting"
+        if self._launch():
+            self._last_recovery_at = now
+            return "restarted"
+        self._next_restart_at = now + RECOVERY_DELAYS_S[-1]
+        return "waiting"
+
+    def recovery_note(self) -> str:
+        """Plain-language line for the UI, or ''."""
+        if self._gave_up:
+            return "Protection keeps stopping. Open diagnostics, or restart it yourself."
+        if self._last_recovery_at is not None and self._clock() - self._last_recovery_at < CRASH_WINDOW_S:
+            return "Protection stopped unexpectedly and was restarted automatically."
+        return ""
+
+    def _launch(self) -> bool:
         if self.status() in (RuntimeStatus.STARTING, RuntimeStatus.RUNNING):
             return False
 
@@ -103,6 +172,7 @@ class Supervisor:
         except OSError:
             self._process = None
             return False
+        self._started_at = self._clock()
         return True
 
     def session_locked(self) -> bool:
@@ -230,8 +300,13 @@ class Supervisor:
             self.start()
         return True
 
-    def start_enrollment(self) -> bool:
-        """Launch the existing guided enrollment tool at most once at a time."""
+    def start_enrollment(self, *, start_over: bool = False) -> bool:
+        """Launch the guided enrollment tool at most once at a time.
+
+        By default a new face may only replace the enrolled one if it is recognisably the same
+        person. Start over requests a Windows challenge from the gallery writer; the
+        environment carries a request, never authorization.
+        """
         if self._enrollment_process is not None and self._enrollment_process.poll() is None:
             return False
 
@@ -241,7 +316,7 @@ class Supervisor:
         if packaged_daemon is not None and packaged_daemon.is_file():
             cmd = [str(packaged_daemon), "--enroll"]
         else:
-            entrypoint = self._root / "daemon" / "enroll_v2.py"
+            entrypoint = self._root / "daemon" / "enroll_continuous.py"
             if not entrypoint.is_file():
                 return False
             cmd = [str(self._python), str(entrypoint)]
@@ -260,6 +335,7 @@ class Supervisor:
                 "MG_ENABLE_LOCK": "0",
                 "MG_ENABLE_WHCDF_IPC": "0",
                 "MG_ENABLE_SERVICE_IPC": "0",
+                "MG_ENROLL_CONTINUITY": "0" if start_over else "1",
                 "PYTHONUNBUFFERED": "1",
             }
         )

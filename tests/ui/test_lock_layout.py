@@ -42,6 +42,19 @@ def test_layout_respects_a_secondary_monitor_offset():
     assert abs(lay.cx - 2880) < 0.5
 
 
+def test_portrait_hud_has_readable_copy_and_full_width_shortcuts():
+    for width, height in ((360, 640), (540, 960), (720, 1280)):
+        lay = L.compute(-width, -40, width, height)
+        for name in ("card", "space_key", "tab_key", "status", "brand"):
+            assert _inside(getattr(lay, name), (-width, -40, width, height))
+        assert lay.message[2] >= 235 * lay.scale
+        assert _inside(lay.message, lay.card)
+        assert lay.status[1] + lay.status[3] < lay.card[1]
+        assert lay.time[1] + lay.time[3] <= lay.date[1]
+        assert lay.space_key[1] + lay.space_key[3] <= lay.tab_key[1]
+        assert lay.tab_key[1] + lay.tab_key[3] < lay.brand[1]
+
+
 def test_animated_bounds_cover_every_moving_part():
     lay = L.compute(0, 0, 1600, 900)
     bounds = L.animated_bounds(lay)
@@ -103,11 +116,11 @@ def test_copy_fits_its_boxes_with_real_font_metrics():
     assert app is not None
     states = ("locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
               "verify_failed", "camera_fault")
-    for w, h in ((1280, 720), (1366, 768), (1920, 1080), (2560, 1440), (3840, 2160)):
+    for w, h in ((360, 640), (540, 960), (720, 1280), (1280, 720), (1366, 768), (1920, 1080), (2560, 1440), (3840, 2160)):
         lay = L.compute(0, 0, w, h)
         s = lay.scale
         status_font = QFontMetricsF(fonts.ui_font_px(8.5 * s, QFont.Weight.DemiBold, spacing=1.1))
-        head_font = QFontMetricsF(fonts.ui_font_px(16.5 * s, QFont.Weight.DemiBold))
+        head_font = QFontMetricsF(fonts.ui_font_px(18 * s, QFont.Weight.DemiBold))
         sub_font = QFontMetricsF(fonts.ui_font_px(10.5 * s, QFont.Weight.Normal))
         probe = QFontMetricsF(fonts.ui_font_px(10.5 * s))
         if abs(probe.horizontalAdvance("i") - probe.horizontalAdvance("W")) < 0.01:

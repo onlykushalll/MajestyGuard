@@ -37,7 +37,10 @@ class MockCompletedProcess:
 # Helper to configure mock subprocess responses
 def get_mock_run(wmic_output="", ps_mf_output="", ps_hw_output="", ps_name_output="", pnputil_output=""):
     def mock_run(args, **kwargs):
-        cmd = args[0]
+        from pathlib import Path
+        tool = Path(args[0])
+        assert tool.is_absolute()
+        cmd = tool.stem.lower()
         if cmd == "pnputil" or cmd.endswith("pnputil.exe"):
             return MockCompletedProcess(0 if pnputil_output else 1, pnputil_output)
         elif cmd == "wmic":

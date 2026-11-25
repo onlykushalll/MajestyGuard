@@ -67,6 +67,7 @@ _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
 from companion_ipc import FaceState, start_companion_ipc_thread
 from face_engine import FaceEngine
 from camera_io import read_bgr_frame, release_capture
+from loop_watchdog import LoopStallGuard, should_idle_lock_while_stalled
 from cmd_server import CMDServer
 from camera_health import (
     BACKEND_ANY,
@@ -241,6 +242,9 @@ WHCDF_IPC_ENABLED = os.environ.get("MG_ENABLE_WHCDF_IPC", "0") == "1"
 SERVICE_IPC_ENABLED = os.environ.get("MG_ENABLE_SERVICE_IPC", "0") == "1"
 OVERLAY_WATCHDOG_ENABLED = os.environ.get("MG_OVERLAY_WATCHDOG", "0") == "1"
 OVERLAY_WATCHDOG_INTERVAL_S = _env_float("MG_OVERLAY_WATCHDOG_INTERVAL_S", 2.0, 0.5, 30.0)
+# A camera call that blocks the main loop longer than this lets the guard thread take over the
+# idle soft-lock and emergency lock (see loop_watchdog.py).
+LOOP_STALL_S = _env_float("MG_LOOP_STALL_S", 5.0, 2.0, 60.0)
 
 BIOMETRIC_PATH = (
     Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
@@ -401,6 +405,7 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("idle")
         self.session_monitor.start()
         self._start_overlay_watchdog()
+        self._start_loop_stall_guard()
 
         if WHCDF_IPC_ENABLED:
             start_companion_ipc_thread(self._whcdf_stop)
@@ -923,7 +928,62 @@ class MajestyGuardDaemon:
         self._session_events.put(event)
 
     def _queue_ui_command(self, command: str, detail: str) -> None:
+        if command == "emergency_lock" and self._loop_guard().is_stalled(LOOP_STALL_S):
+            # The loop is stuck in a camera call and would never read the queue. A requested
+            # lock must not wait for a driver: apply it from this thread.
+            log.warning("[Guard] main loop stalled - applying emergency lock directly")
+            self._handle_ui_command(command, detail)
+            return
         self._ui_commands.put((command, detail))
+
+    def _loop_guard(self) -> LoopStallGuard:
+        """Lazily created so bare/partially-constructed daemons (tests) work."""
+        guard = getattr(self, "_loop_stall_guard", None)
+        if guard is None:
+            guard = LoopStallGuard()
+            self._loop_stall_guard = guard
+        return guard
+
+    def _start_loop_stall_guard(self) -> None:
+        thread = getattr(self, "_loop_stall_thread", None)
+        if thread is not None and thread.is_alive():
+            return
+        self._loop_stall_thread = threading.Thread(
+            target=self._watch_loop_stall, name="mg-loop-stall-guard", daemon=True
+        )
+        self._loop_stall_thread.start()
+
+    def _watch_loop_stall(self) -> None:
+        while not self._stop.wait(1.0):
+            try:
+                self._lock_if_loop_stalled_and_idle()
+            except Exception:
+                log.exception("[Guard] loop-stall check failed")
+
+    def _lock_if_loop_stalled_and_idle(self) -> bool:
+        guard = self._loop_guard()
+        stalled_for = guard.stalled_for()
+        if stalled_for < LOOP_STALL_S:
+            return False
+        idle_seconds = get_idle_seconds()
+        if (
+            not getattr(self, "_input_idle_soft_lock_armed", True)
+            and idle_seconds > SOFT_LOCK_IDLE_REARM_SECONDS
+            and time.monotonic() < getattr(self, "_soft_lock_release_grace_until", 0.0)
+        ):
+            return False  # just unlocked: same grace the loop gives, so a fresh unlock is not undone
+        if not should_idle_lock_while_stalled(
+            stalled_for_s=stalled_for,
+            threshold_s=LOOP_STALL_S,
+            state_can_idle_lock=self.state in (State.ACTIVE, State.CAMERA_UNAVAILABLE),
+            idle_seconds=idle_seconds,
+            idle_timeout_s=self._current_idle_timeout(),
+        ):
+            return False
+        log.warning("[Guard] main loop stalled %.0fs and input idle %.0fs - soft-locking", stalled_for, idle_seconds)
+        audit_log.record("loop_stalled", stalled_s=round(stalled_for, 1))
+        self._enter_soft_lock(f"loop_stalled_idle_{idle_seconds:.0f}s")
+        return True
 
     def _drain_session_events(self) -> None:
         while True:
@@ -1128,6 +1188,7 @@ class MajestyGuardDaemon:
         frame_no = 0
 
         while not self._stop.is_set():
+            self._loop_guard().beat()
             self._drain_session_events()
             self._drain_ui_commands()
             if hasattr(self, "_exit_at") and time.monotonic() >= self._exit_at:

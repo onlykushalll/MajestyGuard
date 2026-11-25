@@ -121,3 +121,36 @@ def test_emergency_lock_is_queued_when_loop_is_healthy():
     d._queue_ui_command("emergency_lock", "pill")
     assert d.state is main.State.ACTIVE
     assert d._ui_commands.qsize() == 1
+
+
+def test_one_bad_frame_is_skipped_but_repeated_failures_escalate(monkeypatch):
+    main, d = _daemon("ACTIVE")
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def boom(frame, frame_no):
+        calls["n"] += 1
+        raise RuntimeError("onnx hiccup")
+
+    d._tick = boom
+    for _ in range(main.TICK_ERRORS_BEFORE_CRASH - 1):
+        d._tick_guarded(None, 1)               # swallowed
+    with pytest.raises(RuntimeError):
+        d._tick_guarded(None, 1)               # persistent: crash path
+    assert calls["n"] == main.TICK_ERRORS_BEFORE_CRASH
+
+
+def test_good_frame_resets_the_error_streak(monkeypatch):
+    main, d = _daemon("ACTIVE")
+    monkeypatch.setattr(main.time, "sleep", lambda *_: None)
+    outcomes = iter([RuntimeError("x")] * 3 + [None] + [RuntimeError("x")] * 3)
+
+    def tick(frame, frame_no):
+        o = next(outcomes)
+        if o:
+            raise o
+
+    d._tick = tick
+    for _ in range(7):
+        d._tick_guarded(None, 1)               # never reaches the limit of 5 in a row
+    assert d._tick_error_streak == 3

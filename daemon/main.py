@@ -136,6 +136,9 @@ CAMERA_RETRY_ATTEMPTS = _env_int("MG_CAMERA_RETRY_ATTEMPTS", 10, 1)
 CAMERA_RETRY_DELAY_S = _env_float("MG_CAMERA_RETRY_DELAY_S", 2.0, 0.0, 60.0)
 CAMERA_UNAVAILABLE_RETRY_S = _env_float("MG_CAMERA_UNAVAILABLE_RETRY_S", 30.0, 0.1, 3600.0)
 CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE = _env_int("MG_CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE", 3, 1)
+# One bad frame (a transient inference/OpenCV error) is skipped; this many in a row is treated as
+# a real fault and takes the existing crash path (fail-closed lock, Supervisor restart).
+TICK_ERRORS_BEFORE_CRASH = _env_int("MG_TICK_ERRORS_BEFORE_CRASH", 5, 1)
 SOFT_LOCK_IDLE_SECONDS = read_idle_timeout()
 SOFT_LOCK_IDLE_REARM_SECONDS = _env_float("MG_SOFT_LOCK_IDLE_REARM_SECONDS", 1.0, 0.0, 10.0)
 SOFT_LOCK_RELEASE_GRACE_SECONDS = _env_float("MG_SOFT_LOCK_RELEASE_GRACE_SECONDS", 15.0, 0.0, 300.0)
@@ -1245,7 +1248,7 @@ class MajestyGuardDaemon:
                 self._pace(loop_start)
                 continue
 
-            self._tick(frame, frame_no)
+            self._tick_guarded(frame, frame_no)
             if self._stop_after_frame_limit(frame_no) or self._stop_after_time_limit(run_started_at):
                 break
             self._pace(loop_start)
@@ -1448,6 +1451,26 @@ class MajestyGuardDaemon:
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                             )
             self._stop.wait(0.5)
+
+    def _tick_guarded(self, frame: np.ndarray, frame_no: int) -> None:
+        """Run one frame; a transient error skips that frame instead of killing the daemon.
+
+        A crash costs a full cold start (model load) with no protection in between, so a single
+        odd frame must not cause one. Skipping a frame never unlocks anything and never resets
+        the idle soft-lock; repeated failures still escalate to the crash path.
+        """
+        try:
+            self._tick(frame, frame_no)
+            self._tick_error_streak = 0
+        except Exception as exc:
+            streak = getattr(self, "_tick_error_streak", 0) + 1
+            self._tick_error_streak = streak
+            log.error("Frame processing failed (%d/%d): %s", streak, TICK_ERRORS_BEFORE_CRASH, exc, exc_info=True)
+            if streak == 1:
+                audit_log.record("tick_error", error=type(exc).__name__)
+            if streak >= TICK_ERRORS_BEFORE_CRASH:
+                raise
+            time.sleep(0.2)
 
     def _tick(self, frame: np.ndarray, frame_no: int) -> None:
         if self.state == State.IDLE:

@@ -139,6 +139,11 @@ CAMERA_READ_FAILURES_BEFORE_UNAVAILABLE = _env_int("MG_CAMERA_READ_FAILURES_BEFO
 # One bad frame (a transient inference/OpenCV error) is skipped; this many in a row is treated as
 # a real fault and takes the existing crash path (fail-closed lock, Supervisor restart).
 TICK_ERRORS_BEFORE_CRASH = _env_int("MG_TICK_ERRORS_BEFORE_CRASH", 5, 1)
+# While ACTIVE, a face that is present but never confirmed as the owner (weak liveness, grace holds,
+# replay suspicion) used to keep the session ACTIVE indefinitely; only a definite stranger or an
+# absent face locked. After this many seconds without one confirmed-owner frame, soft-lock.
+# 0 disables.
+UNCONFIRMED_FACE_LOCK_S = _env_float("MG_UNCONFIRMED_FACE_LOCK_S", 30.0, 0.0, 600.0)
 SOFT_LOCK_IDLE_SECONDS = read_idle_timeout()
 SOFT_LOCK_IDLE_REARM_SECONDS = _env_float("MG_SOFT_LOCK_IDLE_REARM_SECONDS", 1.0, 0.0, 10.0)
 SOFT_LOCK_RELEASE_GRACE_SECONDS = _env_float("MG_SOFT_LOCK_RELEASE_GRACE_SECONDS", 15.0, 0.0, 300.0)
@@ -1725,6 +1730,7 @@ class MajestyGuardDaemon:
                     self._absent_frames,
                 )
             self.ipc.broadcast_state("scanning")
+            self._unconfirmed_since = 0.0  # absence has its own lock rule
             if self._absent_frames >= ABSENT_FRAMES_LOCK:
                 log.warning("STATE: ACTIVE -> SOFT_LOCK (absent %d frames)", self._absent_frames)
                 self._enter_soft_lock("owner_absent")
@@ -1739,6 +1745,7 @@ class MajestyGuardDaemon:
             FaceState.clear()
 
         if score >= ACTIVE_RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
+            self._unconfirmed_since = 0.0
             self._stranger_frames = 0
             self._active_reacquire_grace_frames = 0
             self._decay_owner_continuity_grace()
@@ -1747,6 +1754,9 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("active",
                                      confidence=self._presence_confidence(result),
                                      liveness=result.liveness_score)
+            return
+
+        if self._unconfirmed_face_expired():
             return
 
         # Only count as stranger when score is definitively not-owner (< 0.55).
@@ -1828,6 +1838,22 @@ class MajestyGuardDaemon:
             self._decay_active_reacquire_grace()
             self._decay_owner_continuity_grace()
             self.ipc.broadcast_state("scanning")
+
+    def _unconfirmed_face_expired(self) -> bool:
+        """A face has been in view for UNCONFIRMED_FACE_LOCK_S with no confirmed-owner frame."""
+        if UNCONFIRMED_FACE_LOCK_S <= 0.0:
+            return False
+        now = time.monotonic()
+        since = getattr(self, "_unconfirmed_since", 0.0)
+        if since <= 0.0:
+            self._unconfirmed_since = now
+            return False
+        if now - since < UNCONFIRMED_FACE_LOCK_S:
+            return False
+        self._unconfirmed_since = 0.0
+        log.warning("STATE: ACTIVE -> SOFT_LOCK (face present but owner unconfirmed for %.0fs)", now - since)
+        self._enter_soft_lock("unconfirmed_face")
+        return True
 
     def _tick_soft_lock(self, frame: np.ndarray, frame_no: int) -> None:
         if not self._is_soft_lock_verifying():
@@ -2296,6 +2322,7 @@ class MajestyGuardDaemon:
             self._owner_continuity_grace_frames = 0
             self.ipc.broadcast_state("scanning")
         elif new_state == State.ACTIVE:
+            self._unconfirmed_since = 0.0
             self._absent_frames = 0
             self._stranger_frames = 0
             self._active_reacquire_grace_frames = 0

@@ -154,3 +154,72 @@ def test_good_frame_resets_the_error_streak(monkeypatch):
     for _ in range(7):
         d._tick_guarded(None, 1)               # never reaches the limit of 5 in a row
     assert d._tick_error_streak == 3
+
+
+# --- unconfirmed-face timeout while ACTIVE ----------------------------------------------------
+class _Result:
+    def __init__(self, **kw):
+        self.face_count = 1
+        self.raw_face_count = 1
+        self.recognition_score = 0.30
+        self.smoothed_recognition_score = 0.30
+        self.liveness_score = 0.40          # weak liveness: never a "definite stranger"
+        self.replay_suspected = False
+        self.frame_quality = 0.8
+        self.face_height_frac = 0.5
+        self.face_center_offset = 0.1
+        self.selection_reason = "identity"
+        self.sticky_iou = 0.0
+        self.predicted_iou = 0.0
+        self.best_template_index = 0
+        self.presence_confidence = 0.0
+        self.__dict__.update(kw)
+
+
+def _active_daemon(monkeypatch, result):
+    main, d = _daemon("ACTIVE")
+    clock = Clock()
+    monkeypatch.setattr(main.time, "monotonic", clock)
+    monkeypatch.setattr(main, "_atomic_write_file", lambda *a, **k: None, raising=False)
+    d._require_face_engine = lambda: type("E", (), {"process_frame": lambda s, f: result,
+                                                     "reset_liveness": lambda s: None})()
+    d._broadcast_detection_result = lambda r: None
+    d._log_frame_result = lambda *a: None
+    d._stranger_frames = d._active_reacquire_grace_frames = d._owner_continuity_grace_frames = 0
+    d._scanning_owner_ambiguity_grace_frames = 0
+    return main, d, clock
+
+
+def test_present_but_never_confirmed_face_eventually_locks(monkeypatch):
+    main, d, clock = _active_daemon(monkeypatch, _Result())
+    monkeypatch.setattr(main, "UNCONFIRMED_FACE_LOCK_S", 30.0)
+    d._tick_active(None, 1)
+    clock.now += 20
+    d._tick_active(None, 2)
+    assert d.state is main.State.ACTIVE
+    clock.now += 15
+    d._tick_active(None, 3)
+    assert d.state is main.State.SOFT_LOCK
+
+
+def test_a_confirmed_owner_frame_resets_the_timer(monkeypatch):
+    weak = _Result()
+    main, d, clock = _active_daemon(monkeypatch, weak)
+    monkeypatch.setattr(main, "UNCONFIRMED_FACE_LOCK_S", 30.0)
+    d._tick_active(None, 1)
+    clock.now += 25
+    weak.recognition_score, weak.liveness_score = 0.9, 0.95
+    d._tick_active(None, 2)                    # confirmed owner
+    weak.recognition_score, weak.liveness_score = 0.30, 0.40
+    clock.now += 25
+    d._tick_active(None, 3)                    # only 25 s since the confirmation
+    assert d.state is main.State.ACTIVE
+
+
+def test_unconfirmed_timeout_can_be_disabled(monkeypatch):
+    main, d, clock = _active_daemon(monkeypatch, _Result())
+    monkeypatch.setattr(main, "UNCONFIRMED_FACE_LOCK_S", 0.0)
+    d._tick_active(None, 1)
+    clock.now += 600
+    d._tick_active(None, 2)
+    assert d.state is main.State.ACTIVE

@@ -11,10 +11,39 @@ import json
 import os
 import time
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
+from daemon.enrollment_metadata import load_enrollment_metadata
+
 _TAIL_BYTES = 96 * 1024
+
+
+def gallery_summary(path: Path) -> str:
+    try:
+        stamp = path.stat()
+        return _gallery_summary_at(path, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino)
+    except (OSError, ValueError):
+        return "Enrolled"
+
+
+@lru_cache(maxsize=4)
+def _gallery_summary_at(path: Path, mtime: int, size: int, inode: int) -> str:
+    if size > 1_048_576:
+        return "Enrolled"
+    try:
+        meta = load_enrollment_metadata(path)
+    except (OSError, ValueError, RecursionError):
+        return "Enrolled"
+    count = meta.get("selected_count")
+    if type(count) is not int or count <= 0:
+        return "Enrolled"
+    label = {"continuous-coverage": "Coverage scan", "robust": "Robust", "quick": "Quick",
+             "real-life": "Real-life"}
+    profile = meta.get("profile")
+    mode = label.get(profile) if isinstance(profile, str) else None
+    return f"{count} {'template' if count == 1 else 'templates'}" + (f" | {mode}" if mode else "")
 
 # event -> (headline, tone). Tone drives the dot colour: ok | info | warn | bad.
 _EVENTS = {

@@ -1,4 +1,12 @@
-from mg_status import collect_status, format_status
+from mg_status import _find_daemon_pid, collect_status, format_status
+
+
+def test_status_recognizes_frozen_daemon_but_not_enrollment_or_smoke_tests():
+    assert _find_daemon_pid([
+        "MajestyGuardDaemon.exe 1001 C:\\MG\\MajestyGuardDaemon.exe --enroll",
+        "MajestyGuardDaemon.exe 1002 C:\\MG\\MajestyGuardDaemon.exe --self-test",
+        "MajestyGuardDaemon.exe 1003 C:\\MG\\MajestyGuardDaemon.exe",
+    ]) == 1003
 
 
 def test_status_reports_policy_and_daemon_process():

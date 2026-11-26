@@ -141,7 +141,7 @@ _default_lock = threading.Lock()
 
 
 def default_path() -> Path:
-    base = os.environ.get("LOCALAPPDATA", os.environ.get("ProgramData", r"C:\ProgramData"))
+    base = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
     return Path(base) / "MajestyGuard" / "audit.log"
 
 

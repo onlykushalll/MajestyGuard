@@ -147,13 +147,35 @@ def test_reduced_motion_snaps_guidance_dot(win, monkeypatch):
 
 
 def test_dot_glides_toward_new_target(win, qapp, monkeypatch):
+    import coverage_enrollment_window as cew
+
     monkeypatch.delenv("MG_REDUCED_MOTION", raising=False)
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    now = [1.0]
+    monkeypatch.setattr(cew.time, "monotonic", lambda: now[0])
+    win.show()
     win.apply_feedback(fb(target="right_mild", cue="right"))
     win.apply_feedback(fb(target="up", cue="up"))
     before = win.ring._dot_angle
-    for _ in range(60):
-        win.ring._tick()
+    now[0] += 0.6
+    win.ring._tick()
     after = win.ring._dot_angle
     assert before == pytest.approx(0.0)
     assert after == pytest.approx(90.0, abs=1.0)
     win.ring._timer.stop()
+
+
+def test_hidden_ring_and_reduced_motion_do_not_keep_a_timer(win, monkeypatch):
+    monkeypatch.delenv("MG_REDUCED_MOTION", raising=False)
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    win.apply_feedback(fb(target="up", cue="up"))
+    assert not win.ring._timer.isActive()
+    win.show()
+    assert win.ring._timer.isActive()
+    win.hide()
+    assert not win.ring._timer.isActive()
+    monkeypatch.setenv("MG_UI_REDUCE_MOTION", "1")
+    win.show()
+    win.apply_feedback(fb(target="center", cue="center", accepted=True))
+    assert not win.ring._timer.isActive()
+    assert win.ring._flash == 0.0

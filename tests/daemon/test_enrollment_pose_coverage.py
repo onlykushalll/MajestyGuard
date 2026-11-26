@@ -1,6 +1,8 @@
 import numpy as np
 
 from check_enrollment_pose_coverage import analyze_enrollment_artifacts, analyze_pose_coverage, main
+from enrollment_commit import SELECTION_POLICY as COVERAGE_SELECTION_POLICY
+from enrollment_coverage import CoverageConfig
 
 
 def test_pose_coverage_flags_undercovered_selected_angles():
@@ -264,3 +266,23 @@ def test_check_enrollment_pose_coverage_main_success(tmp_path, monkeypatch):
     # Should exit with 0 (success)
     assert main() == 0
 
+
+def test_continuous_metadata_checks_selected_quotas_without_requiring_raw_samples():
+    quotas = CoverageConfig().minimums(pitch_reliable=True)
+    selected = [{"angle": angle, "quality": 0.9} for angle, count in quotas.items() for _ in range(count)]
+    metadata = {
+        "version": 6, "profile": "continuous-coverage", "selection_policy": COVERAGE_SELECTION_POLICY,
+        "angles": list(quotas), "pitch_reliable": True, "bucket_counts": quotas.copy(),
+        "captured_count": len(selected) + 4, "selected_count": len(selected),
+        "selected_samples": selected, "min_total": len(selected),
+    }
+    report = analyze_pose_coverage(metadata)
+    assert report["ok"]
+    assert report["captured_counts"] is None
+    assert report["selected_counts"] == quotas
+
+    selected.pop()
+    report = analyze_pose_coverage(metadata)
+    assert not report["ok"]
+    assert report["selected_count_mismatch"]
+    assert report["undercovered"]

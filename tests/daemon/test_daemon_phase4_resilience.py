@@ -1,4 +1,5 @@
 import logging
+import queue
 import threading
 from unittest.mock import MagicMock
 
@@ -50,6 +51,9 @@ def _bare_daemon(state=State.IDLE):
     daemon.ipc = FakeIpc()
     daemon.motion = FakeMotion()
     daemon._stop = threading.Event()
+    daemon._loop_wake = threading.Event()
+    daemon._session_events = queue.Queue()
+    daemon._ui_commands = queue.Queue()
     daemon._absent_frames = 3
     daemon._stranger_frames = 2
     daemon._active_reacquire_grace_frames = 1
@@ -272,7 +276,7 @@ def test_read_failures_while_locked_hold_the_lock_instead_of_locking_windows(mon
 
 def test_passive_lock_shows_the_fault_and_waits_for_the_backoff(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
-    monkeypatch.setattr(daemon_main.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(daemon_main, "PASSIVE_LOOP_SLEEP_S", 0)
     daemon = _bare_daemon(State.SOFT_LOCK)
     health = daemon._camera_health_tracker()
     health.record_open_failure()
@@ -280,26 +284,49 @@ def test_passive_lock_shows_the_fault_and_waits_for_the_backoff(monkeypatch, tmp
     opens = []
     monkeypatch.setattr(daemon, "_open_camera", lambda **kw: opens.append(kw) or False)
 
-    daemon._handle_passive_soft_lock(loop_start=0.0)
+    daemon._handle_passive_soft_lock()
 
     assert opens == []  # backoff has not elapsed
     assert daemon.ipc.states[-1][0] == "camera_fault"
 
 
-def test_passive_lock_heals_the_camera_once_the_backoff_elapses(monkeypatch, tmp_path):
+def test_camera_fault_stays_camera_cold_until_requested(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
-    monkeypatch.setattr(daemon_main.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(daemon_main.cv2, "VideoCapture", lambda *_a: FakeCap(opened=True))
+    monkeypatch.setattr(daemon_main, "PASSIVE_LOOP_SLEEP_S", 0)
     daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon.face_eng = None
+    opens = []
+    monkeypatch.setattr(daemon, "_open_camera", lambda **kw: opens.append(kw))
     daemon._camera_health_tracker().record_open_failure()
-    daemon._camera_health_tracker().request_retry_now()
     daemon._camera_fault_active = True
 
-    daemon._handle_passive_soft_lock(loop_start=0.0)
+    daemon._handle_ui_command("verify_requested", "space")
+    assert not getattr(daemon, "_soft_lock_verify_until", 0)
+    daemon._camera_health_tracker().request_retry_now()
+    daemon._handle_passive_soft_lock()
 
-    assert daemon._camera_fault_active is False
-    assert daemon.ipc.states[-1][0] == "locked_passive"
-    assert daemon._cap is None  # passive lock stays camera-cold after the probe
+    assert opens == []
+    assert daemon.ipc.states[-1][0] == "camera_fault"
+    daemon._handle_ui_command("verify_requested", "space")
+    assert daemon._is_soft_lock_verifying()
+    assert daemon.ipc.states[-1][0] == "verifying_lock"
+    assert opens == []  # main loop opens the camera inside the bounded burst
+
+
+def test_commands_and_session_events_wake_passive_loop():
+    daemon = _bare_daemon(State.SOFT_LOCK)
+    daemon._queue_ui_command("verify_requested", "space")
+    assert daemon._loop_wake.is_set()
+    assert daemon._ui_commands.get_nowait() == ("verify_requested", "space")
+
+    daemon._loop_wake.clear()
+    daemon._queue_session_event(SessionEvent.SESSION_LOCK)
+    assert daemon._loop_wake.is_set()
+    assert daemon._session_events.get_nowait() is SessionEvent.SESSION_LOCK
+
+    daemon._loop_wake.clear()
+    daemon.stop()
+    assert daemon._loop_wake.is_set() and daemon._stop.is_set()
 
 
 def test_space_while_faulted_retries_the_camera_immediately(monkeypatch, tmp_path):

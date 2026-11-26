@@ -47,8 +47,13 @@ class Diagnosis:
     headline: str
     hint: str
 
-    def overlay_text(self) -> str:
-        return f"{self.headline}. {self.hint}" if self.hint else self.headline
+    def overlay_text(self, *, manual_retry: bool = False) -> str:
+        hint = self.hint
+        if manual_retry:
+            hint = hint.replace("Retrying automatically", "Press Space to retry")
+            if self.fault is CameraFault.FROZEN_FRAMES:
+                hint = "Press Space to retry"
+        return f"{self.headline}. {hint}" if hint else self.headline
 
 
 _DIAGNOSES: Dict[CameraFault, Diagnosis] = {

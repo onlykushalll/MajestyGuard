@@ -6,6 +6,8 @@ start IPC, lock the workstation, or touch login integration.
 """
 from __future__ import annotations
 from diagnostic_common import load_embeddings_array, load_enrollment_metadata
+from enrollment_commit import SELECTION_POLICY as COVERAGE_SELECTION_POLICY
+from enrollment_coverage import CoverageConfig
 
 import argparse
 import json
@@ -37,20 +39,24 @@ def analyze_pose_coverage(
     min_quality: float | None = None,
     min_cohesion: float | None = None,
     min_angle_count: int | None = None,
-    expected_selection_policy: str = EXPECTED_SELECTION_POLICY,
+    expected_selection_policy: str | None = None,
     min_metadata_version: int = MIN_METADATA_VERSION,
 ) -> dict:
     angles = list(metadata.get("angles") or [])
     selected = list(metadata.get("selected_samples") or [])
     all_samples = list(metadata.get("all_samples") or [])
     profile = str(metadata.get("profile") or "").lower()
+    policy = metadata.get("selection_policy", "unknown")
+    version = int(metadata.get("version") or 0)
+    continuous = policy == COVERAGE_SELECTION_POLICY and version >= 6
+    thresholds = (metadata.get("thresholds") or {}) if continuous else metadata
+    quotas = CoverageConfig().minimums(metadata.get("pitch_reliable", True)) if continuous else {}
     if min_quality is None:
-        min_quality = float(metadata.get("min_quality", 0.62))
+        min_quality = float(thresholds.get("min_quality", 0.62))
     if min_cohesion is None:
-        min_cohesion = float(metadata.get("min_cohesion", 0.45))
-    if min_selected_per_angle is None:
-        min_selected_per_angle = int(metadata.get("min_selected_per_angle") or 2)
-    min_selected_per_angle = max(1, int(min_selected_per_angle))
+        min_cohesion = float(thresholds.get("min_cohesion", 0.45))
+    default_quota = 1 if continuous else int(metadata.get("min_selected_per_angle") or 2)
+    min_selected_per_angle = max(1, int(min_selected_per_angle or default_quota))
     if min_angle_count is None:
         profile_min_angle_count = PROFILE_MIN_ANGLE_COUNTS.get(profile, 1)
         min_angle_count = max(int(metadata.get("min_angle_count") or 1), profile_min_angle_count)
@@ -75,12 +81,20 @@ def analyze_pose_coverage(
         else:
             _increment(unknown_selected_angles, str(angle or "unknown"))
 
-    undercovered = {
-        angle: count
-        for angle, count in selected_counts.items()
-        if captured_counts.get(angle, 0) > 0 and count < min_selected_per_angle
-    }
-    missing = [angle for angle, count in captured_counts.items() if count == 0]
+    if continuous:
+        # v6 keeps selected rows and aggregate counts, not the capture pool.
+        # Do not manufacture captured counts or require old capture metadata.
+        missing = [angle for angle in quotas if not selected_counts.get(angle)]
+        undercovered = {
+            angle: count for angle, count in selected_counts.items()
+            if count < max(min_selected_per_angle, quotas.get(angle, 1))
+        }
+    else:
+        missing = [angle for angle, count in captured_counts.items() if count == 0]
+        undercovered = {
+            angle: count for angle, count in selected_counts.items()
+            if captured_counts.get(angle, 0) > 0 and count < min_selected_per_angle
+        }
     low_quality_selected = [
         _sample_label(sample)
         for sample in selected
@@ -91,14 +105,23 @@ def analyze_pose_coverage(
         for sample in selected
         if sample.get("cohesion") is not None and float(sample["cohesion"]) < min_cohesion
     ]
-    policy = metadata.get("selection_policy", "unknown")
-    version = int(metadata.get("version") or 0)
+    if expected_selection_policy is None:
+        expected_selection_policy = COVERAGE_SELECTION_POLICY if continuous else EXPECTED_SELECTION_POLICY
     stale_policy = bool(expected_selection_policy and policy != expected_selection_policy)
     stale_version = version < min_metadata_version
     captured_count = metadata.get("captured_count")
     selected_count = metadata.get("selected_count")
-    captured_count_mismatch = captured_count is not None and int(captured_count) != len(all_samples)
+    if continuous:
+        captured_count_mismatch = type(captured_count) is not int or captured_count < len(selected)
+    else:
+        captured_count_mismatch = captured_count is not None and int(captured_count) != len(all_samples)
     selected_count_mismatch = selected_count is not None and int(selected_count) != len(selected)
+    if continuous:
+        selected_count_mismatch |= (
+            selected_count is None
+            or metadata.get("bucket_counts") != selected_counts
+            or len(selected) < int(metadata.get("min_total", CoverageConfig().min_total))
+        )
     too_few_angles = len(angles) < min_angle_count
 
     return {
@@ -113,7 +136,7 @@ def analyze_pose_coverage(
         "min_metadata_version": min_metadata_version,
         "min_quality": min_quality,
         "min_cohesion": min_cohesion,
-        "captured_counts": captured_counts,
+        "captured_counts": None if continuous else captured_counts,
         "selected_counts": selected_counts,
         "unknown_captured_angles": unknown_captured_angles,
         "unknown_selected_angles": unknown_selected_angles,
@@ -183,7 +206,7 @@ def analyze_enrollment_artifacts(
     min_quality: float | None = None,
     min_cohesion: float | None = None,
     min_angle_count: int | None = None,
-    expected_selection_policy: str = EXPECTED_SELECTION_POLICY,
+    expected_selection_policy: str | None = None,
     min_metadata_version: int = MIN_METADATA_VERSION,
     expected_embedding_width: int = 512,
 ) -> dict:
@@ -277,13 +300,13 @@ def main() -> int:
     if report["stale_version"]:
         print(f"WARN: metadata version is older than {report['min_metadata_version']}")
     if report["stale_policy"]:
-        print(f"WARN: selection policy is not {EXPECTED_SELECTION_POLICY}")
+        print("WARN: selection policy does not match a supported enrollment format")
     if report["too_few_angles"]:
         print(f"WARN: declared pose count is below {report['min_angle_count']}")
     if report["captured_count_mismatch"]:
-        print("WARN: captured_count does not match all_samples length")
+        print("WARN: captured count does not match the enrollment format")
     if report["selected_count_mismatch"]:
-        print("WARN: selected_count does not match selected_samples length")
+        print("WARN: selected counts do not match selected_samples")
     if report["unknown_captured_angles"]:
         print("WARN: captured samples include unknown pose labels:")
         for angle, count in report["unknown_captured_angles"].items():
@@ -293,7 +316,7 @@ def main() -> int:
         for angle, count in report["unknown_selected_angles"].items():
             print(f"  - {angle}: {count}")
     if report["missing"]:
-        print("WARN: missing captured poses:")
+        print("WARN: missing pose coverage:")
         for angle in report["missing"]:
             print(f"  - {angle}")
     if report["undercovered"]:

@@ -18,6 +18,27 @@ def _log(tmp_path, events):
     return tmp_path / "audit.log"
 
 
+def test_encrypted_gallery_chip_only_caches_the_summary(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    path = tmp_path / "embeddings_v2_meta.json"
+    path.write_bytes(b"encrypted")
+    reads = []
+
+    def unprotect(data, *_args):
+        reads.append(data)
+        return "metadata", b'{"profile":"continuous-coverage","selected_count":32,"sensitive":"omit"}'
+
+    monkeypatch.setitem(sys.modules, "win32crypt", SimpleNamespace(CryptUnprotectData=unprotect))
+    assert activity.gallery_summary(path) == "32 templates | Coverage scan"
+    assert activity.gallery_summary(path) == "32 templates | Coverage scan"
+    assert reads == [b"encrypted"]
+    path.write_bytes(b"new encrypted metadata")
+    assert activity.gallery_summary(path) == "32 templates | Coverage scan"
+    assert len(reads) == 2
+    assert list(tmp_path.iterdir()) == [path]
+
+
 def test_digest_matches_the_daemon_so_verification_agrees():
     body = {"seq": 1, "ts": 1.5, "event": "x", "detail": {"a": 1}}
     assert activity._digest("0" * 64, body) == audit_log._digest("0" * 64, body)

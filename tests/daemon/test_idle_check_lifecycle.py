@@ -32,6 +32,7 @@ def _bare_daemon() -> MajestyGuardDaemon:
     daemon.ipc = FakeIpc()
     daemon.motion = FakeMotion()
     daemon._stop = threading.Event()
+    daemon._loop_wake = threading.Event()
     daemon._absent_frames = 0
     daemon._stranger_frames = 0
     daemon._active_reacquire_grace_frames = 0

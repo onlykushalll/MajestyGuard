@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from typing import Optional
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QPushButton, QVBoxLayout, QLabel, QWidget
+from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
+from PyQt6.QtWidgets import QApplication, QPushButton, QVBoxLayout, QLabel, QWidget
 
 try:
     from fonts import ui_font as _ui_font
@@ -76,8 +77,7 @@ def _mix(a: QColor, b: QColor, t: float) -> QColor:
 
 def _font(size: float, weight: int = 400):
     if _ui_font is not None:
-        return _ui_font(size, weight)
-    from PyQt6.QtGui import QFont
+        return _ui_font(size, QFont.Weight(weight))
 
     f = QFont("Segoe UI", int(size))
     f.setWeight(QFont.Weight(weight))
@@ -85,7 +85,7 @@ def _font(size: float, weight: int = 400):
 
 
 def reduced_motion() -> bool:
-    return os.environ.get("MG_REDUCED_MOTION", "0") == "1"
+    return any(os.environ.get(key) == "1" for key in ("MG_UI_REDUCE_MOTION", "MG_REDUCED_MOTION"))
 
 
 class CoverageRing(QWidget):
@@ -95,7 +95,7 @@ class CoverageRing(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(420, 420)
+        self.setMinimumSize(220, 220)
         self._preview: Optional[QImage] = None
         self._fill: dict = {}
         self._progress = 0.0
@@ -106,6 +106,7 @@ class CoverageRing(QWidget):
         self._dot_goal: Optional[float] = None
         self._flash = 0.0
         self._pulse = 0.0
+        self._last_tick = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(16)
         self._timer.timeout.connect(self._tick)
@@ -129,24 +130,39 @@ class CoverageRing(QWidget):
         self._dot_goal = goal
         if goal is not None and self._dot_angle is None:
             self._dot_angle = goal
-        if fb.accepted:
+        if fb.accepted and not reduced_motion():
             self._flash = 1.0
-        if not self._timer.isActive() and not reduced_motion():
-            self._timer.start()
-        if reduced_motion():
+        self._sync_motion()
+        self.update()
+
+    def _sync_motion(self) -> None:
+        if reduced_motion() or self._state != "collecting":
             self._dot_angle = self._dot_goal
-            self.update()
+            self._flash = 0.0
+            self._timer.stop()
+        elif self.isVisible() and not self._timer.isActive():
+            self._last_tick = time.monotonic()
+            self._timer.start()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._sync_motion()
+
+    def hideEvent(self, event) -> None:
+        self._timer.stop()
+        super().hideEvent(event)
 
     # ---- animation ------------------------------------------------------------
 
     def _tick(self) -> None:
-        self._pulse = (self._pulse + 0.035) % (2 * math.pi)
-        self._flash = max(0.0, self._flash - 0.06)
+        now = time.monotonic()
+        dt = max(0.0, now - self._last_tick)
+        self._last_tick = now
+        self._pulse = (self._pulse + 2.1 * dt) % math.tau
+        self._flash = max(0.0, self._flash - 3.6 * dt)
         if self._dot_goal is not None and self._dot_angle is not None:
             delta = (self._dot_goal - self._dot_angle + 180.0) % 360.0 - 180.0
-            self._dot_angle += delta * 0.14
-        if self._state in ("complete", "cancelled"):
-            self._timer.stop()
+            self._dot_angle += delta * -math.expm1(-9.4 * dt)
         self.update()
 
     # ---- paint ----------------------------------------------------------------
@@ -251,7 +267,7 @@ class CoverageEnrollmentWindow(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("MajestyGuard enrollment")
-        self.setMinimumSize(520, 700)
+        self.setMinimumWidth(320)
         self.setStyleSheet("background:#0E1116;")
         self.finished = False
         self.last_feedback = None
@@ -259,6 +275,7 @@ class CoverageEnrollmentWindow(QWidget):
         self.ring = CoverageRing(self)
         self.title = QLabel("Look straight at the camera", self)
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title.setWordWrap(True)
         self.title.setFont(_font(17, 500))
         self.title.setStyleSheet("color:#F3F6FB;background:transparent;")
         self.hint = QLabel("", self)
@@ -282,7 +299,7 @@ class CoverageEnrollmentWindow(QWidget):
         self.cancel_button.clicked.connect(self._on_cancel)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(32, 28, 32, 28)
+        lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
         lay.addWidget(self.ring, 1)
         lay.addWidget(self.title)
@@ -290,6 +307,10 @@ class CoverageEnrollmentWindow(QWidget):
         lay.addWidget(self.percent)
         lay.addSpacing(6)
         lay.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignHCenter)
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.resize(min(520, area.width() - 32), min(680, area.height() - 56))
 
         self.preview_signal.connect(self.set_preview)
         self.feedback_signal.connect(self.apply_feedback)
@@ -319,6 +340,7 @@ class CoverageEnrollmentWindow(QWidget):
 
     def show_result(self, ok: bool, message: str) -> None:
         self.finished = True
+        self.ring.set_preview(None)
         self.title.setText("Face enrolled" if ok else "Enrollment not saved")
         self.hint.setText(message)
         self.percent.setText("100%" if ok else "")

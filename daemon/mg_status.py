@@ -86,7 +86,9 @@ def _default_process_lines() -> list[str]:
 def _find_daemon_pid(lines: list[str]) -> int | None:
     for line in lines:
         low = line.lower()
-        if "daemon" in low and "main.py" in low:
+        if "--enroll" in low or "--self-test" in low:
+            continue
+        if "majestyguarddaemon.exe" in low or "daemon/main.py" in low.replace("\\", "/"):
             for token in line.split():
                 if token.strip().isdigit():
                     return int(token.strip())
@@ -174,7 +176,10 @@ def _read_cold_start(state_dir: Path) -> str | None:
     if not log_path.exists():
         return None
     try:
-        tail = log_path.read_text(encoding="utf-8", errors="replace")[-4096:]
+        with log_path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - 4096))
+            tail = handle.read(4096).decode("utf-8", errors="replace")
         for line in reversed(tail.splitlines()):
             if "Cold start complete:" in line:
                 idx = line.index("Cold start complete:")
@@ -193,7 +198,7 @@ def collect_status(
     lines = list(_default_process_lines() if process_lines is None else process_lines)
     daemon_pid = _find_daemon_pid(lines)
     daemon_running = daemon_pid is not None
-    local_app_data = Path(env.get("LOCALAPPDATA", env.get("ProgramData", r"C:\ProgramData"))) / "MajestyGuard"
+    local_app_data = Path(env.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "MajestyGuard"
     log_path = local_app_data / "daemon.log"
     embeddings_path = local_app_data / "embeddings_v2.npy"
     lock_state = _read_lock_state(local_app_data)

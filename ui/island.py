@@ -46,7 +46,7 @@ _FLASH_INTERVAL_MS = 110
 _FRAME_MS = 16
 _SCAN_PERIOD_MS = 900
 _PAD = 8
-_VERIFY_REQUEST_STATES = {"locked_passive", "soft_locked", "social_lock"}
+_VERIFY_REQUEST_STATES = {"locked_passive", "soft_locked", "social_lock", "camera_fault"}
 _IMMEDIATE_STATES = {"idle", "hostile_lock", "camera_fault"}
 
 # Dot-pulse scanning constants

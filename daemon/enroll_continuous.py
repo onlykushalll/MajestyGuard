@@ -31,7 +31,7 @@ from enrollment_coverage import (  # noqa: E402
     COMPLETE, CoverageCollector, CoverageConfig, Feedback, Observation, pose_from_5pt,
 )
 
-OUT_DIR = Path(os.environ.get("LOCALAPPDATA", os.environ.get("ProgramData", r"C:\ProgramData"))) / "MajestyGuard"
+OUT_DIR = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "MajestyGuard"
 OUT_FILE = OUT_DIR / "embeddings_v2.npy"
 OUT_META_FILE = OUT_DIR / "embeddings_v2_meta.json"
 

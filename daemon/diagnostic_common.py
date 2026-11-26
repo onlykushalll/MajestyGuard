@@ -8,7 +8,6 @@ without opening a camera or touching machine state.
 from __future__ import annotations
 
 import io
-import json
 import re
 import sys
 from pathlib import Path
@@ -16,6 +15,8 @@ from typing import Optional
 
 import cv2
 import numpy as np
+
+from enrollment_metadata import load_enrollment_metadata
 
 _CLAHE = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
@@ -48,21 +49,6 @@ def load_embeddings_array(path: Path) -> np.ndarray:
         return np.load(io.BytesIO(decrypted), allow_pickle=False)
     except Exception:
         return np.load(io.BytesIO(raw), allow_pickle=False)
-
-
-def load_enrollment_metadata(path: Path) -> dict:
-    """Load DPAPI-protected enrollment metadata, accepting legacy JSON files."""
-    raw = Path(path).read_bytes()
-    try:
-        import win32crypt  # type: ignore
-
-        decoded = win32crypt.CryptUnprotectData(raw, None, None, None, 0)[1]
-    except Exception:
-        decoded = raw
-    value = json.loads(decoded.decode("utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("Enrollment metadata must contain a JSON object")
-    return value
 
 
 def posture_label(value: str | None) -> str:

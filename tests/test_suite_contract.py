@@ -40,3 +40,22 @@ def test_daemon_modules_do_not_import_pyqt():
                     assert not node.module.startswith(("PyQt", "PySide")), (
                         f"Daemon file {py_file.name} imports from Qt module {node.module}"
                     )
+
+
+def test_daemon_import_does_not_create_production_handlers_or_state(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-B", "-c",
+         "import logging; before = logging.getLogger().handlers[:]; "
+         "import main; assert before == logging.getLogger().handlers"],
+        cwd=ROOT / "daemon",
+        env={**os.environ, "LOCALAPPDATA": str(tmp_path), "MG_ENABLE_LOCK": "0"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not (tmp_path / "MajestyGuard").exists()

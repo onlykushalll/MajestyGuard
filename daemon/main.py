@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import json
 import logging
+import math
 import os
 import queue
 import signal
@@ -26,7 +27,7 @@ import audit_log
 import model_prehash
 
 # Start hashing the ONNX packs now so it overlaps with the heavy imports below.
-if sys.argv[1:] != ["--self-test"]:
+if __name__ == "__main__" and "--enroll" not in sys.argv and sys.argv[1:] != ["--self-test"]:
     model_prehash.start(resolve_resource_dir("models_insightface"), resolve_resource_dir("models"))
 
 import cv2
@@ -38,30 +39,9 @@ _ROOT_DIR = _DAEMON_DIR.parent
 _MODELS_DIR = resolve_resource_dir("models")
 sys.path.insert(0, str(_DAEMON_DIR))
 
-_LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "MajestyGuard"
-_LOG_DIR.mkdir(parents=True, exist_ok=True)
-_LOG_PATH = _LOG_DIR / "daemon.log"
 _MG_STATE_DIR = Path(
-    os.environ.get("LOCALAPPDATA", os.environ.get("ProgramData", r"C:\ProgramData"))
+    os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
 ) / "MajestyGuard"
-_MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
-_LOG_MAX_BYTES = _env_log_max_bytes = int(os.environ.get("MG_LOG_MAX_BYTES", "5242880"))
-_LOG_BACKUP_COUNT = int(os.environ.get("MG_LOG_BACKUP_COUNT", "3"))
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    handlers=[
-        RotatingFileHandler(
-            _LOG_PATH,
-            maxBytes=_LOG_MAX_BYTES,
-            backupCount=_LOG_BACKUP_COUNT,
-            encoding="utf-8",
-        ),
-        logging.StreamHandler(sys.stdout),
-    ],
-    force=True,
-)
 log = logging.getLogger("majestyguard.daemon")
 
 _ACTIVE_DAEMON: Optional[MajestyGuardDaemon] = None
@@ -333,6 +313,7 @@ class MajestyGuardDaemon:
         # re-entered LOCKED before the old timer fired.
         self._transition_generation = 0
         self._stop = threading.Event()
+        self._loop_wake = threading.Event()
         self._whcdf_stop = threading.Event()
         self._is_tearing_down = False
 
@@ -475,6 +456,7 @@ class MajestyGuardDaemon:
 
     def stop(self) -> None:
         self._stop.set()
+        self._loop_wake.set()
 
     def _warmup_inference(self) -> None:
         if self.face_eng is None:
@@ -821,7 +803,7 @@ class MajestyGuardDaemon:
         While locked the overlay stays up and shows what is wrong; only a
         deliberate Tab-then-confirm hands over to the Windows password. While
         unlocked, the daemon waits in CAMERA_UNAVAILABLE and soft-locks if the
-        user goes input-idle. Healing continues in the background either way.
+        user goes input-idle. A passive lock only retries on an owner request.
         """
         tracker = self._camera_health_tracker()
         diagnosis = tracker.diagnosis()
@@ -832,7 +814,7 @@ class MajestyGuardDaemon:
         self._soft_lock_verification_started_at = 0.0
         self._write_camera_health_snapshot()
         if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK):
-            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text())
+            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text(manual_retry=True))
             return
         if self.state == State.SYSTEM_LOCKED:
             return
@@ -840,18 +822,10 @@ class MajestyGuardDaemon:
             # The idle probe could not verify the owner: lock, but with the
             # overlay (Tab twice for Windows) rather than a forced Windows lock.
             self._enter_soft_lock("camera_unavailable")
-            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text())
+            self.ipc.broadcast_state("camera_fault", detail=diagnosis.overlay_text(manual_retry=True))
             return
         if self.state != State.CAMERA_UNAVAILABLE:
             self._transition(State.CAMERA_UNAVAILABLE)
-
-    def _heal_camera_if_faulted(self) -> None:
-        if not getattr(self, "_camera_fault_active", False):
-            return
-        if not self._camera_health_tracker().ready_to_retry():
-            return
-        log.info("[Camera] heal attempt (backends=%s)", self._camera_health_tracker().backends())
-        self._open_camera(max_attempts=1, retry_delay_s=0)
 
     def _observe_frame_health(self, frame) -> bool:
         """Track frame-level faults; True when the camera must be reopened."""
@@ -915,9 +889,11 @@ class MajestyGuardDaemon:
 
     def _queue_session_event(self, event: SessionEvent) -> None:
         self._session_events.put(event)
+        self._loop_wake.set()
 
     def _queue_ui_command(self, command: str, detail: str) -> None:
         self._ui_commands.put((command, detail))
+        self._loop_wake.set()
 
     def _drain_session_events(self) -> None:
         while True:
@@ -991,12 +967,10 @@ class MajestyGuardDaemon:
             log.info("[CMD] verify_requested ignored — cooldown active, %.1fs remaining", remaining)
             self.ipc.broadcast_state("verify_failed", detail=f"Retry cooldown ({remaining:.0f}s)")
             return
-        if getattr(self, "_camera_fault_active", False):
-            log.info("[CMD] verify_requested while camera faulted - retrying camera now")
-            self._camera_health_tracker().request_retry_now()
-            self._heal_camera_if_faulted()
-            if getattr(self, "_camera_fault_active", False):
-                return
+        if getattr(self, "_camera_fault_active", False) and not self._camera_health_tracker().ready_to_retry():
+            remaining = max(1, math.ceil(self._camera_health_tracker().seconds_until_retry()))
+            self.ipc.broadcast_state("camera_fault", detail=f"Camera unavailable. Retry in {remaining}s")
+            return
         self._start_soft_lock_verification(detail or "ui")
 
     def schedule_exit(self) -> None:
@@ -1124,6 +1098,11 @@ class MajestyGuardDaemon:
         frame_no = 0
 
         while not self._stop.is_set():
+            # Clear before draining: a command posted after the drain leaves
+            # the event set, so it cannot sleep through the next passive wait.
+            self._loop_wake.clear()
+            if self._stop.is_set():
+                break
             self._drain_session_events()
             self._drain_ui_commands()
             if hasattr(self, "_exit_at") and time.monotonic() >= self._exit_at:
@@ -1159,12 +1138,10 @@ class MajestyGuardDaemon:
             if self._handle_persistent_idle_park():
                 continue
             if self._is_soft_lock_passive():
-                self._handle_passive_soft_lock(loop_start)
+                self._handle_passive_soft_lock()
                 continue
             if self._cap is None:
-                max_att = 5 if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK) else 1
-                delay = 0.5 if self.state in (State.SOFT_LOCK, State.SOCIAL_LOCK, State.HOSTILE_LOCK) else 0.0
-                if not self._open_camera(max_attempts=max_att, retry_delay_s=delay):
+                if not self._open_camera(max_attempts=1, retry_delay_s=0):
                     time.sleep(0.5)
                     continue
             self._mark_verification_phase("camera_ready")
@@ -1258,14 +1235,13 @@ class MajestyGuardDaemon:
             self.ipc.broadcast_state("scanning", detail="Verifying...")
         return started, ended
 
-    def _handle_passive_soft_lock(self, loop_start: float) -> None:
+    def _handle_passive_soft_lock(self) -> None:
         now = time.monotonic()
         self._set_vcam_keepwarm(True)
-        self._heal_camera_if_faulted()
         if getattr(self, "_camera_fault_active", False):
             self.ipc.broadcast_state(
                 "camera_fault",
-                detail=self._camera_health_tracker().diagnosis().overlay_text(),
+                detail=self._camera_health_tracker().diagnosis().overlay_text(manual_retry=True),
             )
         elif now < getattr(self, "_verify_failed_until", 0.0):
             self.ipc.broadcast_state("verify_failed")
@@ -1276,7 +1252,7 @@ class MajestyGuardDaemon:
         # Passive lock must be camera-cold: only a deliberate UI request can
         # open the device and begin a bounded verification burst.
         self._release_camera()
-        time.sleep(PASSIVE_LOOP_SLEEP_S)
+        self._loop_wake.wait(PASSIVE_LOOP_SLEEP_S)
 
     def _start_overlay_watchdog(self) -> None:
         if not OVERLAY_WATCHDOG_ENABLED:
@@ -2324,6 +2300,22 @@ class MajestyGuardDaemon:
 
 def main() -> None:
     global _ACTIVE_DAEMON
+    _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    handlers: list[logging.Handler] = [
+        RotatingFileHandler(
+            _MG_STATE_DIR / "daemon.log",
+            maxBytes=_env_int("MG_LOG_MAX_BYTES", 5242880, 1024),
+            backupCount=_env_int("MG_LOG_BACKUP_COUNT", 3, 1),
+            encoding="utf-8",
+        ),
+    ]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+    )
     daemon = MajestyGuardDaemon()
     _ACTIVE_DAEMON = daemon
     audit_log.record("daemon_start", pid=os.getpid())

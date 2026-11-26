@@ -6,7 +6,6 @@ non-biometric files the daemon writes (camera_health.json, audit.log).
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Protocol
@@ -740,16 +739,7 @@ class ControlCenter(QMainWindow):
 
     def _refresh_telemetry_chips(self, enrolled: bool) -> str:
         state_dir = self._state_dir()
-        gallery = "Not enrolled"
-        if enrolled:
-            gallery = "Enrolled (DPAPI)"
-            meta_file = state_dir / "embeddings_v2_meta.json"
-            if meta_file.is_file():
-                try:
-                    meta = json.loads(meta_file.read_text(encoding="utf-8"))
-                    gallery = f"{meta.get('selected_count', '?')} templates · {str(meta.get('profile', 'robust')).capitalize()}"
-                except Exception:
-                    pass
+        gallery = activity.gallery_summary(state_dir / "embeddings_v2_meta.json") if enrolled else "Not enrolled"
         self._gallery_chip.setText(gallery)
 
         lock_file = state_dir / "lock_state.txt"

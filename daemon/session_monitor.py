@@ -77,6 +77,28 @@ class SessionMonitor:
             self._thread.join(timeout=2.0)
 
     def _run(self) -> None:
+        """Keep the window/notification registration alive.
+
+        Lock/unlock events are the only way the daemon learns about a Windows lock, so if the
+        pump dies (explorer restart, handle failure) it is rebuilt with backoff instead of the
+        daemon silently going deaf for the rest of the session.
+        """
+        delay = 1.0
+        while not self._stop.is_set():
+            started = time.monotonic()
+            if not self._run_once():
+                return
+            if self._stop.is_set():
+                return
+            if time.monotonic() - started > 60.0:
+                delay = 1.0
+            log.info("Windows session monitor restarting in %.0fs", delay)
+            if self._stop.wait(delay):
+                return
+            delay = min(delay * 2.0, 30.0)
+
+    def _run_once(self) -> bool:
+        """One registration lifetime. Returns True when a restart is worth trying."""
         try:
             import win32con
             import win32gui
@@ -84,7 +106,8 @@ class SessionMonitor:
         except Exception as exc:
             self.available = False
             log.warning("Windows session monitor unavailable: %s", exc)
-            return
+            return False
+        retry = False
 
         class_name = "MajestyGuardSessionMonitorWindow"
         atom = None
@@ -117,6 +140,7 @@ class SessionMonitor:
                 time.sleep(0.1)
         except Exception as exc:
             self.available = False
+            retry = True
             log.warning("Windows session monitor stopped unexpectedly: %s", exc)
         finally:
             if self._hwnd:
@@ -134,6 +158,7 @@ class SessionMonitor:
                     win32gui.UnregisterClass(atom, None)
                 except Exception:
                     pass
+        return retry
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
         if msg == WM_WTSSESSION_CHANGE:

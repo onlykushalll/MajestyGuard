@@ -58,6 +58,8 @@ python -m pip install -r requirements.txt
 python -m pip install -r packaging\requirements-build.txt
 ```
 
+For a tamper-evident install, use the hashed lock instead of the first `pip install` line: `python -m pip install --require-hashes -r requirements.lock.txt` (regenerate it with `python tools/gen_requirements_lock.py` after changing `requirements.txt`).
+
 Run the automated suite from the repository root:
 
 ```powershell

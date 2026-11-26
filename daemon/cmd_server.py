@@ -100,23 +100,19 @@ class CMDServer:
 
     @staticmethod
     def _client_pid_is_stable(client_pid: int) -> bool:
-        """PID-reuse TOCTOU guard (MG-B-07 hardening): capture the client
-        process's create_time immediately before the accept decision and
-        re-read it right after. If the PID was recycled between the pipe
-        handshake and this check, the two reads disagree (or the process is
-        gone) and we fail closed. Any error (e.g. psutil unavailable) also
-        fails closed, matching the existing reject-on-error style."""
+        """Is the client process still alive and readable? Fails closed on any error.
+
+        This is a liveness check, not a PID-reuse defence: both reads below happen back to back,
+        so they cannot observe a recycled PID. The real protection is that the pipe connection
+        itself belongs to the client process - if that process exits, the pipe breaks before a
+        recycled PID could speak on it - plus the restricted pipe ACL and the parent/child PID
+        match performed by the caller.
+        """
         try:
             import psutil
-            first_create_time = psutil.Process(client_pid).create_time()
-            if psutil.Process(client_pid).create_time() != first_create_time:
-                log.warning(
-                    "CMDServer PID %d identity changed between checks - rejecting (PID reuse?)",
-                    client_pid,
-                )
-                return False
+            psutil.Process(client_pid).create_time()
         except Exception:
-            log.warning("CMDServer failed to verify PID %d stability - rejecting", client_pid)
+            log.warning("CMDServer failed to verify PID %d - rejecting", client_pid)
             return False
         return True
 

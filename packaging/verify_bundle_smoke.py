@@ -109,10 +109,13 @@ def main(argv=None):
     ):
         failure = run_check(label, command, state, env, timeout)
         if failure:
-            print(f"{label}: {failure}\nLogs: {state}", flush=True)
+            report = [f"{label}: {failure}", f"Logs: {state}"]
             for path in (state / f"{label}.log", state / "MajestyGuard" / "daemon.log"):
                 if tail := _tail(path):
-                    print(f"--- {path.name} ---\n{tail}", flush=True)
+                    report.extend((f"--- {path.name} ---", tail))
+            message = "\n".join(report)
+            (state / "smoke-failure.txt").write_text(message + "\n", encoding="utf-8")
+            print(message, flush=True)
             return 1
         print(f"{label}: PASS", flush=True)
     return 0

@@ -65,6 +65,7 @@ Require-File (Join-Path $ModelDir "face_detection_yunet_2023mar.onnx") "face det
 Require-File (Join-Path $ModelDir "midas_v21_small_256.onnx") "depth liveness model"
 Require-File (Join-Path $InsightFaceModelDir "models\buffalo_l\det_10g.onnx") "InsightFace detector model"
 Require-File (Join-Path $InsightFaceModelDir "models\buffalo_l\w600k_r50.onnx") "InsightFace recognition model"
+Require-File (Join-Path $InsightFaceModelDir "models\buffalo_l\2d106det.onnx") "InsightFace landmark model"
 
 & $PythonPath -c "import PyInstaller; print(PyInstaller.__version__)"
 if ($LASTEXITCODE -ne 0) {

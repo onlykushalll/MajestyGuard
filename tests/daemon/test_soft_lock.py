@@ -11,6 +11,8 @@ def test_cold_start_camera_time_excludes_idle_wait(monkeypatch):
     from unittest.mock import Mock
 
     daemon = Mock()
+    daemon._is_tearing_down = False
+    daemon._start_and_run.side_effect = lambda: MajestyGuardDaemon._start_and_run(daemon)
     daemon._idle_check_mode = True
     daemon._persistent_idle_loop = False
     daemon.state = State.IDLE
@@ -37,6 +39,8 @@ def test_cold_start_camera_time_excludes_idle_wait(monkeypatch):
 def test_late_idle_opens_camera_during_warmup_but_never_scans_early(monkeypatch):
     from unittest.mock import Mock
     daemon = Mock()
+    daemon._is_tearing_down = False
+    daemon._start_and_run.side_effect = lambda: MajestyGuardDaemon._start_and_run(daemon)
     daemon._idle_check_mode = True
     daemon._persistent_idle_loop = False
     daemon.state = State.IDLE
@@ -507,6 +511,22 @@ def test_soft_lock_strict_fast_path_requires_three_passes_before_active(monkeypa
 
     assert daemon.state == State.ACTIVE
     assert face_engine.liveness_modes == ["fast", "fast", "fast"]
+
+
+def test_soft_lock_fast_consensus_restarts_after_a_rejected_sample(monkeypatch):
+    monkeypatch.setattr(daemon_main.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(daemon_main, "BURST_FAST_CONFIRM_FRAMES", 3)
+    passed = _result(score=0.85, liveness=0.88, quality=0.92)
+    rejected = _result(score=0.84, liveness=0.75, quality=0.92)
+    face_engine = FakeFaceEngine([passed, passed, rejected, passed, passed, passed])
+    daemon = _bare_daemon(State.SOFT_LOCK, face_engine)
+    daemon._start_soft_lock_verification("space")
+
+    for frame_no in range(1, 6):
+        daemon._tick_soft_lock(frame=object(), frame_no=frame_no)
+        assert daemon.state == State.SOFT_LOCK
+    daemon._tick_soft_lock(frame=object(), frame_no=6)
+    assert daemon.state == State.ACTIVE
 
 
 def test_hostile_lock_is_the_only_transition_that_calls_windows_lock(monkeypatch):

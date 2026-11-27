@@ -1,7 +1,37 @@
+import io
 from pathlib import Path
+from types import SimpleNamespace
+
+import workflow_test
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_dry_run_keeps_explicit_time_limit_and_warns_against_tab(capsys, monkeypatch):
+    def unexpected_start(_env):
+        raise AssertionError("dry run must not start the daemon")
+
+    monkeypatch.setattr(workflow_test, "_start_daemon", unexpected_start)
+    args = SimpleNamespace(idle_timeout=30, max_seconds=35, runs=3, dry_run=True)
+
+    assert workflow_test.run(args) == 0
+    output = capsys.readouterr().out
+    assert '"MG_MAX_SECONDS": "35"' in output
+    assert "Do not press Tab" in output
+
+
+def test_workflow_reports_daemon_failure_and_drains_last_output(capsys, monkeypatch):
+    child = SimpleNamespace(
+        stdout=io.StringIO("last daemon line\n"),
+        poll=lambda: 7,
+        wait=lambda: 7,
+    )
+    monkeypatch.setattr(workflow_test, "_start_daemon", lambda _env: child)
+    args = SimpleNamespace(idle_timeout=30, max_seconds=35, runs=1, dry_run=False)
+
+    assert workflow_test.run(args) == 7
+    assert "last daemon line" in capsys.readouterr().out
 
 
 def test_workflow_test_script_documents_supervised_timing_targets():

@@ -9,6 +9,23 @@ from mg_run_summary import (
 )
 
 
+def test_summary_separates_successful_burst_timings_from_other_outcomes():
+    summary = summarize_lines([
+        "2026-11-26 21:10:55,931 INFO majestyguard.daemon: [VerifyTiming] "
+        "outcome=owner_verified camera_ready_ms=1891 first_frame_ms=1985 decision_ms=2656",
+        "2026-11-26 21:11:15,000 INFO majestyguard.daemon: [VerifyTiming] "
+        "outcome=timeout first_frame_ms=200 decision_ms=15007",
+        "2026-11-26 21:11:30,000 INFO majestyguard.daemon: [VerifyTiming] "
+        "outcome=owner_verified camera_ready_ms=-1 decision_ms=1900",
+    ])
+
+    assert summary.verification_outcomes == {"owner_verified": 2, "timeout": 1}
+    assert summary.owner_verification_ms["camera_ready"].count == 1
+    assert summary.owner_verification_ms["camera_ready"].median == 1891
+    assert summary.owner_verification_ms["decision"].median == 2278
+    assert summary.owner_verification_ms["decision"].max == 2656
+
+
 def test_summary_reports_active_hold_and_low_score_reasons():
     lines = [
         "2026-06-06 11:32:46,798 INFO majestyguard.daemon: STATE: IDLE -> SCANNING (face detected)",

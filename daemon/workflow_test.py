@@ -1,9 +1,9 @@
 """
 workflow_test.py - Supervised soft-lock workflow timing test.
 
-This script prepares a bounded daemon-owned UI run and prints exact
-instructions for the human operator. It keeps MG_ENABLE_LOCK=0 so no Windows
-hard-lock happens during timing validation.
+This script prepares a supervised daemon-owned UI run. MG_ENABLE_LOCK=0
+disables automatic Windows locking by the daemon, not the UI's deliberate
+Windows-lock fallback.
 
 Measures:
   T1: ACTIVE -> INACTIVITY_LOCK / locked_passive
@@ -18,13 +18,15 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
+from idle_monitor import clamp_idle_timeout
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = Path(sys.executable)
 DAEMON = ROOT / "daemon" / "main.py"
+
+
 def _env(idle_timeout: int, max_seconds: int) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
@@ -70,16 +72,19 @@ def _stop_process(proc: subprocess.Popen | None) -> None:
         proc.kill()
 
 
-def _print_operator_steps(idle_timeout: int, runs: int) -> None:
+def _print_operator_steps(idle_timeout: int, runs: int, max_seconds: int) -> None:
     print("=== MajestyGuard Supervised Workflow Timing ===")
-    print("Safety: MG_ENABLE_LOCK=0, no Windows hard-lock.")
-    print(f"Runs: {runs}")
-    print(f"Idle timeout: {idle_timeout}s")
+    print("Safety: the overlay captures input; run only while at the PC.")
+    print("Automatic daemon Windows locking is disabled. Do not press Tab on the overlay.")
+    print("Its manual Windows-lock fallback is independent of MG_ENABLE_LOCK.")
+    print(f"Planned cycles (manual): {runs}")
+    print(f"Requested idle timeout: {idle_timeout}s (saved settings can override it)")
+    print(f"Daemon camera-loop time limit: {max_seconds}s")
     print()
     print("For each run:")
     print("  1. Sit centered, good daylight, face camera.")
     print("  2. Wait until the daemon reports ACTIVE.")
-    print(f"  3. Stop touching laptop for {idle_timeout}s.")
+    print("  3. Stop desktop input for the effective idle timeout.")
     print("  4. The daemon-owned overlay should appear as locked_passive / LOCKED.")
     print("  5. Press Space once.")
     print("  6. Watch for verifying_lock / VERIFYING, then ACTIVE.")
@@ -93,9 +98,10 @@ def _print_operator_steps(idle_timeout: int, runs: int) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
-    max_seconds = max(args.max_seconds, args.runs * (args.idle_timeout + 25))
-    env = _env(args.idle_timeout, max_seconds)
-    _print_operator_steps(args.idle_timeout, args.runs)
+    idle_timeout = int(clamp_idle_timeout(args.idle_timeout))
+    max_seconds = args.max_seconds or min(86400, args.runs * (idle_timeout + 25))
+    env = _env(idle_timeout, max_seconds)
+    _print_operator_steps(idle_timeout, args.runs, max_seconds)
 
     if args.dry_run:
         print("Dry run only. Environment:")
@@ -108,26 +114,29 @@ def run(args: argparse.Namespace) -> int:
         print("Daemon started. It will launch its owned UI after SOFT_LOCK.")
         print("Use the visual UI and daemon logs to record T1/T2/T3/T4.")
         print("Stop with Ctrl+C after the requested runs.")
-        while daemon.poll() is None:
-            line = daemon.stdout.readline() if daemon.stdout is not None else ""
-            if not line:
-                time.sleep(0.1)
-                continue
-            print(line, end="")
+        if daemon.stdout is not None:
+            for line in daemon.stdout:
+                print(line, end="")
+        return daemon.wait()
     except KeyboardInterrupt:
         print("\nStopping supervised workflow test.")
+        return 130
     finally:
         _stop_process(daemon)
-    return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Supervised MajestyGuard soft-lock timing test.")
     parser.add_argument("--idle-timeout", type=int, default=30, help="Idle timeout for test runs, clamped by daemon to 3-1800 seconds.")
-    parser.add_argument("--runs", type=int, default=3, help="Number of supervised runs to perform.")
-    parser.add_argument("--max-seconds", type=int, default=0, help="Hard bound for daemon lifetime.")
+    parser.add_argument("--runs", type=int, default=3, help="Number of manually supervised cycles to plan for.")
+    parser.add_argument("--max-seconds", type=int, default=0, help="Daemon camera-loop time limit (0 derives it from the planned cycles).")
     parser.add_argument("--dry-run", action="store_true", help="Print instructions/env without starting camera/UI.")
-    return run(parser.parse_args())
+    args = parser.parse_args()
+    if args.runs < 1:
+        parser.error("--runs must be at least 1")
+    if not 0 <= args.max_seconds <= 86400:
+        parser.error("--max-seconds must be between 0 and 86400")
+    return run(args)
 
 
 if __name__ == "__main__":

@@ -4,11 +4,12 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Sequence
 
-from app.runtime import Supervisor
+from app.runtime import Supervisor, packaged_child_env
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -53,6 +54,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.self_test:
         importlib.import_module("PyQt6.QtWidgets")
         importlib.import_module("app.control_center")
+        if getattr(sys, "frozen", False):
+            root, _ = default_paths()
+            daemon = default_daemon_executable(root)
+            if daemon is None:
+                return 1
+            # First launch can build native-library caches. A windowed binary
+            # must return a failure code, not present a hidden exception dialog.
+            try:
+                return subprocess.run(
+                    [str(daemon), "--enroll", "--self-test"],
+                    env=packaged_child_env(),
+                    timeout=75,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                ).returncode
+            except subprocess.TimeoutExpired:
+                return 124
+            except OSError:
+                return 1
         return 0
 
     from PyQt6.QtWidgets import QApplication
@@ -70,7 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings_path,
         daemon_executable=default_daemon_executable(root),
     )
-    center = ControlCenter(supervisor, settings_path)
+    center = ControlCenter(supervisor, settings_path, async_actions=True)
     center.show_tray()
 
     if args.background and center.enrollment_present():

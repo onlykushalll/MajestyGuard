@@ -15,6 +15,7 @@ depth-sensor claim.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 import threading
@@ -34,6 +35,7 @@ from enrollment_coverage import (  # noqa: E402
 OUT_DIR = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")) / "MajestyGuard"
 OUT_FILE = OUT_DIR / "embeddings_v2.npy"
 OUT_META_FILE = OUT_DIR / "embeddings_v2_meta.json"
+log = logging.getLogger("majestyguard.enrollment")
 
 MIN_FACE_HEIGHT = 0.28   # same enrollment framing floor as the guided flow
 MAX_FACE_HEIGHT = 0.68
@@ -256,7 +258,7 @@ def finish(
 # --------------------------------------------------------------------------
 
 
-def _build_analyzer(args, config: CoverageConfig):
+def _build_analyzer(config: CoverageConfig):
     import cv2  # noqa: F401
     from diagnostic_common import enhance_frame, resolve_resource_dir
     from face_quality import measure_face_quality
@@ -267,11 +269,11 @@ def _build_analyzer(args, config: CoverageConfig):
 
     models = resolve_resource_dir("models_insightface")
     live_dir = resolve_resource_dir("models")
-    print("Loading face model...")
+    log.info("Loading face model")
     app = FaceAnalysis(name="buffalo_l", root=str(models), providers=["CPUExecutionProvider"],
                        allowed_modules=["detection", "recognition"])
     app.prepare(ctx_id=0, det_size=(320, 320))
-    print("Loading liveness model...")
+    log.info("Loading liveness model")
     liveness = LivenessDetector(model_dir=str(live_dir))
     liveness.reset_session()
     analyzer = Analyzer(
@@ -281,6 +283,30 @@ def _build_analyzer(args, config: CoverageConfig):
     return analyzer, liveness
 
 
+def _load_window():
+    import importlib
+    from diagnostic_common import resolve_resource_dir
+
+    ui_dir = str(resolve_resource_dir("ui"))
+    if ui_dir not in sys.path:
+        sys.path.insert(0, ui_dir)
+    return importlib.import_module("coverage_enrollment_window").CoverageEnrollmentWindow
+
+
+def self_test() -> int:
+    """Exercise native imports and model initialization without capture or UI."""
+    _load_window()
+    analyzer, liveness = _build_analyzer(CoverageConfig())
+    try:
+        from scipy import signal
+
+        signal.butter(2, (0.1, 0.4), btype="band")
+        analyzer.detect(np.full((480, 640, 3), 128, dtype=np.uint8))
+        return 0
+    finally:
+        liveness.close()
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--camera", type=int, default=0)
@@ -288,25 +314,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="run everything but write nothing")
     parser.add_argument("--gallery", type=Path, default=OUT_FILE)
     parser.add_argument("--meta", type=Path, default=OUT_META_FILE)
+    parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.self_test:
+        return self_test()
 
     import enrollment_gate as gate
     if not args.dry_run and not gate.prepare_enrollment(args.gallery):
         return 1
 
     import cv2
-    from diagnostic_common import resolve_resource_dir
-
-    ui_dir = resolve_resource_dir("ui")
-    if str(ui_dir) not in sys.path:
-        sys.path.insert(0, str(ui_dir))
     import importlib
 
     # Dynamic imports keep the daemon package free of static Qt imports
     # (tests/test_suite_contract.py); this tool is the only Qt-using entry point.
     QImage = importlib.import_module("PyQt6.QtGui").QImage
     QApplication = importlib.import_module("PyQt6.QtWidgets").QApplication
-    CoverageEnrollmentWindow = importlib.import_module("coverage_enrollment_window").CoverageEnrollmentWindow
+    CoverageEnrollmentWindow = _load_window()
 
     config = CoverageConfig()
     qt_app = QApplication.instance() or QApplication(sys.argv)
@@ -331,7 +355,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     def worker() -> None:
         cap = liveness = None
         try:
-            analyzer, liveness = _build_analyzer(args, config)
+            analyzer, liveness = _build_analyzer(config)
             if stop.is_set():
                 window.result_signal.emit(False, "Enrollment canceled. Nothing was saved.")
                 return
@@ -368,6 +392,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 }[outcome.reason]
                 window.result_signal.emit(False, copy)
         except Exception as exc:  # keep the window honest instead of dying silently
+            log.exception("Enrollment failed")
+            if not args.dry_run:
+                gate.write_result(args.gallery.parent, "failed")
             collector.discard()
             window.result_signal.emit(False, f"Enrollment failed: {exc}. Nothing was saved.")
         finally:

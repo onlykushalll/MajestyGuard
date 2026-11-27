@@ -27,7 +27,7 @@ _MAX_DETAIL_CHARS = 120
 
 
 def _digest(prev: str, body: dict) -> str:
-    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
     return hashlib.sha256((prev + payload).encode("utf-8")).hexdigest()
 
 
@@ -119,6 +119,9 @@ def verify_chain(path: Path, *, expected_first_prev: str | None = None) -> tuple
                     rec = json.loads(raw)
                     claimed_hash = rec.pop("hash")
                     claimed_prev = rec.pop("prev")
+                    if not isinstance(claimed_prev, str) or not isinstance(claimed_hash, str):
+                        return False, count, f"line {number}: invalid hash fields"
+                    computed = _digest(claimed_prev, rec)
                 except Exception:
                     return False, count, f"line {number}: unreadable record"
                 if prev is None:
@@ -126,11 +129,11 @@ def verify_chain(path: Path, *, expected_first_prev: str | None = None) -> tuple
                         return False, count, f"line {number}: chain does not start where expected"
                 elif claimed_prev != prev:
                     return False, count, f"line {number}: link to the previous record is broken"
-                if _digest(claimed_prev, rec) != claimed_hash:
+                if computed != claimed_hash:
                     return False, count, f"line {number}: record was altered"
                 prev = claimed_hash
                 count += 1
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return False, count, f"cannot read log: {exc}"
     return True, count, "chain intact"
 

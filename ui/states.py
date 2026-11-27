@@ -244,7 +244,10 @@ _STATIC_LABEL_OVERRIDES: dict[str, str] = {
 def _clamp_optional(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
-    return max(0.0, min(1.0, float(value)))
+    value = float(value)
+    if not -float("inf") < value < float("inf"):
+        return None
+    return max(0.0, min(1.0, value))
 
 
 def get_state(

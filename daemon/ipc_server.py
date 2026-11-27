@@ -203,12 +203,15 @@ class IPCServer:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="mg-ui-ipc", daemon=True)
+        sa = _build_sa()
+        self._thread = threading.Thread(target=self._loop, args=(sa,), name="mg-ui-ipc", daemon=True)
         self._thread.start()
         log.info("IPCServer started on %s", PIPE_NAME)
 
     def stop(self) -> None:
         self._stop.set()
+        if self._thread is None or not self._thread.is_alive():
+            return
         # Unblock the waiting pipe by connecting to it briefly
         try:
             h = win32file.CreateFile(
@@ -227,8 +230,7 @@ class IPCServer:
     # Internal pipe loop
     # ------------------------------------------------------------------
 
-    def _loop(self) -> None:
-        sa = _build_sa()
+    def _loop(self, sa: win32security.SECURITY_ATTRIBUTES) -> None:
         while not self._stop.is_set():
             handle = None
             try:

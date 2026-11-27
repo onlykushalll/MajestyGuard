@@ -81,3 +81,28 @@ def test_failure_midway_rolls_back_instead_of_leaving_gestures_half_disabled(tmp
 
 def test_nothing_to_recover_is_a_no_op(tmp_path):
     assert GestureGuard(FakeReg(USER), tmp_path / "none.json").recover_after_crash() is False
+
+
+def test_failed_rollback_keeps_originals_for_recovery(tmp_path):
+    reg = FakeReg(USER)
+    path = tmp_path / "restore.json"
+    reg.fail_on_set = "ThreeFingerUp"
+    guard = GestureGuard(reg, path)
+    assert not guard.engage()
+    assert not guard.engaged
+    assert path.is_file()
+    reg.fail_on_set = None
+    assert GestureGuard(reg, path).recover_after_crash()
+    assert reg.values == USER
+
+
+def test_invalid_existing_journal_never_gets_overwritten(tmp_path):
+    reg = FakeReg(USER)
+    path = tmp_path / "restore.json"
+    for original in ('{', '{"FourFingerTapEnabled":"bad"}', '{}'):
+        path.write_text(original, encoding="utf-8")
+        guard = GestureGuard(reg, path)
+        assert not guard.recover_after_crash()
+        assert not guard.engage()
+        assert reg.values == USER
+        assert path.read_text(encoding="utf-8") == original

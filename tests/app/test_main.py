@@ -25,6 +25,25 @@ def test_packaging_self_test_imports_widgets_without_starting_gui(monkeypatch):
     assert imported == ["PyQt6.QtWidgets", "app.control_center"]
 
 
+def test_frozen_self_test_launches_the_same_enrollment_entrypoint(monkeypatch, tmp_path):
+    import sys
+    from types import SimpleNamespace
+
+    import app.main as entry
+
+    daemon = tmp_path / "MajestyGuardDaemon.exe"
+    calls = []
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry, "default_paths", lambda: (tmp_path, tmp_path / "settings.json"))
+    monkeypatch.setattr(entry, "default_daemon_executable", lambda _root: daemon)
+    monkeypatch.setattr(importlib, "import_module", lambda _name: None)
+    monkeypatch.setattr(entry.subprocess, "run", lambda command, **kw: calls.append((command, kw))
+                        or SimpleNamespace(returncode=1))
+    assert main(["--self-test"]) == 1
+    assert calls[0][0] == [str(daemon), "--enroll", "--self-test"]
+    assert calls[0][1]["env"]["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+
+
 def test_help_exits_cleanly_when_windowed_stdout_is_unavailable(monkeypatch):
     monkeypatch.setattr("sys.stdout", None)
 
@@ -32,6 +51,16 @@ def test_help_exits_cleanly_when_windowed_stdout_is_unavailable(monkeypatch):
         main(["--help"])
 
     assert exit_info.value.code == 0
+
+
+def test_windowed_self_test_timeout_returns_code_without_error_dialog(monkeypatch, tmp_path):
+    import app.main as entry
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry, "default_daemon_executable", lambda _: tmp_path / "worker.exe")
+    def timeout(command, **kw):
+        raise entry.subprocess.TimeoutExpired(command, kw["timeout"])
+    monkeypatch.setattr(entry.subprocess, "run", timeout)
+    assert entry.main(["--self-test"]) == 124
 
 
 def test_default_paths_are_root_relative_and_user_state_relative(monkeypatch, tmp_path):

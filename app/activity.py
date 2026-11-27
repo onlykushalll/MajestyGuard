@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -85,7 +86,7 @@ class Activity:
 
 def _digest(prev: str, body: dict) -> str:
     # Identical to daemon/audit_log._digest; tests assert the two stay in step.
-    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
     return hashlib.sha256((prev + payload).encode("utf-8")).hexdigest()
 
 
@@ -105,15 +106,18 @@ def verify_integrity(path: Path) -> tuple[bool, int, str]:
                     rec = json.loads(raw)
                     claimed_hash = rec.pop("hash")
                     claimed_prev = rec.pop("prev")
+                    if not isinstance(claimed_prev, str) or not isinstance(claimed_hash, str):
+                        return False, count, f"Line {number} has invalid hash fields"
+                    computed = _digest(claimed_prev, rec)
                 except Exception:
                     return False, count, f"Line {number} is unreadable"
                 if prev is not None and claimed_prev != prev:
                     return False, count, f"Line {number}: link to the previous record is broken"
-                if _digest(claimed_prev, rec) != claimed_hash:
+                if computed != claimed_hash:
                     return False, count, f"Line {number}: a record was altered"
                 prev = claimed_hash
                 count += 1
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         return False, count, f"Cannot read the log ({exc.__class__.__name__})"
     return True, count, "Stored records are consistent"
 
@@ -129,7 +133,7 @@ def _describe(event: str, detail: dict) -> tuple[str, str, str]:
         parts = []
         if isinstance(streak, int) and streak > 1:
             parts.append(f"{streak} in a row")
-        if isinstance(cooldown, (int, float)) and cooldown:
+        if isinstance(cooldown, (int, float)) and 0 < cooldown <= 86400:
             parts.append(f"retry in {int(cooldown)} s")
         note = ", ".join(parts)
         tone = "bad" if isinstance(streak, int) and streak >= 4 else tone
@@ -185,7 +189,7 @@ def read_recent(path: Path, limit: int = 40) -> list[Activity]:
             ts = float(rec["ts"])
         except Exception:
             continue          # also drops the partial first line of a tail read
-        if event in _HIDDEN:
+        if event in _HIDDEN or not math.isfinite(ts) or ts < 0:
             continue
         detail = rec.get("detail") if isinstance(rec.get("detail"), dict) else {}
         title, note, tone = _describe(event, detail)
@@ -193,6 +197,11 @@ def read_recent(path: Path, limit: int = 40) -> list[Activity]:
         if len(out) >= limit:
             break
     return out
+
+
+def read_history_snapshot(path: Path, check_chain: bool):
+    recent = read_recent(path, 40)
+    return recent, verify_integrity(path) if check_chain else None
 
 
 def ago(ts: float, now: Optional[float] = None) -> str:
@@ -220,6 +229,7 @@ class CameraInfo:
     next_retry_s: float
     events: tuple
     age_s: float
+    capture_open: Optional[bool] = None
 
 
 def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[CameraInfo]:
@@ -228,16 +238,24 @@ def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[Came
         if not isinstance(data, dict):
             return None
         updated = float(data.get("updated_at", 0.0))
+        retry = float(data.get("next_retry_in_s", 0.0))
+        status = data.get("status", "healthy")
+        events = data.get("events") or []
+        if (status not in ("healthy", "degraded", "recovering", "failed")
+                or not math.isfinite(updated) or not math.isfinite(retry)
+                or not isinstance(events, list)):
+            return None
         return CameraInfo(
-            status=str(data.get("status", "healthy")),
+            status=status,
             headline=str(data.get("headline", "")),
             hint=str(data.get("hint", "")),
             backend=str(data.get("last_backend") or "-"),
             recoveries=int(data.get("recoveries", 0)),
             open_failures=int(data.get("open_failures", 0)),
-            next_retry_s=float(data.get("next_retry_in_s", 0.0)),
-            events=tuple(str(e) for e in (data.get("events") or [])[-6:]),
+            next_retry_s=max(0.0, retry),
+            events=tuple(str(e) for e in events[-6:]),
             age_s=max(0.0, (time.time() if now is None else now) - updated) if updated else 1e9,
+            capture_open=data.get("capture_open") if isinstance(data.get("capture_open"), bool) else None,
         )
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return None

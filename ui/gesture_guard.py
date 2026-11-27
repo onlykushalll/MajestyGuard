@@ -14,6 +14,7 @@ crashed lock cannot leave the user's gestures permanently disabled.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Dict, Optional
@@ -26,6 +27,7 @@ NAMES = (
     "FourFingerUp", "FourFingerDown", "FourFingerLeft", "FourFingerRight",
 )
 _NOTHING = 0
+log = logging.getLogger(__name__)
 
 
 class WinRegistry:
@@ -36,7 +38,9 @@ class WinRegistry:
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, SUBKEY, 0, winreg.KEY_READ) as key:
                 value, kind = winreg.QueryValueEx(key, name)
-                return int(value) if kind == winreg.REG_DWORD else None
+                if kind != winreg.REG_DWORD:
+                    raise ValueError(f"Unexpected registry type for {name}; leaving it unchanged")
+                return int(value)
         except FileNotFoundError:
             return None
 
@@ -87,6 +91,7 @@ class GestureGuard:
                 self._reg.set(name, _NOTHING)
             return True
         except Exception:
+            log.warning("Could not apply gesture settings", exc_info=True)
             self._restore_quietly()
             return False
 
@@ -104,7 +109,11 @@ class GestureGuard:
         """Call at UI start: if a lock died while gestures were off, put them back."""
         if self._saved is not None:
             return False
-        leftover = self._read_restore_file()
+        try:
+            leftover = self._read_restore_file()
+        except (OSError, ValueError):
+            log.warning("Gesture backup unreadable; preserving it for recovery", exc_info=True)
+            return False
         if not leftover:
             return False
         ok = self._apply(leftover)
@@ -127,16 +136,24 @@ class GestureGuard:
 
     def _restore_quietly(self) -> None:
         if self._saved is not None:
-            self._apply(self._saved)
+            restored = self._apply(self._saved)
             self._saved = None
-            self._remove_restore_file()
+            if restored:
+                self._remove_restore_file()
+            else:
+                log.warning("Gesture rollback incomplete; retained recovery file")
 
     def _read_restore_file(self) -> Dict[str, Optional[int]]:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
-            return {k: (None if v is None else int(v)) for k, v in raw.items() if k in NAMES}
-        except (OSError, ValueError, AttributeError):
+        except FileNotFoundError:
             return {}
+        if not isinstance(raw, dict) or not raw or any(
+            k not in NAMES or (v is not None and (type(v) is not int or not 0 <= v <= 0xFFFFFFFF))
+            for k, v in raw.items()
+        ):
+            raise ValueError("Invalid gesture recovery file")
+        return raw
 
     def _write_restore_file(self, saved: Dict[str, Optional[int]]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)

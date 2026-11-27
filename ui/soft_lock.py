@@ -1,9 +1,8 @@
 """
 Fullscreen MajestyGuard desktop soft-lock shield.
 
-This is the production desktop lock surface used before the signed Windows
-Credential Provider path is available. It blocks local input with a full-screen
-glass shield while background apps keep running.
+The shield covers the active desktop and handles ordinary input addressed to it.
+It is not the Windows lock screen or a boundary for Windows shell gestures.
 """
 from __future__ import annotations
 
@@ -65,6 +64,12 @@ _LOCK_NAMES = {
     "locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
     "verify_failed", "camera_fault",
 }
+
+_OVERLAY_INPUT_EVENTS = frozenset({
+    QEvent.Type.ContextMenu, QEvent.Type.ShortcutOverride, QEvent.Type.Wheel,
+    QEvent.Type.MouseButtonDblClick, QEvent.Type.NativeGesture,
+    QEvent.Type.TouchBegin, QEvent.Type.TouchUpdate, QEvent.Type.TouchEnd, QEvent.Type.TouchCancel,
+})
 
 WH_KEYBOARD_LL = 13
 WH_MOUSE_LL = 14
@@ -642,6 +647,7 @@ class SoftLockOverlay(QWidget):
             | Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_AcceptTouchEvents, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -664,8 +670,8 @@ class SoftLockOverlay(QWidget):
         if screen is None:
             return
         rect = screen.virtualGeometry()
-        self.setGeometry(rect)
         self.setMinimumSize(rect.size())
+        self.setGeometry(rect)
 
     def _hud_rect(self) -> QRect:
         """Return primary-screen bounds in local widget coordinates so HUD elements
@@ -1241,9 +1247,9 @@ class SoftLockOverlay(QWidget):
     def _paint_key(self, painter: QPainter, rect: QRectF, model, s: float) -> None:
         mode = model.mode
         radius = rect.height() / 2.0
-        tint = _tok.AMBER if mode == "armed" else (255, 255, 255)
-        # Pure glass: almost no tint, strong bulge and edge refraction, a little dispersion.
-        alpha = {"idle": 0.07, "busy": 0.08, "armed": 0.16, "dim": 0.05}.get(mode, 0.07)
+        tint = (255, 225, 176) if mode == "armed" else (248, 250, 255)
+        # Frost both actions enough for dark labels without painting over the refracted rim.
+        alpha = 0.70
         extra = {}
         if _glass is not None:
             try:
@@ -1254,7 +1260,8 @@ class SoftLockOverlay(QWidget):
                                bulge=0.15, spec_gain=1.3, dispersion=0.12, **extra):
             path = QPainterPath()
             path.addRoundedRect(rect, radius, radius)
-            painter.fillPath(path, QColor(255, 255, 255, 50 if mode == "dim" else 90))
+            painter.fillPath(path, QColor(*tint, 50 if mode == "dim" else 90))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.setPen(QPen(QColor(255, 255, 255, 170), 1.0))
             painter.drawPath(path)
 
@@ -1362,17 +1369,15 @@ class SoftLockOverlay(QWidget):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # type: ignore[override]
+        event.accept()
+        if event.isAutoRepeat() or event.modifiers() != Qt.KeyboardModifier.NoModifier:
+            return
         key = event.key()
         if key == Qt.Key.Key_Tab:
             self._on_tab_pressed()
-            event.accept()
-            return
-        if key == Qt.Key.Key_Space:
+        elif key == Qt.Key.Key_Space:
             self._tab_gate.reset()
             self._request_verification("overlay_key")
-            event.accept()
-            return
-        event.accept()
 
     def focusNextPrevChild(self, next: bool) -> bool:
         return False
@@ -1401,9 +1406,14 @@ class SoftLockOverlay(QWidget):
         super().changeEvent(event)
 
     def event(self, event) -> bool:  # type: ignore[override]
-        if self.isVisible() and self._state.name in _LOCK_NAMES and event.type() == QEvent.Type.WindowDeactivate:
-            self._force_topmost()
-            self.raise_()
-            self.activateWindow()
-            return True
+        if self.isVisible() and self._state.name in _LOCK_NAMES:
+            kind = event.type()
+            if kind in _OVERLAY_INPUT_EVENTS:
+                event.accept()
+                return True
+            if kind == QEvent.Type.WindowDeactivate:
+                self._force_topmost()
+                self.raise_()
+                self.activateWindow()
+                return True
         return super().event(event)

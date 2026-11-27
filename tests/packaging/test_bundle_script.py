@@ -40,18 +40,21 @@ def test_all_frozen_processes_use_onedir_bundles():
 
 def test_bundle_script_has_an_explicit_no_camera_smoke_test():
     text = (ROOT / "packaging" / "build_bundle.ps1").read_text(encoding="utf-8")
+    verifier = (ROOT / "packaging" / "verify_bundle_smoke.py").read_text(encoding="utf-8")
 
-    assert "--self-test" in text
-    assert "MG_ENABLE_LOCK" in text
-    assert '"0"' in text
+    assert "--self-test" in verifier
+    assert 'MG_ENABLE_LOCK="0"' in verifier
     assert 'MajestyGuard\\MajestyGuard.exe' in text
 
 
 def test_packager_checks_each_entrypoint_without_starting_protection():
     text = (ROOT / "packaging" / "build_bundle.ps1").read_text(encoding="utf-8")
-    assert "foreach ($exe in @($ControlCenter, $Daemon, $Island))" in text
+    assert "verify_bundle_smoke.py" in text
+    verifier = (ROOT / "packaging/verify_bundle_smoke.py").read_text(encoding="utf-8")
+    assert '[daemon, "--enroll", "--self-test"]' in verifier
     assert '"--collect-all", "onnxruntime"' not in text
     assert '"--exclude-module", "onnx.reference"' in text
+    assert '"--hidden-import", "scipy._cyutility"' in text
     for path in ["daemon/main.py", "ui/main.py"]:
         entry = (ROOT / path).read_text(encoding="utf-8").split('if __name__ == "__main__":')[-1]
         assert entry.index('"--self-test"') < entry.rindex("main()")

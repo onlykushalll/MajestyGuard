@@ -754,6 +754,7 @@ class FaceEngine:
         This is the hot path — optimize every branch.
         """
         t_start = time.perf_counter()
+        profile = os.environ.get("MG_PROFILE_PIPELINE") == "1"
 
         # ── Virtual camera detection ──────────────────────────────────
         if self._is_virtual_camera():
@@ -783,10 +784,16 @@ class FaceEngine:
         orig_frame = frame
 
         # ── CLAHE lighting enhancement (+12% accuracy in <50 lux) ──
+        prep_started = time.perf_counter() if profile else 0.0
         frame = self._enhance_frame(frame)
 
         # ── Face detection ────────────────────────────────────────────
+        detect_started = time.perf_counter() if profile else 0.0
         faces = self._app.get(frame)
+        select_started = time.perf_counter() if profile else 0.0
+        if profile and not faces:
+            logger.info("[PipelineTiming] preprocessing_ms=%.2f detect_embed_ms=%.2f",
+                        (detect_started - prep_started) * 1000, (select_started - detect_started) * 1000)
         raw_face_count = len(faces)
 
         if raw_face_count == 0:
@@ -868,7 +875,9 @@ class FaceEngine:
                 inference_ms=(time.perf_counter() - t_start) * 1000,
             )
 
+        liveness_started = time.perf_counter() if profile else 0.0
         liveness_score = self._score_liveness(frame, primary_face, liveness_mode=liveness_mode)
+        match_started = time.perf_counter() if profile else 0.0
         liveness_passed = liveness_score >= self.liveness_threshold
 
         # Track consecutive liveness passes for consensus
@@ -995,6 +1004,14 @@ class FaceEngine:
         self._zero_frame(frame)
 
         inference_ms = (time.perf_counter() - t_start) * 1000
+        if profile:
+            logger.info(
+                "[PipelineTiming] preprocessing_ms=%.2f detect_embed_ms=%.2f selection_quality_ms=%.2f "
+                "liveness_ms=%.2f match_finalize_ms=%.2f",
+                (detect_started-prep_started)*1000, (select_started-detect_started)*1000,
+                (liveness_started-select_started)*1000, (match_started-liveness_started)*1000,
+                (time.perf_counter()-match_started)*1000,
+            )
         logger.debug(
             "Frame: faces=%d raw_faces=%d user=%s score=%.3f liveness=%.3f "
             "smooth=%.3f presence=%.3f quality=%.2f face_h=%.2f center=%.2f reason=%s candidate=%.3f "

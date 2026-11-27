@@ -60,6 +60,26 @@ def test_missing_log_is_an_empty_intact_history(tmp_path):
     assert activity.read_recent(tmp_path / "nope.log") == []
 
 
+def test_nonfinite_or_invalid_audit_fields_do_not_crash_readers(tmp_path):
+    log = tmp_path / "audit.log"
+    log.write_text(json.dumps({"prev": [], "hash": "", "event": "unlock_face", "ts": float("nan")}))
+    assert not activity.verify_integrity(log)[0]
+    assert not audit_log.verify_chain(log)[0]
+    assert activity.read_recent(log) == []
+    log.write_text(json.dumps({"prev": "0"*64, "hash": "", "event": "verify_failed", "ts": time.time(),
+                               "detail": {"cooldown_s": float("inf")}}))
+    assert not activity.verify_integrity(log)[0]
+    assert not audit_log.verify_chain(log)[0]
+    assert activity.read_recent(log)[0].detail == ""
+
+
+def test_corrupt_camera_snapshot_cannot_report_active_camera(tmp_path):
+    path = tmp_path / "camera_health.json"
+    for extra in ({"updated_at": float("inf")}, {"next_retry_in_s": float("nan")}, {"events": 42}):
+        path.write_text(json.dumps({"status": "healthy", "capture_open": True, **extra}))
+        assert activity.read_camera_health(path) is None
+
+
 def test_recent_activity_is_newest_first_friendly_and_skips_internal_noise(tmp_path):
     path = _log(tmp_path, [
         ("daemon_start", {"pid": 4}),

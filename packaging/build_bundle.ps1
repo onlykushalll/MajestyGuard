@@ -16,7 +16,9 @@ param(
 
     [switch]$CreateInstaller,
     [switch]$FinalizeExistingBundle,
-    [string]$VCRedistDir
+    [string]$VCRedistDir,
+    [ValidateRange(5, 600)]
+    [int]$SmokeTimeoutSeconds = 90
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,6 +107,7 @@ function New-FrozenBundle {
         "--exclude-module", "onnx.reference",
         "--exclude-module", "onnxruntime.quantization",
         "--exclude-module", "insightface.app.mask_renderer",
+        "--hidden-import", "scipy._cyutility",
         "--hidden-import", "enroll_continuous",
         "--hidden-import", "coverage_enrollment_window",
         "--add-data", "$ModelDir;models",
@@ -134,27 +137,12 @@ $resources = Join-Path (Split-Path -Parent $Daemon) "_internal"
 if ($LASTEXITCODE -ne 0) { throw "Packaged model verification failed." }
 & (Join-Path $PSScriptRoot "install_bundle_crt.ps1") -DaemonDir (Split-Path -Parent $Daemon) -VCRedistDir $VCRedistDir
 
-# Import the packaged Qt widgets without creating QApplication, a window,
-# camera, daemon, or soft-lock instance.
-$previousLockSetting = $env:MG_ENABLE_LOCK
-$previousAppData = $env:LOCALAPPDATA
-try {
-    $env:MG_ENABLE_LOCK = "0"
-    $env:LOCALAPPDATA = (New-Item -ItemType Directory -Force -Path (Join-Path $OutputDir "smoke-state")).FullName
-    foreach ($exe in @($ControlCenter, $Daemon, $Island)) {
-        $smoke = Start-Process -FilePath $exe -ArgumentList "--self-test" -WindowStyle Hidden -PassThru
-        if (-not $smoke.WaitForExit(45000)) {
-            $smoke.Kill()
-            throw "Packaged import smoke test timed out: $exe"
-        }
-        if ($smoke.ExitCode -ne 0) {
-            throw "Packaged import smoke test failed ($($smoke.ExitCode)): $exe"
-        }
-    }
-}
-finally {
-    $env:MG_ENABLE_LOCK = $previousLockSetting
-    $env:LOCALAPPDATA = $previousAppData
+& $PythonPath (Join-Path $PSScriptRoot "verify_bundle_smoke.py") `
+    --bundle-root $BundleRoot `
+    --smoke-state (Join-Path $OutputDir "smoke-state") `
+    --enrollment-timeout $SmokeTimeoutSeconds
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged self-tests failed. See the check output and isolated smoke-state logs."
 }
 
 if ($CreateInstaller) {

@@ -56,7 +56,7 @@ Only official MajestyGuard release artifacts compiled from the main branch of th
 ## 📋 SignPath Eligibility & Gaps
 
 To qualify for SignPath Foundation signing, MajestyGuard must satisfy these requirements:
-* **OSI-Approved License**: Must apply a standard license (applied: MIT License).
+* **OSI-Approved License**: Not confirmed. The current repository terms are in [LICENSE.md](../../LICENSE.md); do not describe this repository as MIT-licensed.
 * **No Proprietary Code**: All code in signed packages must be open-source.
 * **Public Repository**: Source code must be hosted publicly on GitHub.
 * **MFA Required**: Multi-factor authentication must be enabled on GitHub and SignPath accounts.

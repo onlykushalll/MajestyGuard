@@ -24,6 +24,7 @@ _KEY_VALUE_RE = re.compile(r"\b(?P<key>[a-z_]+)=(?P<value>[A-Za-z0-9_.+-]+)")
 _LOW_SCORE_REASON_RE = re.compile(r"low-score face treated as uncertain reason=(?P<reason>[a-z_]+)")
 _ACTIVE_CONTINUITY_RE = re.compile(r"owner-continuity dip held active")
 _DEFINITE_STRANGER_RE = re.compile(r"(?P<state>Scanning|Active): definite stranger")
+_VERIFY_PHASES = ("camera_ready", "first_frame", "fast_started", "full_started", "first_result", "decision")
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,8 @@ class RunSummary:
     social_lock_count: int
     locked_count: int
     lock_suppressed_count: int
+    verification_outcomes: dict[str, int]
+    owner_verification_ms: dict[str, NumericStats]
     low_score_reasons: dict[str, int]
     scanning_score: NumericStats
     scanning_liveness: NumericStats
@@ -183,6 +186,8 @@ def summarize_lines(lines: Iterable[str]) -> RunSummary:
     entered_active = False
 
     state_transitions: dict[str, int] = {}
+    verification_outcomes: dict[str, int] = {}
+    owner_verification_ms: dict[str, list[float]] = {}
     low_score_reasons: dict[str, int] = {}
     scanning_scores: list[float] = []
     scanning_liveness_scores: list[float] = []
@@ -268,6 +273,15 @@ def summarize_lines(lines: Iterable[str]) -> RunSummary:
                     locked_count += 1
 
         fields = _fields(line)
+        if "[VerifyTiming]" in line:
+            outcome = fields.get("outcome")
+            if outcome:
+                _increment(verification_outcomes, outcome)
+            if outcome == "owner_verified":
+                for phase in _VERIFY_PHASES:
+                    elapsed = _int_field(fields, f"{phase}_ms")
+                    if elapsed is not None and elapsed >= 0:
+                        owner_verification_ms.setdefault(phase, []).append(elapsed)
 
         scanning_frame = _SCANNING_FRAME_RE.search(line)
         if scanning_frame:
@@ -366,6 +380,8 @@ def summarize_lines(lines: Iterable[str]) -> RunSummary:
         social_lock_count=social_lock_count,
         locked_count=locked_count,
         lock_suppressed_count=lock_suppressed_count,
+        verification_outcomes=verification_outcomes,
+        owner_verification_ms={phase: _stats(values) for phase, values in owner_verification_ms.items()},
         low_score_reasons=low_score_reasons,
         scanning_score=_stats(scanning_scores),
         scanning_liveness=_stats(scanning_liveness_scores),
@@ -807,6 +823,10 @@ def main() -> int:
     print(f"  social_lock_count: {summary.social_lock_count}")
     print(f"  locked_count: {summary.locked_count}")
     print(f"  lock_suppressed_count: {summary.lock_suppressed_count}")
+    print(f"  verification_outcomes: {summary.verification_outcomes}")
+    print("  Owner verification timings (ms from daemon burst start, not physical keypress):")
+    for phase, stats in summary.owner_verification_ms.items():
+        print(f"    {phase}: {stats}")
     print(f"  low_score_reasons: {summary.low_score_reasons}")
     print(f"  scanning_score: {summary.scanning_score}")
     print(f"  scanning_liveness: {summary.scanning_liveness}")

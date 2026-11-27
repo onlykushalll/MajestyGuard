@@ -3,6 +3,8 @@ import ast
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 DAEMON = ROOT / "daemon"
@@ -154,6 +156,47 @@ def test_quiet_owner_is_rechecked_once_per_interval(monkeypatch):
     for clock[0] in (100., 159.9, 160., 161.):
         watcher._tick()
     assert launches == [True]
+
+
+def test_failed_idle_launch_retries_without_input_or_a_launch_storm(monkeypatch):
+    monitor = _load_monitor_module()
+    clock = [100.]
+    attempts = []
+    running = type("Running", (), {"poll": lambda self: None})()
+
+    def launch():
+        attempts.append(clock[0])
+        if len(attempts) == 1:
+            raise OSError("worker unavailable")
+        return running
+
+    monkeypatch.setattr(monitor.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(monitor, "_read_lock_state", lambda: "UNLOCKED")
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 999.)
+    monkeypatch.setattr(monitor, "_launch_full_daemon", launch)
+    watcher = monitor.MonitorDaemon()
+    for clock[0] in (100., 101., 109., 110., 111.):
+        watcher._tick()
+    assert attempts == [100., 110.]
+    assert watcher._daemon_proc is running
+
+
+def test_monitor_startup_preserves_live_worker_even_if_unlocked(monkeypatch, tmp_path):
+    monitor = _load_monitor_module()
+    monkeypatch.setattr(monitor, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(monitor, "MONITOR_PID_FILE", tmp_path / "monitor.pid")
+    monkeypatch.setattr(monitor, "DAEMON_PID_FILE", tmp_path / "daemon.pid")
+    monkeypatch.setattr(monitor, "LOCK_STATE_FILE", tmp_path / "lock_state.txt")
+    monitor.DAEMON_PID_FILE.write_text("42\n", encoding="utf-8")
+    monitor.LOCK_STATE_FILE.write_text("UNLOCKED\n", encoding="utf-8")
+    monkeypatch.setattr(monitor, "_is_pid_alive", lambda pid: pid == 42)
+    monkeypatch.setattr(monitor, "_launch_full_daemon", lambda: pytest.fail("Duplicate launch"))
+    monkeypatch.setattr(monitor, "get_idle_seconds", lambda: 999.)
+    monkeypatch.setattr(monitor.signal, "signal", lambda *args: None)
+    watcher = monitor.MonitorDaemon()
+    monkeypatch.setattr(watcher, "_loop", watcher._tick)
+    watcher.run()
+    assert monitor.DAEMON_PID_FILE.read_text(encoding="utf-8") == "42\n"
 
 
 def test_tick_terminates_prewarmed_daemon_if_user_active_before_full_idle(monkeypatch, tmp_path):

@@ -95,3 +95,40 @@ def test_fit_virtual_screen_tracks_virtual_geometry(monkeypatch, qapp):
 
     assert overlay.geometry() == QRect(0, 0, 3840, 1080)
 
+    MockScreen.virtualGeometry = lambda self: QRect(0, 0, 1280, 720)
+    overlay._fit_virtual_screen()
+    assert overlay.geometry() == QRect(0, 0, 1280, 720)
+
+
+def test_locked_widget_consumes_context_menu_and_shortcut_override(monkeypatch, qapp):
+    from PyQt6.QtCore import QEvent, QPoint, Qt
+    from PyQt6.QtGui import QContextMenuEvent, QKeyEvent
+
+    overlay = soft_lock.SoftLockOverlay()
+    overlay._state = get_state("soft_locked")
+    monkeypatch.setattr(overlay, "isVisible", lambda: True)
+    events = (
+        QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), QPoint(5, 5)),
+        QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier),
+    )
+    for event in events:
+        event.ignore()
+        assert overlay.event(event)
+        assert event.isAccepted()
+
+
+def test_widget_fallback_does_not_treat_key_repeat_as_a_second_tab(monkeypatch, qapp):
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QKeyEvent
+
+    overlay = soft_lock.SoftLockOverlay()
+    presses = []
+    monkeypatch.setattr(overlay, "_on_tab_pressed", lambda: presses.append("tab"))
+    for modifier, repeat in (
+        (Qt.KeyboardModifier.NoModifier, True),
+        (Qt.KeyboardModifier.ControlModifier, False),
+        (Qt.KeyboardModifier.NoModifier, False),
+    ):
+        overlay.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Tab, modifier, "", repeat))
+    assert presses == ["tab"]
+

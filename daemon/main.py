@@ -358,6 +358,15 @@ class MajestyGuardDaemon:
         self._overlay_watchdog_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
+        try:
+            self._start_and_run()
+        except KeyboardInterrupt:
+            log.info("Keyboard interrupt - shutting down")
+        finally:
+            if not self._is_tearing_down:
+                self._shutdown()
+
+    def _start_and_run(self) -> None:
         log.info("MajestyGuard daemon starting")
         log.info("Biometric: %s (exists=%s)", BIOMETRIC_PATH, BIOMETRIC_PATH.exists())
         self._write_daemon_pid()
@@ -423,6 +432,7 @@ class MajestyGuardDaemon:
             t_warm = warm()
             if getattr(self, "_persistent_idle_loop", False):
                 self._set_idle_check_phase("WAITING_FOR_IDLE")
+                self._write_camera_health_snapshot()
                 log.info("Persistent idle-guard ready: camera parked until system idle >= %.1fs",
                          self._current_idle_timeout())
             elif self._should_open_camera_on_start():
@@ -447,12 +457,7 @@ class MajestyGuardDaemon:
             self._cold_start_ms["camera_open"],
             self._cold_start_ms["total"],
         )
-        try:
-            self._run_loop()
-        except KeyboardInterrupt:
-            log.info("Keyboard interrupt - shutting down")
-        finally:
-            self._shutdown()
+        self._run_loop()
 
     def stop(self) -> None:
         self._stop.set()
@@ -768,7 +773,10 @@ class MajestyGuardDaemon:
 
     def _write_camera_health_snapshot(self) -> None:
         try:
-            self._camera_health_tracker().write_snapshot(_MG_STATE_DIR / "camera_health.json")
+            self._camera_health_tracker().write_snapshot(
+                _MG_STATE_DIR / "camera_health.json", capture_open=self._cap is not None
+            )
+            self._last_camera_snapshot_at = time.monotonic()
         except Exception:
             pass
 
@@ -833,18 +841,20 @@ class MajestyGuardDaemon:
         health.record_read_success()
         before = health.fault
         fault = health.observe_frame(frame_brightness(frame), frame_signature(frame))
-        if fault is not before:
+        changed = fault is not before
+        if changed:
             # A covered lens / returning image changes camera_health.json right away,
             # not only at the next open/close event.
             if fault is CameraFault.BLACK_FRAMES:
                 log.warning("[Camera] sustained dark frames - lens covered or shutter closed")
                 audit_log.record("camera_fault", fault=fault.value)
-            self._write_camera_health_snapshot()
         if fault is CameraFault.FROZEN_FRAMES:
             log.warning("[Camera] identical frames - driver looks hung, reopening")
             self._release_camera()
             self._enter_camera_fault()
             return True
+        if changed or time.monotonic() - getattr(self, "_last_camera_snapshot_at", 0.0) >= 5.0:
+            self._write_camera_health_snapshot()
         return False
 
     def _open_camera(
@@ -885,7 +895,9 @@ class MajestyGuardDaemon:
 
     def _release_camera(self) -> None:
         cap, self._cap = self._cap, None
-        release_capture(cap)
+        if cap is not None:
+            release_capture(cap)
+            self._write_camera_health_snapshot()
 
     def _queue_session_event(self, event: SessionEvent) -> None:
         self._session_events.put(event)
@@ -1145,7 +1157,10 @@ class MajestyGuardDaemon:
                     time.sleep(0.5)
                     continue
             self._mark_verification_phase("camera_ready")
+            capture_start = time.perf_counter() if os.environ.get("MG_PROFILE_PIPELINE") == "1" else None
             frame = read_bgr_frame(self._cap)
+            if capture_start is not None:
+                log.info("[PipelineTiming] camera_read_ms=%.2f", (time.perf_counter() - capture_start) * 1000)
             if frame is None:
                 self._handle_camera_read_failure()
                 time.sleep(0.5)
@@ -1752,6 +1767,7 @@ class MajestyGuardDaemon:
         if result.face_count == 0:
             self._absent_frames += 1
             self._soft_lock_fast_pass_frames = 0
+            self._soft_lock_owner_candidate_frames = 0
             self.ipc.broadcast_state("verifying_lock", detail="Look at camera")
             return
 
@@ -1772,6 +1788,7 @@ class MajestyGuardDaemon:
 
         if liveness_mode == "fast":
             if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
+                self._soft_lock_owner_candidate_frames = 0
                 self._soft_lock_fast_pass_frames += 1
                 if self._soft_lock_fast_pass_frames >= BURST_FAST_CONFIRM_FRAMES:
                     self._clear_soft_lock(
@@ -1779,8 +1796,7 @@ class MajestyGuardDaemon:
                         liveness=result.liveness_score,
                     )
                 return
-            if result.liveness_score < 0.50:
-                self._soft_lock_fast_pass_frames = 0
+            self._soft_lock_fast_pass_frames = 0
         else:
             if score >= RECOGNITION_THRESHOLD and liveness_ok and not getattr(result, "replay_suspected", False):
                 self._clear_soft_lock(
@@ -2298,8 +2314,7 @@ class MajestyGuardDaemon:
         return self.face_eng
 
 
-def main() -> None:
-    global _ACTIVE_DAEMON
+def _configure_logging() -> None:
     _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
     handlers: list[logging.Handler] = [
         RotatingFileHandler(
@@ -2316,6 +2331,11 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=handlers,
     )
+
+
+def main() -> None:
+    global _ACTIVE_DAEMON
+    _configure_logging()
     daemon = MajestyGuardDaemon()
     _ACTIVE_DAEMON = daemon
     audit_log.record("daemon_start", pid=os.getpid())
@@ -2342,8 +2362,13 @@ if __name__ == "__main__":
         raise SystemExit(0 if "CPUExecutionProvider" in get_available_providers() else 1)
     if "--enroll" in sys.argv:
         sys.argv.remove("--enroll")
-        import enroll_continuous
-        raise SystemExit(enroll_continuous.main())
+        _configure_logging()
+        try:
+            import enroll_continuous
+            raise SystemExit(enroll_continuous.main())
+        except Exception:
+            log.exception("Face setup could not initialize")
+            raise SystemExit(1)
 
     import ctypes
     _MUTEX = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\MajestyGuardDaemon")

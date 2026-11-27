@@ -277,12 +277,15 @@ class CameraHealth:
             "events": list(self._events)[-10:],
         }
 
-    def write_snapshot(self, path: Path) -> bool:
+    def write_snapshot(self, path: Path, *, capture_open: Optional[bool] = None) -> bool:
         """Atomically persist the snapshot; never raises."""
         try:
             path = Path(path)
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps(self.snapshot(), separators=(",", ":")), encoding="utf-8")
+            snapshot = self.snapshot()
+            if capture_open is not None:
+                snapshot["capture_open"] = capture_open
+            tmp.write_text(json.dumps(snapshot, separators=(",", ":")), encoding="utf-8")
             os.replace(tmp, path)
             return True
         except OSError:

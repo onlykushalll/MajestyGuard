@@ -65,29 +65,35 @@ class SessionMonitor:
 
     def stop(self) -> None:
         self._stop.set()
-        hwnd = self._hwnd
-        if hwnd:
-            try:
-                import win32gui
-
-                win32gui.PostMessage(hwnd, 0x0010, 0, 0)
-            except Exception:
-                pass
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
 
     def _run(self) -> None:
+        delay = 1.0
+        while not self._stop.is_set():
+            started = time.monotonic()
+            if not self._run_once() or self._stop.is_set():
+                return
+            if time.monotonic() - started >= 60.0:
+                delay = 1.0
+            log.info("Retrying Windows session listener in %.0fs", delay)
+            if self._stop.wait(delay):
+                return
+            delay = min(delay * 2.0, 30.0)
+
+    def _run_once(self) -> bool:
+        """Own one window and notification registration on the pump thread."""
         try:
-            import win32con
             import win32gui
             import win32ts
         except Exception as exc:
             self.available = False
             log.warning("Windows session monitor unavailable: %s", exc)
-            return
+            return False
 
         class_name = "MajestyGuardSessionMonitorWindow"
         atom = None
+        registered = False
         try:
             wnd_class = win32gui.WNDCLASS()
             wnd_class.lpfnWndProc = self._wnd_proc
@@ -110,20 +116,24 @@ class SessionMonitor:
                 self._hwnd,
                 win32ts.NOTIFY_FOR_THIS_SESSION,
             )
+            registered = True
             self.available = True
             log.info("Windows session monitor started")
             while not self._stop.is_set():
-                win32gui.PumpWaitingMessages()
-                time.sleep(0.1)
+                if win32gui.PumpWaitingMessages():
+                    log.warning("Windows session listener received an unexpected quit message")
+                    break
+                self._stop.wait(0.1)
         except Exception as exc:
-            self.available = False
             log.warning("Windows session monitor stopped unexpectedly: %s", exc)
         finally:
+            self.available = False
             if self._hwnd:
-                try:
-                    win32ts.WTSUnRegisterSessionNotification(self._hwnd)
-                except Exception:
-                    pass
+                if registered:
+                    try:
+                        win32ts.WTSUnRegisterSessionNotification(self._hwnd)
+                    except Exception:
+                        pass
                 try:
                     win32gui.DestroyWindow(self._hwnd)
                 except Exception:
@@ -134,6 +144,7 @@ class SessionMonitor:
                     win32gui.UnregisterClass(atom, None)
                 except Exception:
                     pass
+        return not self._stop.is_set()
 
     def _wnd_proc(self, hwnd, msg, wparam, lparam):
         if msg == WM_WTSSESSION_CHANGE:

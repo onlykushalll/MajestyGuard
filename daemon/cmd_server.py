@@ -124,12 +124,15 @@ class CMDServer:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="mg-cmd-ipc", daemon=True)
+        sa = _build_sa()
+        self._thread = threading.Thread(target=self._loop, args=(sa,), name="mg-cmd-ipc", daemon=True)
         self._thread.start()
         log.info("CMDServer started on %s", self.pipe_name)
 
     def stop(self) -> None:
         self._stop.set()
+        if self._thread is None or not self._thread.is_alive():
+            return
         try:
             handle = win32file.CreateFile(
                 self.pipe_name,
@@ -147,8 +150,7 @@ class CMDServer:
             self._thread.join(timeout=3.0)
         log.info("CMDServer stopped")
 
-    def _loop(self) -> None:
-        sa = _build_sa()
+    def _loop(self, sa: win32security.SECURITY_ATTRIBUTES) -> None:
         while not self._stop.is_set():
             handle = None
             try:

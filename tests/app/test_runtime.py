@@ -1,6 +1,13 @@
+import subprocess
+import sys
+import time
 from pathlib import Path
 
+import psutil
+import pytest
+
 from app.config import RuntimeSettings, load_settings, save_settings
+from app.diagnostics import ResourceSampler
 from app.runtime import RuntimeStatus, Supervisor
 
 
@@ -26,6 +33,7 @@ class FakeProcess:
 
 
 def test_supervisor_launches_daemon_with_safe_daily_use_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MG_FORCE_LOCK_STARTUP", "1")
     launched = {}
     daemon_entry = tmp_path / "daemon" / "main.py"
     daemon_entry.parent.mkdir()
@@ -43,6 +51,7 @@ def test_supervisor_launches_daemon_with_safe_daily_use_environment(tmp_path, mo
     assert launched["env"]["MG_MAX_SECONDS"] == "0"
     assert launched["env"]["MG_OVERLAY_WATCHDOG"] == "1"
     assert launched["env"]["MG_IDLE_TIMEOUT"] == "60"
+    assert "MG_FORCE_LOCK_STARTUP" not in launched["env"]
     assert supervisor.status() is RuntimeStatus.RUNNING
 
 
@@ -87,6 +96,79 @@ def test_supervisor_stops_its_owned_daemon(tmp_path):
     assert supervisor.status() is RuntimeStatus.STOPPED
 
 
+def test_pause_reaps_owned_helpers_before_reporting_paused(tmp_path, monkeypatch):
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    daemon = FakeProcess()
+    helper = FakeProcess()
+    supervisor._process = daemon
+    monkeypatch.setattr(supervisor, "_owned_daemon_children", lambda: [helper], raising=False)
+    assert supervisor.pause()
+    assert daemon.terminated
+    assert helper.killed
+    assert supervisor.status() is RuntimeStatus.PAUSED
+
+
+def test_failed_pause_keeps_worker_tracking_and_reports_failure(tmp_path):
+    supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
+    process = FakeProcess()
+    supervisor._process = process
+
+    def deny():
+        raise PermissionError("cannot stop worker")
+
+    process.terminate = deny
+    assert supervisor.pause() is False
+    assert supervisor._process is process
+    assert not load_settings(tmp_path / "settings.json").paused
+    assert supervisor.status() is RuntimeStatus.RUNNING
+
+
+@pytest.mark.parametrize("action, expected", [
+    ("pause", RuntimeStatus.PAUSED),
+    ("stop", RuntimeStatus.STOPPED),
+])
+def test_stop_and_pause_release_real_worker_tree(tmp_path, action, expected):
+    marker = tmp_path / "helper.pid"
+    parent_code = (
+        "import pathlib, subprocess, sys, time; "
+        "helper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        "marker = pathlib.Path(sys.argv[1]); pending = marker.with_suffix('.tmp'); "
+        "pending.write_text(str(helper.pid), encoding='ascii'); pending.replace(marker); time.sleep(60)"
+    )
+    worker = subprocess.Popen([sys.executable, "-c", parent_code, str(marker)],
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    supervisor = Supervisor(tmp_path, Path(sys.executable), tmp_path / "settings.json")
+    supervisor._process = worker
+    helper = None
+    try:
+        until = time.monotonic() + 5
+        while not marker.exists() and time.monotonic() < until:
+            time.sleep(0.03)
+        assert marker.is_file(), "Test worker did not publish its helper PID"
+        helper = psutil.Process(int(marker.read_text()))
+        sampler = ResourceSampler()
+        running = sampler.sample(supervisor.diagnostic_processes())
+        assert {item.pid for item in running if item.group == "Protection"} >= {worker.pid, helper.pid}
+        assert all(item.ram_bytes > 0 for item in running)
+        assert getattr(supervisor, action)()
+        assert worker.poll() is not None and not helper.is_running()
+        assert all(item.group == "Control Center" for item in sampler.sample(supervisor.diagnostic_processes()))
+        assert supervisor.status() is expected
+    finally:
+        if helper is None and worker.poll() is None:
+            for child in psutil.Process(worker.pid).children(recursive=True):
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+        if helper and helper.is_running():
+            helper.kill()
+            helper.wait(timeout=5)
+        if worker.poll() is None:
+            worker.kill()
+        worker.wait(timeout=5)
+
+
 def test_start_enrollment_refuses_a_second_concurrent_enrollment(tmp_path, monkeypatch):
     enrollment_entry = tmp_path / "daemon" / "enroll_continuous.py"
     enrollment_entry.parent.mkdir()
@@ -95,6 +177,39 @@ def test_start_enrollment_refuses_a_second_concurrent_enrollment(tmp_path, monke
     supervisor._enrollment_process = FakeProcess()
 
     assert supervisor.start_enrollment() is False
+
+
+def test_failed_resume_keeps_paused_state(tmp_path):
+    path = tmp_path / "settings.json"
+    save_settings(path, RuntimeSettings(paused=True))
+    supervisor = Supervisor(tmp_path, Path("python.exe"), path)
+    assert not supervisor.resume()
+    assert supervisor.status() is RuntimeStatus.PAUSED
+
+
+def test_start_does_not_compete_with_an_open_enrollment_window(tmp_path, monkeypatch):
+    supervisor, _, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    supervisor.stop()
+    supervisor._enrollment_process = FakeProcess()
+    assert not supervisor.start()
+    assert len(spawned) == 1
+
+
+def test_windows_lock_setting_is_rolled_back_if_restart_fails(tmp_path, monkeypatch):
+    supervisor, _, _ = _recovering_supervisor(tmp_path, monkeypatch)
+    attempted = []
+
+    def spawn(_command, environment):
+        attempted.append(environment["MG_ENABLE_LOCK"])
+        if attempted[-1] == "1":
+            raise OSError("new config could not launch")
+        return FakeProcess()
+
+    monkeypatch.setattr(supervisor, "_spawn", spawn)
+    assert not supervisor.set_windows_lock_enabled(True)
+    assert attempted == ["1", "0"]
+    assert not supervisor.windows_lock_enabled()
+    assert supervisor.status() is RuntimeStatus.RUNNING
 
 
 def test_start_enrollment_uses_continuous_coverage_script(tmp_path, monkeypatch):
@@ -416,6 +531,49 @@ def test_dead_daemon_is_restarted_after_a_short_pause(tmp_path, monkeypatch):
     assert sup.maintain() == "restarted" and len(spawned) == 2
     assert sup.status() is RuntimeStatus.RUNNING
     assert "restarted automatically" in sup.recovery_note()
+
+
+def test_transient_spawn_failure_does_not_lose_the_pending_recovery(tmp_path, monkeypatch):
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    real_spawn = sup._spawn
+    attempts = []
+
+    def unreliable_spawn(command, environment):
+        attempts.append(clock.now)
+        if len(attempts) == 1:
+            raise OSError("could not launch worker")
+        return real_spawn(command, environment)
+
+    monkeypatch.setattr(sup, "_spawn", unreliable_spawn)
+    spawned[-1].returncode = 1
+    assert sup.maintain() == "waiting"
+    clock.now += 2
+    assert sup.maintain() == "waiting"
+    assert sup.status() is RuntimeStatus.DEGRADED
+    assert sup.maintain() == "waiting"
+    clock.now += 5
+    assert sup.maintain() == "restarted"
+    assert len(attempts) == 2
+
+
+def test_repeated_spawn_failures_exhaust_the_same_recovery_budget(tmp_path, monkeypatch):
+    from app.runtime import MAX_CRASHES_IN_WINDOW, RECOVERY_DELAYS_S
+
+    sup, clock, spawned = _recovering_supervisor(tmp_path, monkeypatch)
+    attempts = []
+
+    def fail_spawn(command, environment):
+        attempts.append(clock.now)
+        raise OSError("could not launch worker")
+
+    monkeypatch.setattr(sup, "_spawn", fail_spawn)
+    spawned[-1].returncode = 1
+    assert sup.maintain() == "waiting"
+    for n in range(MAX_CRASHES_IN_WINDOW):
+        clock.now += RECOVERY_DELAYS_S[min(n, len(RECOVERY_DELAYS_S) - 1)]
+        assert sup.maintain() == ("waiting" if n + 1 < MAX_CRASHES_IN_WINDOW else "gave_up")
+    assert sup.maintain() == "gave_up"
+    assert len(attempts) == MAX_CRASHES_IN_WINDOW
 
 
 def test_restart_pauses_grow_with_repeated_crashes(tmp_path, monkeypatch):

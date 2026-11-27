@@ -104,4 +104,4 @@ overlay, and daemon in adjacent one-directory packages; keep the complete
 
 ## License
 
-MajestyGuard is released under the [MIT License](LICENSE).
+See [LICENSE.md](LICENSE.md) for the repository terms. Third-party model weights have separate terms; the included model manifest does not grant permission to redistribute weights.

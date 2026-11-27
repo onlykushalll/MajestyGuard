@@ -149,3 +149,28 @@ def test_clock_paints_in_every_lock_state(overlay, name):
         overlay._paint_clock(painter)
     finally:
         painter.end()
+
+
+@pytest.mark.parametrize("glass_enabled", [False, True], ids=["fallback", "refraction"])
+def test_windows_lock_action_stays_light_when_painted_after_space(overlay, monkeypatch, glass_enabled):
+    from PyQt6.QtCore import QRectF
+    from PyQt6.QtGui import QColor, QImage, QPainter
+
+    monkeypatch.setenv("MG_UI_GLASS", "1" if glass_enabled else "0")
+    overlay._lens_src = np.full((45, 500, 3), (48, 42, 38), dtype=np.uint8)
+    image = QImage(1000, 68, QImage.Format.Format_ARGB32)
+    image.fill(QColor(233, 237, 243))
+    space, tab = soft_lock._layout.key_models("camera_fault")
+    if glass_enabled:
+        assert overlay._lens_image(QRectF(500, 0, 500, 68), 34) is not None
+    painter = QPainter(image)
+    try:
+        overlay._paint_key(painter, QRectF(0, 0, 500, 68), space, 1.0)
+        overlay._paint_key(painter, QRectF(500, 0, 500, 68), tab, 1.0)
+    finally:
+        painter.end()
+
+    space_surface = image.pixelColor(450, 34)
+    tab_surface = image.pixelColor(950, 34)
+    assert min(tab_surface.red(), tab_surface.green(), tab_surface.blue()) >= 150
+    assert tab_surface == space_surface

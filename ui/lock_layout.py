@@ -100,10 +100,12 @@ def animated_bounds(layout: Layout) -> list[Rect]:
     """Rectangles that change between frames (aura, keys, status, brand)."""
     pad = 90.0 * layout.scale
     cx0, cy0, cw, ch = layout.card
-    sx, sy, sw, _sh = layout.space_key
-    _tx, _ty, tw, th = layout.tab_key
+    sx, sy, sw, sh = layout.space_key
+    tx, ty, tw, th = layout.tab_key
+    left, top = min(cx0, sx, tx), min(cy0, sy, ty)
+    right, bottom = max(cx0+cw, sx+sw, tx+tw), max(cy0+ch, sy+sh, ty+th)
     return [
-        (cx0 - pad, cy0 - pad * 0.6, cw + pad * 2.0, (sy + th) - cy0 + pad * 1.4),
+        (left-pad, top-pad*0.6, right-left+2*pad, bottom-top+1.4*pad),
         _grow(layout.status, 6.0),
         _grow(layout.brand, 6.0),
     ]

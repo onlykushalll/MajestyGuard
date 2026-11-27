@@ -7,9 +7,10 @@ Control Center, the lock overlay and the island read as one product.
 from __future__ import annotations
 
 import math
-import os
+import time
+from collections import deque
 
-from app.cc_theme import theme_for
+from app.cc_theme import reduced_motion, theme_for
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, pyqtProperty
 from PyQt6.QtGui import (
@@ -23,7 +24,7 @@ from PyQt6.QtGui import (
     QPixmap,
     QRadialGradient,
 )
-from PyQt6.QtWidgets import QAbstractButton, QSizePolicy, QWidget
+from PyQt6.QtWidgets import QAbstractButton, QPushButton, QSizePolicy, QWidget
 
 try:  # package layout in the repo / bundle, flat layout when run from ui/
     from ui import tokens as tok
@@ -54,6 +55,54 @@ class WorkspaceBackground(QWidget):
         painter.fillRect(self.rect(), QColor(theme_for(self).bg))
 
 
+class MemoryTrace(QWidget):
+    """Time-based, bounded trace. Unknown or unsampled time is a gap, not zero."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setMinimumHeight(48)
+        self.setAccessibleName("Protection worker memory over the last minute")
+        self.setToolTip("Last minute while Diagnostics is open. Gaps mean no measurement.")
+        self._points = deque(maxlen=64)
+
+    def observe(self, value, now=None):
+        now = time.monotonic() if now is None else now
+        while self._points and now - self._points[0][0] > 60:
+            self._points.popleft()
+        if self._points and now - self._points[-1][0] < 1:
+            self._points.pop()
+        self._points.append((now, value))
+        self.setAccessibleDescription("Reading unavailable" if value is None else f"{value / 1048576:.1f} MiB")
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        theme = theme_for(self)
+        rect = QRectF(self.rect()).adjusted(3, 6, -3, -6)
+        p.setPen(QPen(QColor(theme.line), 1, Qt.PenStyle.DotLine))
+        for fraction in (0, .5, 1):
+            y = rect.top() + rect.height() * fraction
+            p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+        if not self._points:
+            return
+        latest = self._points[-1][0]
+        peak = max([1048576] + [value for _, value in self._points if value is not None])
+        p.setPen(QPen(QColor(theme.accent), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        last = None
+        for stamp, value in self._points:
+            if value is None:
+                last = None
+                continue
+            point = QPointF(rect.right() - (latest - stamp) / 60 * rect.width(),
+                            rect.bottom() - value / peak * rect.height())
+            if last and stamp - last[0] <= 5:
+                p.drawLine(last[1], point)
+            else:
+                p.drawPoint(point)
+            last = (stamp, point)
+
+
 class Surface(QWidget):
     """Flat instrument surface. Only the status band carries a coloured edge."""
 
@@ -77,10 +126,23 @@ class Surface(QWidget):
         band = self.objectName() == "statusBand"
         if band:
             ink = QColor(self.window().property("statusInk") or p.accent)
-            wash = QLinearGradient(rect.topRight(), rect.bottomLeft())
-            wash.setColorAt(0, with_alpha(ink, 52))
-            wash.setColorAt(.75, with_alpha(ink, 0))
+            wash = QLinearGradient(rect.topRight(), rect.topLeft())
+            wash.setColorAt(0, with_alpha(ink, 44))
+            wash.setColorAt(.8, with_alpha(ink, 0))
             painter.fillPath(path, wash)
+            # A cutaway of the aperture, confined to the unused upper-right margin.
+            # These are lens contours, not a graph of recognition confidence.
+            if rect.width() >= 570:
+                painter.save()
+                painter.setClipPath(path)
+                painter.setClipRect(QRectF(rect.right()-138, 0, 138, 98), Qt.ClipOperation.IntersectClip)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                origin = rect.topRight() + QPointF(36, -32)
+                for step in range(12):
+                    r = 42 + 8 * step
+                    painter.setPen(QPen(with_alpha(QColor(p.muted), 58 - 4 * step), 1))
+                    painter.drawEllipse(origin, r, r)
+                painter.restore()
         painter.setPen(QPen(QColor(p.line), 1))
         painter.drawPath(path)
         if band:
@@ -112,7 +174,7 @@ class StatusOrb(QWidget):
         self.update()
 
     def _sync_timer(self):
-        animate = self._animated and self.isVisible() and os.environ.get("MG_UI_REDUCE_MOTION") != "1"
+        animate = self._animated and self.isVisible() and not reduced_motion(self)
         if animate and not self._timer.isActive():
             self._timer.start()
         elif not animate:
@@ -224,6 +286,12 @@ def draw_icon(painter: QPainter, kind: str, rect: QRectF, colour: QColor) -> Non
     elif kind == "activity":
         painter.drawPolyline([QPointF(2.8, 12.4), QPointF(7, 12.4), QPointF(9.6, 5.6), QPointF(14, 19),
                               QPointF(16.6, 12.4), QPointF(21.2, 12.4)])
+    elif kind == "diagnostics":
+        painter.drawRoundedRect(QRectF(3, 4, 18, 13), 2, 2)
+        painter.drawLine(QPointF(9, 21), QPointF(15, 21))
+        painter.drawLine(QPointF(12, 17), QPointF(12, 21))
+        for x, height in ((8, 3), (12, 6), (16, 4)):
+            painter.drawLine(QPointF(x, 13), QPointF(x, 13 - height))
     elif kind == "enrollment":
         painter.drawEllipse(QPointF(12, 12), 8.6, 8.6)
         painter.drawEllipse(QPointF(12, 10.2), 2.7, 2.7)
@@ -242,8 +310,104 @@ def draw_icon(painter: QPainter, kind: str, rect: QRectF, colour: QColor) -> Non
     painter.restore()
 
 
+class TransportButton(QPushButton):
+    """Use two quadrilaterals for both shapes: a play triangle unfolds into pause bars."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._phase = 0.
+        self._target = None
+        self._tween = QPropertyAnimation(self, b"transportPhase", self)
+        self._tween.setDuration(185)
+        self._tween.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.setIconSize(QSize(18, 18))
+
+    def _draw(self, phase):
+        self._phase = phase
+        pix = QPixmap(self.iconSize() * self.devicePixelRatioF())
+        pix.setDevicePixelRatio(self.devicePixelRatioF())
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setBrush(QColor("#122838" if self.objectName() == "plateAction" else theme_for(self).ink))
+        p.setPen(Qt.PenStyle.NoPen)
+        for start, end in (
+            (((3,2),(9,5.5),(9,12.5),(3,16)), ((3,2),(7,2),(7,16),(3,16))),
+            (((9,5.5),(15,9),(15,9),(9,12.5)), ((11,2),(15,2),(15,16),(11,16))),
+        ):
+            path = QPainterPath()
+            for i, ((x,y),(xx,yy)) in enumerate(zip(start, end)):
+                point = QPointF(x+(xx-x)*phase, y+(yy-y)*phase)
+                (path.moveTo if i == 0 else path.lineTo)(point)
+            path.closeSubpath()
+            p.drawPath(path)
+        p.end()
+        self.setIcon(QIcon(pix))
+
+    transportPhase = pyqtProperty(float, lambda self: self._phase, _draw)
+
+    def setText(self, label):
+        if label == self.text():
+            return
+        super().setText(label)
+        old = self._target
+        self._target = {"Pause protection": 1., "Resume protection": 0., "Start protection": 0.,
+                        "Restart protection": 0.}.get(label)
+        self._tween.stop()
+        if self._target is None:
+            self.setIcon(QIcon())
+        elif old is not None and self._phase != self._target and self.isVisible() and not reduced_motion(self):
+            self._tween.setStartValue(self._phase)
+            self._tween.setEndValue(self._target)
+            self._tween.start()
+        else:
+            self._draw(self._target)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._target is not None:
+            self._draw(self._target)
+
+    def hideEvent(self, event):
+        self._tween.stop()
+        super().hideEvent(event)
+
+
+class TabStrip(QWidget):
+    """One moving selection underline; the page beneath it never needs compositing."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._target = None
+        self._line = QWidget(self)
+        self._line.setObjectName("tabUnderline")
+        self._line.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._motion = QPropertyAnimation(self._line, b"geometry", self)
+        self._motion.setDuration(205)
+        self._motion.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def select(self, button, animate=True):
+        old = self._target
+        self._target = button
+        rect = button.geometry().adjusted(10, button.height()-3, -10, 0)
+        self._line.raise_()
+        self._motion.stop()
+        if old is not None and old is not button and animate and self.isVisible() and not reduced_motion(self):
+            self._motion.setStartValue(self._line.geometry())
+            self._motion.setEndValue(rect)
+            self._motion.start()
+        else:
+            self._line.setGeometry(rect)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._target:
+            self.layout().activate()
+            self.select(self._target, False)
+
+
 class NavButton(QAbstractButton):
-    """Sidebar tab: icon + label, a glass pill when selected, keyboard focusable."""
+    """A labelled top tab. At compact widths only the optional icon is removed."""
 
     def __init__(self, kind: str, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -269,7 +433,7 @@ class NavButton(QAbstractButton):
         return self._badge
 
     def sizeHint(self) -> QSize:  # type: ignore[override]
-        return QSize(200, 44)
+        return QSize(100, 44)
 
     def paintEvent(self, _event) -> None:  # type: ignore[override]
         painter = QPainter(self)
@@ -278,28 +442,27 @@ class NavButton(QAbstractButton):
         selected = self.isChecked()
         hover = self.underMouse() and self.isEnabled()
         palette = theme_for(self)
-        painter.setBrush(QColor(palette.selected if selected else palette.raised) if selected or hover else Qt.BrushStyle.NoBrush)
+        painter.setBrush(QColor(palette.raised) if hover else Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(QColor(palette.accent), 1) if self.hasFocus() else Qt.PenStyle.NoPen)
         painter.drawRoundedRect(rect, 6, 6)
         colour = QColor(palette.accent if selected else palette.muted)
-        icon_x = rect.center().x() - 10 if self.compact else rect.left() + 16
-        draw_icon(painter, self._kind, QRectF(icon_x, rect.center().y() - 10, 20, 20), colour)
-        if selected:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(palette.accent))
-            painter.drawRoundedRect(QRectF(rect.left()+1, rect.center().y()-7, 2.5, 14), 1.25, 1.25)
         font = QFont(self.font())
         font.setPixelSize(14)
         font.setWeight(QFont.Weight.DemiBold if selected else QFont.Weight.Medium)
         painter.setFont(font)
         painter.setPen(QColor(palette.text if selected else palette.muted))
-        if not self.compact:
-            painter.drawText(QRectF(rect.left() + 48, rect.top(), rect.width() - (70 if self._badge else 50), rect.height()),
-                             int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
+        width = painter.fontMetrics().horizontalAdvance(self.text())
+        with_icon = not self.compact and width + 38 <= rect.width()
+        start = rect.center().x() - (width + (23 if with_icon else 0)) / 2
+        if with_icon:
+            draw_icon(painter, self._kind, QRectF(start, rect.center().y()-8, 16, 16), colour)
+            start += 23
+        painter.drawText(QRectF(start, rect.top(), width+2, rect.height()),
+                         int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft), self.text())
         if self._badge:
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(TONE_COLOUR.get(self._badge_tone, AMBER))
-            point = rect.topRight() + QPointF(-6, 6) if self.compact else QPointF(rect.right()-12, rect.center().y())
+            point = rect.topRight() + QPointF(-5, 7)
             painter.drawEllipse(point, 3.5, 3.5)
         painter.end()
 
@@ -340,7 +503,7 @@ class Toggle(QAbstractButton):
 
     def _move_thumb(self, checked):
         self._animation.stop()
-        if not self.isVisible() or os.environ.get("MG_UI_REDUCE_MOTION") == "1":
+        if not self.isVisible() or reduced_motion(self):
             self._settle()
             return
         self._animation.setStartValue(self.position)
@@ -416,6 +579,11 @@ class EventMarker(QWidget):
         self._tone, self._first, self._last = tone, first, last
         self.setFixedWidth(18)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
+
+    def set_segment(self, tone, first, last):
+        if (self._tone, self._first, self._last) != (tone, first, last):
+            self._tone, self._first, self._last = tone, first, last
+            self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)

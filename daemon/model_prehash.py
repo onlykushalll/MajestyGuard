@@ -60,7 +60,10 @@ def start(*directories: "str | Path") -> int:
         for directory in directories:
             for path in _onnx_files(str(directory)):
                 key = cache_key(path)
-                if key in _FUTURES:
+                existing = _FUTURES.get(key)
+                if existing is not None and (
+                    not existing.done() or (not existing.cancelled() and existing.exception() is None)
+                ):
                     continue
                 _FUTURES[key] = _executor().submit(sha256_file, path)
                 queued += 1

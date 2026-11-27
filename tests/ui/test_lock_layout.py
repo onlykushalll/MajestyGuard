@@ -62,6 +62,13 @@ def test_animated_bounds_cover_every_moving_part():
         assert any(_inside(getattr(lay, name), b) for b in bounds), name
 
 
+def test_animated_bounds_cover_both_keys_on_portrait_screens():
+    for size in ((360, 640), (540, 960), (720, 1280)):
+        layout = L.compute(0, 0, *size)
+        for control in (layout.space_key, layout.tab_key):
+            assert any(_inside(control, bounds) for bounds in L.animated_bounds(layout))
+
+
 def test_every_lock_state_has_copy_and_two_keys():
     for name in ("locked_passive", "soft_locked", "verifying_lock", "social_lock", "hostile_lock",
                  "verify_failed", "camera_fault"):

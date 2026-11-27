@@ -1,12 +1,16 @@
 """Process supervision for the local MajestyGuard daemon."""
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+import sys
 import time
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
+
+import psutil
 
 from app.config import (
     MAX_IDLE_TIMEOUT_SECONDS,
@@ -32,6 +36,21 @@ RECOVERY_DELAYS_S = (2.0, 5.0, 15.0, 45.0, 120.0)
 CRASH_WINDOW_S = 600.0
 MAX_CRASHES_IN_WINDOW = 6
 STABLE_AFTER_S = 120.0
+log = logging.getLogger(__name__)
+
+
+def packaged_child_env() -> dict[str, str]:
+    env = dict(os.environ)
+    if getattr(sys, "frozen", False):
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        bundle_dir = getattr(sys, "_MEIPASS", None)
+        if bundle_dir and "PATH" in env:
+            bundled = Path(bundle_dir).resolve()
+            env["PATH"] = os.pathsep.join(
+                entry for entry in env["PATH"].split(os.pathsep)
+                if entry and not Path(entry.strip('"')).resolve().is_relative_to(bundled)
+            )
+    return env
 
 
 class Supervisor:
@@ -55,6 +74,7 @@ class Supervisor:
         )
         self._daemon_executable = Path(daemon_executable) if daemon_executable else None
         self._process: Optional[subprocess.Popen] = None
+        self._worker_children: set[psutil.Process] = set()
         self._enrollment_process: Optional[subprocess.Popen] = None
         self._resume_after_enrollment: bool = False
         self._clock = clock
@@ -87,6 +107,44 @@ class Supervisor:
             self._gave_up = False
         return started
 
+    def enrollment_running(self) -> bool:
+        return self._enrollment_process is not None and self._enrollment_process.poll() is None
+
+    def _save_settings(self, settings: RuntimeSettings) -> bool:
+        try:
+            save_settings(self._settings_path, settings)
+        except OSError:
+            log.exception("Could not save protection settings")
+            return False
+        return True
+
+    def _owned_daemon_children(self) -> list[psutil.Process]:
+        """Keep process identities even if their parent exits before they do."""
+        self._worker_children = {p for p in self._worker_children if p.is_running()}
+        process = self._process
+        if process is not None and process.poll() is None and getattr(process, "pid", None):
+            try:
+                children = psutil.Process(process.pid).children(recursive=True)
+                if process.poll() is None:
+                    self._worker_children.update(children)
+            except psutil.NoSuchProcess:
+                pass
+        return sorted(self._worker_children, key=lambda p: p.pid)
+
+    def diagnostic_processes(self) -> dict[str, list[int]]:
+        """Only report processes owned by this Control Center."""
+        groups = {"Control Center": [os.getpid()], "Protection": [], "Enrollment": []}
+        worker = self._process
+        if worker is not None and worker.poll() is None:
+            groups["Protection"].append(worker.pid)
+        try:
+            groups["Protection"].extend(p.pid for p in self._owned_daemon_children())
+        except psutil.AccessDenied as exc:
+            raise RuntimeError("Could not read worker processes") from exc
+        if self.enrollment_running():
+            groups["Enrollment"].append(self._enrollment_process.pid)
+        return groups
+
     def maintain(self) -> str:
         """Keep protection alive. Call every couple of seconds.
 
@@ -108,19 +166,24 @@ class Supervisor:
             return "gave_up"
         if self._noted_dead is not process:
             self._noted_dead = process
-            self._crashes = [c for c in self._crashes if now - c < CRASH_WINDOW_S] + [now]
-            if len(self._crashes) > MAX_CRASHES_IN_WINDOW:
-                self._gave_up = True
+            self._schedule_recovery(now)
+            if self._gave_up:
                 return "gave_up"
-            delay = RECOVERY_DELAYS_S[min(len(self._crashes), len(RECOVERY_DELAYS_S)) - 1]
-            self._next_restart_at = now + delay
         if now < self._next_restart_at:
             return "waiting"
         if self._launch():
             self._last_recovery_at = now
             return "restarted"
-        self._next_restart_at = now + RECOVERY_DELAYS_S[-1]
-        return "waiting"
+        self._schedule_recovery(now)
+        return "gave_up" if self._gave_up else "waiting"
+
+    def _schedule_recovery(self, now: float) -> None:
+        self._crashes = [c for c in self._crashes if now - c < CRASH_WINDOW_S] + [now]
+        if len(self._crashes) > MAX_CRASHES_IN_WINDOW:
+            self._gave_up = True
+            return
+        delay = RECOVERY_DELAYS_S[min(len(self._crashes), len(RECOVERY_DELAYS_S)) - 1]
+        self._next_restart_at = now + delay
 
     def recovery_note(self) -> str:
         """Plain-language line for the UI, or ''."""
@@ -132,6 +195,10 @@ class Supervisor:
 
     def _launch(self) -> bool:
         if self.status() in (RuntimeStatus.STARTING, RuntimeStatus.RUNNING):
+            return False
+        if self.enrollment_running():
+            return False
+        if self._worker_children and self._owned_daemon_children():
             return False
 
         source_entrypoint = self._root / "daemon" / "main.py"
@@ -148,7 +215,8 @@ class Supervisor:
         if settings.paused:
             return False
 
-        environment = dict(os.environ)
+        environment = packaged_child_env()
+        environment.pop("MG_FORCE_LOCK_STARTUP", None)
         environment.update(
             {
                 "MG_ENABLE_LOCK": "1" if settings.enable_windows_lock else "0",
@@ -170,7 +238,9 @@ class Supervisor:
         try:
             self._process = self._spawn(daemon_command, environment)
         except OSError:
-            self._process = None
+            # Keep a tracked dead worker so a rejected spawn doesn't erase
+            # the pending recovery or make the UI report an intentional stop.
+            log.exception("Could not launch protection worker")
             return False
         self._started_at = self._clock()
         return True
@@ -200,24 +270,43 @@ class Supervisor:
         return True
 
     def stop(self, timeout_seconds: float = 5.0) -> bool:
-        """Stop the daemon. Returns False (and does nothing) while locked."""
+        """Stop the worker and confirm its tracked descendants have exited."""
         if self.controls_locked():
             return False
         process = self._process
-        if process is None or process.poll() is not None:
-            self._process = None
-            return True
-        # The lock may have engaged between the check above and now; look again
-        # immediately before the irreversible step.
-        if self.controls_locked():
-            return False
-        self._process = None
-        process.terminate()
         try:
-            process.wait(timeout=max(0.1, float(timeout_seconds)))
-        except subprocess.TimeoutExpired:
-            process.kill()
-        return True
+            children = self._owned_daemon_children()
+            if self.controls_locked():
+                return False
+            deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+            if process is not None and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=0.5)
+            # Stop all known descendants before waiting, so a slow helper
+            # cannot consume the entire budget while others keep running.
+            for child in reversed(children):
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            for child in children:
+                try:
+                    child.wait(timeout=max(0.1, deadline - time.monotonic()))
+                except psutil.NoSuchProcess:
+                    pass
+        except (OSError, subprocess.TimeoutExpired, psutil.Error):
+            log.exception("Could not confirm that all protection processes stopped")
+            return False
+        else:
+            self._process = None
+            self._worker_children.clear()
+            self._resume_after_enrollment = False
+            self._last_recovery_at = None
+            return True
 
     def _clear_lock_state(self) -> None:
         """After an allowed pause nothing can enforce a stale LOCKED marker."""
@@ -234,31 +323,35 @@ class Supervisor:
         if self.controls_locked():
             return False
         settings = load_settings(self._settings_path)
-        save_settings(
-            self._settings_path,
+        if not self._save_settings(
             RuntimeSettings(
                 idle_timeout_seconds=settings.idle_timeout_seconds,
                 paused=True,
                 enable_windows_lock=settings.enable_windows_lock,
             ),
-        )
+        ):
+            return False
         if not self.stop():
-            save_settings(self._settings_path, settings)   # lock engaged mid-pause: undo
+            self._save_settings(settings)
             return False
         self._clear_lock_state()
         return True
 
     def resume(self) -> bool:
         settings = load_settings(self._settings_path)
-        save_settings(
-            self._settings_path,
+        if not self._save_settings(
             RuntimeSettings(
                 idle_timeout_seconds=settings.idle_timeout_seconds,
                 paused=False,
                 enable_windows_lock=settings.enable_windows_lock,
             ),
-        )
-        return self.start()
+        ):
+            return False
+        if self.start():
+            return True
+        if settings.paused:
+            self._save_settings(settings)
+        return False
 
     def set_idle_timeout(self, seconds: int) -> bool:
         if self.controls_locked():
@@ -268,15 +361,13 @@ class Supervisor:
         if not MIN_IDLE_TIMEOUT_SECONDS <= seconds <= MAX_IDLE_TIMEOUT_SECONDS:
             return False
         settings = load_settings(self._settings_path)
-        save_settings(
-            self._settings_path,
+        return self._save_settings(
             RuntimeSettings(
                 idle_timeout_seconds=seconds,
                 paused=settings.paused,
                 enable_windows_lock=settings.enable_windows_lock,
             ),
         )
-        return True
 
     def windows_lock_enabled(self) -> bool:
         return load_settings(self._settings_path).enable_windows_lock
@@ -287,17 +378,24 @@ class Supervisor:
         if not isinstance(enabled, bool):
             return False
         settings = load_settings(self._settings_path)
-        save_settings(
-            self._settings_path,
+        if settings.enable_windows_lock == enabled:
+            return True
+        was_running = self.status() is RuntimeStatus.RUNNING
+        if not self._save_settings(
             RuntimeSettings(
                 idle_timeout_seconds=settings.idle_timeout_seconds,
                 paused=settings.paused,
                 enable_windows_lock=enabled,
             ),
-        )
-        if self.status() is RuntimeStatus.RUNNING:
-            self.stop()
-            self.start()
+        ):
+            return False
+        if was_running and not self.stop():
+            self._save_settings(settings)
+            return False
+        if was_running and not self.start():
+            if self._save_settings(settings):
+                self.start()
+            return False
         return True
 
     def start_enrollment(self, *, start_over: bool = False) -> bool:
@@ -329,7 +427,7 @@ class Supervisor:
                 return False
             self._resume_after_enrollment = True
 
-        environment = dict(os.environ)
+        environment = packaged_child_env()
         environment.update(
             {
                 "MG_ENABLE_LOCK": "0",
@@ -374,7 +472,7 @@ class Supervisor:
             list(command),
             cwd=str(self._root),
             env=environment,
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
 
     def _packaged_daemon_executable(self) -> Optional[Path]:

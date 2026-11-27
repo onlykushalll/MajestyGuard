@@ -248,17 +248,15 @@ class MonitorDaemon:
         self._idle_fired = False
         self._presence_recheck_at = 0.0
         self._last_watchdog_launch = 0.0
+        self._idle_launch_retry_at = 0.0
         self._relaunch_times: list[float] = []
 
     def run(self) -> None:
         _MG_STATE_DIR.mkdir(parents=True, exist_ok=True)
         
-        locked_daemon_is_live = (
-            _read_lock_state() == "LOCKED"
-            and _is_pid_alive(_read_pid(DAEMON_PID_FILE))
-        )
-        if locked_daemon_is_live:
-            log.info("Preserving live locked state on monitor startup")
+        recorded_pid = _read_pid(DAEMON_PID_FILE)
+        if _is_pid_alive(recorded_pid):
+            log.info("Preserving state for live worker PID %d on monitor startup", recorded_pid)
         else:
             try:
                 LOCK_STATE_FILE.write_text("UNLOCKED\n", encoding="utf-8")
@@ -299,10 +297,15 @@ class MonitorDaemon:
     def _tick(self) -> None:
         daemon_running = self._is_daemon_running()
 
+        # A separately launched worker isn't ours to stop. A live PID is
+        # enough to defer launching, not proof of identity or ownership.
+        daemon_pid = _read_pid(DAEMON_PID_FILE) if not daemon_running else 0
+        if _is_pid_alive(daemon_pid):
+            return
+
         # ── Watchdog: relaunch daemon if it died while LOCKED ──────────
         if not daemon_running and _read_lock_state() == "LOCKED":
-            daemon_pid = _read_pid(DAEMON_PID_FILE)
-            if daemon_pid > 0 and not _is_pid_alive(daemon_pid):
+            if daemon_pid > 0:
                 now = time.monotonic()
                 elapsed = now - self._last_watchdog_launch
                 if elapsed < _WATCHDOG_COOLDOWN_S:
@@ -354,15 +357,23 @@ class MonitorDaemon:
 
         if self._idle_fired and (not self._presence_recheck_at or time.monotonic() < self._presence_recheck_at):
             return
+        if time.monotonic() < self._idle_launch_retry_at:
+            return
 
         # Idle pre-warm threshold reached — launch full daemon
-        self._idle_fired = True
-        self._presence_recheck_at = 0.0
         log.info(
             "Idle pre-warm threshold reached (%.0fs >= %.0fs, target %.0fs) — launching full daemon",
             idle_seconds, prewarm_threshold, self._idle_timeout,
         )
-        self._daemon_proc = _launch_full_daemon()
+        try:
+            self._daemon_proc = _launch_full_daemon()
+        except OSError:
+            self._idle_launch_retry_at = time.monotonic() + _WATCHDOG_COOLDOWN_S
+            log.exception("Idle worker could not start; retrying in %.0fs if still idle", _WATCHDOG_COOLDOWN_S)
+            return
+        self._idle_launch_retry_at = 0.0
+        self._idle_fired = True
+        self._presence_recheck_at = 0.0
 
 
     def _is_daemon_running(self) -> bool:

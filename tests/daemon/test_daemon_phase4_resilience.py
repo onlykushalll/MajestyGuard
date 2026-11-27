@@ -143,13 +143,28 @@ def test_camera_unavailable_requires_three_consecutive_read_failures():
     assert daemon.ipc.states[-1][0] == "idle"
 
 
-def test_daemon_logging_uses_rotating_file_handler():
-    root_handlers = logging.getLogger().handlers
+def test_daemon_logging_setup_uses_rotating_file_handler(monkeypatch, tmp_path):
+    configured = {}
 
-    assert any(
-        handler.__class__.__name__ == "RotatingFileHandler"
-        for handler in root_handlers
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    monkeypatch.setattr(
+        daemon_main.logging,
+        "basicConfig",
+        lambda **kwargs: configured.update(kwargs),
     )
+
+    daemon_main._configure_logging()
+
+    handlers = configured["handlers"]
+    try:
+        assert any(
+            isinstance(handler, daemon_main.RotatingFileHandler)
+            for handler in handlers
+        )
+        assert (tmp_path / "daemon.log").is_file()
+    finally:
+        for handler in handlers:
+            handler.close()
 
 
 def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
@@ -178,6 +193,25 @@ def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
     daemon.start()
 
     assert events[:3] == ["pipe", "ui", "command"]
+
+
+def test_daemon_cleans_up_when_model_initialization_fails(monkeypatch):
+    daemon = MajestyGuardDaemon()
+    daemon._write_daemon_pid = MagicMock()
+    daemon.ipc = MagicMock()
+    daemon.session_monitor = MagicMock()
+    daemon._start_overlay_watchdog = MagicMock()
+    daemon._launch_ui = MagicMock()
+    daemon._load_cv_engine = MagicMock(side_effect=RuntimeError("model invalid"))
+    daemon._shutdown = MagicMock()
+    monkeypatch.setattr(daemon_main, "CMDServer", MagicMock())
+    monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
+    monkeypatch.setattr(daemon_main, "SERVICE_IPC_ENABLED", False)
+
+    with pytest.raises(RuntimeError, match="model invalid"):
+        daemon.start()
+
+    daemon._shutdown.assert_called_once_with()
 
 
 def test_launch_ui_prefers_explicit_packaged_ui_executable(monkeypatch, tmp_path):
@@ -329,18 +363,27 @@ def test_commands_and_session_events_wake_passive_loop():
     assert daemon._loop_wake.is_set() and daemon._stop.is_set()
 
 
-def test_space_while_faulted_retries_the_camera_immediately(monkeypatch, tmp_path):
+def test_space_while_faulted_respects_camera_retry_backoff(monkeypatch, tmp_path):
     monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
     daemon = _bare_daemon(State.SOFT_LOCK)
-    daemon._camera_health_tracker().record_open_failure()
+    health = daemon._camera_health_tracker()
+    health.record_open_failure()
     daemon._camera_fault_active = True
+    daemon.face_eng = None
     attempts = []
     monkeypatch.setattr(daemon, "_open_camera", lambda **kw: attempts.append(kw) or False)
 
     daemon._handle_ui_command("verify_requested", "overlay_key")
 
-    assert len(attempts) == 1  # backoff was cleared by the explicit request
+    assert attempts == []  # the main loop owns camera opens and backoff still applies
     assert daemon._is_soft_lock_verifying() is False
+    assert daemon.ipc.states[-1][0] == "camera_fault"
+
+    health.request_retry_now()
+    daemon._handle_ui_command("verify_requested", "overlay_key")
+
+    assert attempts == []  # the request starts a bounded burst in the main loop
+    assert daemon._is_soft_lock_verifying() is True
 
 
 def test_camera_unavailable_soft_locks_when_the_user_goes_idle(monkeypatch, tmp_path):

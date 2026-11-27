@@ -15,6 +15,22 @@ def test_parse_args_supports_background_start_without_camera_flags():
 
 def test_parse_args_supports_a_packaging_self_test():
     assert parse_args(["--self-test"]).self_test is True
+    assert parse_args(["--ui-self-test"]).ui_self_test is True
+
+
+def test_studio_render_smoke_uses_isolated_mock_protection(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, LOCALAPPDATA=str(tmp_path), MG_ENABLE_LOCK="0")
+    result = subprocess.run(
+        [sys.executable, "-B", "-m", "app.main", "--ui-self-test"],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not list(tmp_path.iterdir())
 
 
 def test_packaging_self_test_imports_widgets_without_starting_gui(monkeypatch):

@@ -101,10 +101,12 @@ def main(argv=None):
     state = Path(tempfile.mkdtemp(prefix="check-", dir=args.smoke_state.resolve()))
     env = smoke_env(state)
     daemon = base / "MajestyGuardDaemon" / "MajestyGuardDaemon.exe"
+    center = base / "MajestyGuard" / "MajestyGuard.exe"
     for label, command, timeout in (
         ("daemon-imports", [daemon, "--self-test"], 45),
         ("enrollment", [daemon, "--enroll", "--self-test"], args.enrollment_timeout),
-        ("control-center", [base / "MajestyGuard" / "MajestyGuard.exe", "--self-test"], 90),
+        ("control-center", [center, "--self-test"], 90),
+        ("studio-render", [center, "--ui-self-test"], 25),
         ("overlay", [base / "MajestyGuardUI" / "MajestyGuardUI.exe", "--self-test"], 45),
     ):
         failure = run_check(label, command, state, env, timeout)

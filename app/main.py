@@ -20,6 +20,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="start in the notification area instead of opening the Control Center window",
     )
     parser.add_argument("--self-test", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ui-self-test", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -51,6 +52,10 @@ def default_daemon_executable(root: Path) -> Path | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.ui_self_test:
+        from app.ui_smoke import run
+
+        return run()
     if args.self_test:
         importlib.import_module("PyQt6.QtWidgets")
         importlib.import_module("app.control_center")
@@ -65,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return subprocess.run(
                     [str(daemon), "--enroll", "--self-test"],
                     env=packaged_child_env(),
+                    stdin=subprocess.DEVNULL,
                     timeout=75,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 ).returncode

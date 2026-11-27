@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import math
 import threading
 import time
 from collections import deque
@@ -107,14 +108,20 @@ class CHROMrPPGDetector:
             return 0.5
 
         roi = self._skin_roi(frame, face)
-        if roi is None or roi.size == 0:
+        if roi is None or roi.size == 0 or roi.ndim != 3 or roi.shape[2] != 3:
+            self._score = 0.5
             return self._score
 
         b, g, r = cv2.split(roi)
         red = float(np.mean(r))
         green = float(np.mean(g))
         blue = float(np.mean(b))
-        if red < 15 or green < 15:
+        if (
+            not (math.isfinite(red) and math.isfinite(green) and math.isfinite(blue))
+            or red < 15
+            or green < 15
+        ):
+            self._score = 0.5
             return self._score
 
         self._ts_buf.append(time.monotonic())
@@ -183,6 +190,7 @@ class CHROMrPPGDetector:
             chrom_signal = scipy_signal.filtfilt(b, a, chrom_signal)
         except (ValueError, TypeError, FloatingPointError, ImportError) as e:
             logger.debug("rPPG filter failed: %s", e)
+            self._snr = 0.0
             return 0.5
 
         sample_count = len(chrom_signal)
@@ -190,9 +198,13 @@ class CHROMrPPGDetector:
         freqs = np.fft.rfftfreq(sample_count * 2, d=1.0 / fps)
         mask = (freqs >= self.FREQ_LO) & (freqs <= self.FREQ_HI)
         if mask.sum() < 2:
+            self._snr = 0.0
             return 0.5
 
         snr = float(np.max(fft[mask])) / (float(np.mean(fft[mask])) + 1e-9)
+        if not math.isfinite(snr):
+            self._snr = 0.0
+            return 0.5
         self._snr = snr
         score = float(np.clip((snr - 1.3) / (3.5 - 1.3), 0.0, 1.0))
         logger.debug("rPPG SNR=%.2f -> %.3f", snr, score)

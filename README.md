@@ -58,6 +58,10 @@ python -m pip install -r requirements.txt
 python -m pip install -r packaging\requirements-build.txt
 ```
 
+For hash-checked downloads, replace the runtime install line with
+`python -m pip install --require-hashes -r requirements.lock.txt`. Update the
+lock with `python tools/gen_requirements_lock.py` when runtime pins change.
+
 Run the automated suite from the repository root:
 
 ```powershell

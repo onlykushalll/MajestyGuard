@@ -33,6 +33,7 @@ def test_skin_roi_returns_none_for_invalid_face_box():
 
 def test_chrom_returns_neutral_when_filter_fails(monkeypatch):
     detector = CHROMrPPGDetector()
+    detector._snr = 2.5
     detector._rgb_buf.extend([(60.0 + i, 55.0 + i, 50.0 + i) for i in range(detector.MIN_FRAMES)])
 
     def fail_filter(*_args, **_kwargs):
@@ -41,6 +42,37 @@ def test_chrom_returns_neutral_when_filter_fails(monkeypatch):
     monkeypatch.setattr(rppg_detector.scipy_signal, "butter", fail_filter)
 
     assert detector._chrom() == 0.5
+    assert detector.snr == 0.0
+
+
+def test_rppg_update_guards_shape_and_resets_score_on_dark_or_missing_roi():
+    detector = CHROMrPPGDetector()
+    detector._score = 0.85
+    face = SimpleNamespace(bbox=[0, 0, 100, 100])
+
+    # Grayscale frame (2D ROI) must not crash cv2.split and must reset score
+    gray_frame = np.full((120, 120), 100, dtype=np.uint8)
+    assert detector.update(gray_frame, face) == 0.5
+
+    detector._score = 0.85
+    # Dark BGR frame must not return stale score
+    dark_frame = np.full((120, 120, 3), 5, dtype=np.uint8)
+    assert detector.update(dark_frame, face) == 0.5
+
+    detector._score = 0.85
+    # Signal loss (no face box) must not return stale score
+    assert detector.update(dark_frame, SimpleNamespace(bbox=None)) == 0.5
+
+
+def test_chrom_resets_snr_when_band_mask_has_insufficient_bins():
+    detector = CHROMrPPGDetector()
+    detector._snr = 3.1
+    detector._rgb_buf.extend([(60.0, 55.0, 50.0) for _ in range(detector.MIN_FRAMES)])
+    detector.FREQ_LO = 100.0
+    detector.FREQ_HI = 101.0
+
+    assert detector._chrom() == 0.5
+    assert detector.snr == 0.0
 
 
 def test_rppg_confident_no_pulse_snr_veto_heavily_penalizes_liveness():

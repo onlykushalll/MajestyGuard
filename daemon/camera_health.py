@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -99,16 +100,21 @@ def windows_camera_privacy_blocked() -> Optional[bool]:
     except ImportError:
         return None
     subkey = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam"
+    desktop = subkey + r"\NonPackaged"
+    consent_keys = [subkey, desktop]
+    if sys.executable:
+        consent_keys.append(desktop + "\\" + sys.executable.replace("\\", "#"))
     answered = False
     for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-        try:
-            with winreg.OpenKey(hive, subkey) as key:
-                value, _ = winreg.QueryValueEx(key, "Value")
-        except OSError:
-            continue
-        answered = True
-        if str(value).strip().lower() == "deny":
-            return True
+        for path in consent_keys:
+            try:
+                with winreg.OpenKey(hive, path) as key:
+                    value, _ = winreg.QueryValueEx(key, "Value")
+            except OSError:
+                continue
+            answered = True
+            if str(value).strip().lower() == "deny":
+                return True
     return False if answered else None
 
 

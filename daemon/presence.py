@@ -127,9 +127,9 @@ class PresenceDetector:
             self._size = (w, h)
         return self._det
 
-    def detect(self, frame: np.ndarray) -> list[np.ndarray]:
+    def detect_all(self, frame: np.ndarray) -> list[np.ndarray]:
         """
-        Return list of face boxes. Each box is a numpy array:
+        Return list of all valid face boxes in ``frame``. Each box is a numpy array:
           [x, y, w, h, right_eye_x, right_eye_y, left_eye_x, left_eye_y,
            nose_x, nose_y, right_mouth_x, right_mouth_y, left_mouth_x,
            left_mouth_y, score]
@@ -140,14 +140,22 @@ class PresenceDetector:
         _, faces = det.detect(frame)
         if faces is None:
             return []
-        primary = self._select_primary_face(frame, list(faces))
+        return [
+            face for face in faces
+            if len(face) >= 15 and float(face[2]) > 0.0 and float(face[3]) > 0.0
+        ]
+
+    def detect(self, frame: np.ndarray) -> list[np.ndarray]:
+        """Return at most the primary face box (use ``detect_all`` / ``face_count`` for all faces)."""
+        faces = self.detect_all(frame)
+        primary = self._select_primary_face(frame, faces)
         return [primary] if primary is not None else []
 
     def has_face(self, frame: np.ndarray) -> bool:
         return len(self.detect(frame)) > 0
 
     def face_count(self, frame: np.ndarray) -> int:
-        return len(self.detect(frame))
+        return len(self.detect_all(frame))
 
     @staticmethod
     def _select_primary_face(frame: np.ndarray, faces: list[np.ndarray]) -> Optional[np.ndarray]:

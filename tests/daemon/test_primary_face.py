@@ -915,3 +915,19 @@ def test_daemon_stranger_evidence_requires_quality_and_foreground_geometry():
     assert daemon._stranger_evidence_reason(background, liveness_ok=True) == "background_geometry"
     assert not daemon._is_stranger_evidence(low_quality, liveness_ok=True)
     assert not daemon._is_stranger_evidence(background, liveness_ok=True)
+
+
+def test_presence_detector_detect_all_and_face_count_preserve_multi_face():
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    face_a = np.array([180, 100, 280, 320, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.90])
+    face_b = np.array([12, 20, 50, 50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.85])
+    invalid = np.array([10, 10, 0, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.99])
+
+    detector = PresenceDetector()
+    detector._size = (640, 480)
+    detector._det = SimpleNamespace(detect=lambda _f: (1, [face_a, face_b, invalid]))
+
+    assert detector.face_count(frame) == 2
+    assert len(detector.detect_all(frame)) == 2
+    assert len(detector.detect(frame)) == 1
+    assert detector.has_face(frame) is True

@@ -59,6 +59,26 @@ def test_prehash_propagates_read_errors_like_a_direct_read(tmp_path):
         model_prehash.digest_for(str(ghost))
 
 
+def test_prehash_prunes_failed_future_on_retry(tmp_path):
+    from concurrent.futures import Future
+
+    model = tmp_path / "retry.onnx"
+    model.write_bytes(b"retry-bytes")
+    key = model_prehash.cache_key(str(model))
+    failed: Future = Future()
+    failed.set_exception(OSError("transient share violation"))
+
+    with model_prehash._LOCK:
+        model_prehash._FUTURES[key] = failed
+    try:
+        assert model_prehash.start(tmp_path) == 1
+        expected = hashlib.sha256(b"retry-bytes").hexdigest()
+        assert model_prehash.digest_for(str(model)) == expected
+    finally:
+        with model_prehash._LOCK:
+            model_prehash._FUTURES.pop(key, None)
+
+
 def test_rppg_import_does_not_load_scipy():
     code = (
         "import sys; sys.path.insert(0, r'%s'); import rppg_detector; "

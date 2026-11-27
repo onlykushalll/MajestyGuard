@@ -189,3 +189,28 @@ def test_attention_detector_reset_and_close(monkeypatch):
     assert mock_mesh.closed
     assert detector._mesh is None
     assert not detector._ready
+
+
+def test_kps_gaze_rejects_nonfinite_and_close_resets_histories():
+    detector = AttentionDetector()
+    detector._ready = False
+    detector._mesh = None
+
+    nan_face = SimpleNamespace(
+        kps=np.array([[float("nan"), 10.0], [30.0, 10.0], [20.0, 20.0], [15.0, 30.0], [25.0, 30.0]], dtype=np.float32)
+    )
+    frame = np.zeros((100, 100, 3), dtype=np.uint8)
+    assert detector.score(frame, face=nan_face) == 0.5
+    assert len(detector._kps_gaze_hist) == 0
+
+    for i in range(5):
+        good_face = SimpleNamespace(
+            kps=np.array([[10.0, 10.0], [30.0, 10.0], [20.0 + i * 0.5, 20.0], [15.0, 30.0], [25.0, 30.0]], dtype=np.float32)
+        )
+        detector.score(frame, face=good_face)
+    assert len(detector._kps_gaze_hist) == 5
+
+    detector.close()
+    assert len(detector._kps_gaze_hist) == 0
+    assert len(detector._iris_x_hist) == 0
+    assert detector._blink_count == 0

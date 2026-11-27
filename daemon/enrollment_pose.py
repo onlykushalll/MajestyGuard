@@ -33,7 +33,7 @@ def estimate_head_pose_5pt(
         return 0.0, 0.0, 0.0
     try:
         pts = np.asarray(kps, dtype=np.float32)
-        if pts.shape != (5, 2):
+        if pts.shape != (5, 2) or not np.all(np.isfinite(pts)):
             return 0.0, 0.0, 0.0
         l_eye, r_eye, nose, l_mouth, r_mouth = pts
         eye_dx = float(r_eye[0] - l_eye[0])
@@ -95,6 +95,8 @@ def check_pose_alignment(
     roll_deg: float = 0.0,
 ) -> tuple[bool, float]:
     """Check the requested yaw/pitch target, including roll for pillow-tilt views."""
+    if not (math.isfinite(yaw) and math.isfinite(pitch) and math.isfinite(roll_deg)):
+        return False, 0.0
     if not _needs_directional_pose_check(angle_description):
         return True, 0.0
 

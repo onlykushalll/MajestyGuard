@@ -16,6 +16,7 @@ SECONDARY SIGNAL: blink detection via Eye Aspect Ratio (EAR).
   Real faces blink every 3-5 seconds. Static photos never blink.
 """
 import cv2
+import math
 import numpy as np
 import logging
 from collections import deque
@@ -131,6 +132,8 @@ class AttentionDetector:
             # Normalise by eye width so position is scale-invariant
             x = (l_iris_x / l_eye_w + r_iris_x / r_eye_w) / 2
             y = (l_iris_y / l_eye_w + r_iris_y / r_eye_w) / 2
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return None, None
             return x, y
         except Exception:
             return None, None
@@ -162,6 +165,8 @@ class AttentionDetector:
         xs = np.array(self._iris_x_hist)
         ys = np.array(self._iris_y_hist)
         std = float(np.mean([np.std(xs), np.std(ys)]))
+        if not math.isfinite(std):
+            return 0.5
 
         if std >= _MIN_STD_LIVE:
             variability_score = 1.0
@@ -203,18 +208,24 @@ class AttentionDetector:
             return 0.5
         try:
             pts = np.asarray(kps, dtype=np.float32)
+            if pts.ndim != 2 or pts.shape[0] < 5 or pts.shape[1] < 2 or not np.all(np.isfinite(pts)):
+                return 0.5
             left_eye, right_eye, nose = pts[0], pts[1], pts[2]
             eye_w = float(np.linalg.norm(right_eye - left_eye))
-            if eye_w < 1.0:
+            if not math.isfinite(eye_w) or eye_w < 1.0:
                 return 0.5
             eye_mid = (left_eye + right_eye) * 0.5
             gx = float((nose[0] - eye_mid[0]) / eye_w)
             gy = float((nose[1] - eye_mid[1]) / eye_w)
+            if not (math.isfinite(gx) and math.isfinite(gy)):
+                return 0.5
             self._kps_gaze_hist.append((gx, gy))
             if len(self._kps_gaze_hist) < 8:
                 return 0.5
             arr = np.array(self._kps_gaze_hist)
             std = float(np.mean([np.std(arr[:, 0]), np.std(arr[:, 1])]))
+            if not math.isfinite(std):
+                return 0.5
             if std >= 0.008:
                 return 0.85
             elif std <= 0.0015:
@@ -234,6 +245,7 @@ class AttentionDetector:
 
     def close(self) -> None:
         """Release MediaPipe resources."""
+        self.reset()
         if self._mesh is not None:
             try:
                 self._mesh.close()

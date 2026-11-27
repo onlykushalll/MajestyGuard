@@ -194,3 +194,30 @@ def test_dim_leaky_cover_still_counts_as_dark():
     for _ in range(2):
         health.observe_frame(5.0, 1)
     assert health.observe_frame(5.0, 2) is CameraFault.BLACK_FRAMES
+
+
+def test_camera_privacy_probe_checks_desktop_and_current_app(monkeypatch):
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from camera_health import windows_camera_privacy_blocked
+
+    desktop = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged"
+    monkeypatch.setattr(sys, "executable", r"C:\MG\MajestyGuardDaemon.exe")
+    own = desktop + r"\C:#MG#MajestyGuardDaemon.exe"
+    rules = {desktop: "Allow", own: "Deny"}
+
+    def open_key(hive, path):
+        if hive == 2 and path in rules:
+            return nullcontext(path)
+        raise FileNotFoundError(path)
+
+    monkeypatch.setitem(sys.modules, "winreg", SimpleNamespace(
+        HKEY_LOCAL_MACHINE=1, HKEY_CURRENT_USER=2,
+        OpenKey=open_key, QueryValueEx=lambda key, _name: (rules[key], 0),
+    ))
+    assert windows_camera_privacy_blocked() is True
+    rules[own] = "Allow"
+    assert windows_camera_privacy_blocked() is False
+    rules.clear()
+    assert windows_camera_privacy_blocked() is None

@@ -430,14 +430,20 @@ def test_lock_status_error_disables_primary_action(qapp, tmp_path):
     view.close()
 
 
-def test_protection_explains_the_fallback_without_a_disable_switch(qapp, tmp_path):
+def test_protection_keeps_settings_and_about_owns_the_overlay_guide(qapp, tmp_path):
     from PyQt6.QtWidgets import QLabel
 
     view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
     view.show_page(1)
-    assert any(label.text() == "Windows sign-in fallback"
-               for label in view._stack.currentWidget().findChildren(QLabel))
+    assert not any(label.text() == "Privacy overlay"
+                   for label in view._stack.currentWidget().findChildren(QLabel))
     assert not hasattr(view, "_windows_lock_toggle")
+    view._info_button.click()
+    dialog = view._about_dialog
+    assert {"Privacy overlay", "Space", "Tab twice", "Win + L"} <= {
+        label.text() for label in dialog.findChildren(QLabel)
+    }
+    dialog.accept()
     view.close()
 
 
@@ -451,6 +457,8 @@ def test_info_button_opens_and_closes_about_without_changing_tabs(qapp, tmp_path
     assert dialog.isVisible()
     assert dialog.windowTitle() == "About MajestyGuard"
     assert view.current_page() == 2
+    from app.cc_theme import theme_for
+    assert theme_for(dialog) == theme_for(view)
     copy = " ".join(label.text() for label in dialog.findChildren(QLabel))
     assert "not the Windows lock screen" in copy
     assert "Tab twice" in copy
@@ -464,10 +472,31 @@ def test_touchpad_settings_button_opens_windows_settings_only_on_click(qapp, tmp
     monkeypatch.setattr(control_center_module.QDesktopServices, "openUrl",
                         lambda url: calls.append(url.toString()) or True)
     view = ControlCenter(FakeSupervisor(RuntimeStatus.PAUSED), tmp_path / "settings.json")
-    view.show_page(1)
+    view._info_button.click()
     assert calls == []
     view._touchpad_settings_button.click()
     assert calls == ["ms-settings:devices-touchpad"]
+    view._about_dialog.accept()
+    view.close()
+
+
+def test_about_dismisses_on_lock_and_settings_refuses_a_stale_click(qapp, tmp_path, monkeypatch):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    sup.controls_locked = lambda: False
+    opened = []
+    monkeypatch.setattr(control_center_module.QDesktopServices, "openUrl",
+                        lambda url: opened.append(url.toString()) or False)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._info_button.click()
+    original_timeout_note = view.timeout_note_text()
+    view._touchpad_settings_button.click()
+    assert "Bluetooth & devices" in view._touchpad_note.text()
+    assert view.timeout_note_text() == original_timeout_note
+    sup.controls_locked = lambda: True
+    view._touchpad_settings_button.click()
+    assert len(opened) == 1
+    view.refresh()
+    assert view._about_dialog is None and not view._info_button.isEnabled()
     view.close()
 
 

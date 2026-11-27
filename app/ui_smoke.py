@@ -23,10 +23,21 @@ def run() -> int:
     from PyQt6.QtWidgets import QApplication
 
     from app.control_center import ControlCenter
+    from app.launch import LaunchPanel
 
     app = QApplication([])
     with TemporaryDirectory(prefix="mg-ui-smoke-") as data:
-        center = ControlCenter(PreviewSupervisor(), Path(data) / "settings.json")
+        settings_path = Path(data) / "settings.json"
+        panel = LaunchPanel(settings_path)
+        panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        panel.show()
+        app.processEvents()
+        if not _has_content(panel) or not _has_content(panel.mark):
+            return 5
+        panel.finish()
+        if panel.isVisible():
+            return 6
+        center = ControlCenter(PreviewSupervisor(), settings_path)
         center.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         center._quick.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         center._refresh_timer.stop()
@@ -46,6 +57,13 @@ def run() -> int:
         app.processEvents()
         if center.current_page() != 2 or center._quick.isVisible():
             return 4
+        center.show_about()
+        app.processEvents()
+        dialog = center._about_dialog
+        if (dialog is None or dialog.property("ccTheme") != center.property("ccTheme")
+                or not _has_content(dialog)):
+            return 7
+        dialog.accept()
         center.hide()
         return 0
 

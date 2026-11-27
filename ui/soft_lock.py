@@ -122,6 +122,11 @@ ctypes.windll.user32.CallNextHookEx.restype = LRESULT
 ctypes.windll.user32.UnhookWindowsHookEx.argtypes = [HHOOK]
 ctypes.windll.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
 
+ctypes.windll.user32.SetWindowPos.argtypes = [
+    wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT,
+]
+ctypes.windll.user32.SetWindowPos.restype = wintypes.BOOL
+
 
 class KBDLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
@@ -699,9 +704,9 @@ class SoftLockOverlay(QWidget):
         self._layout_cache = None
 
     def _force_topmost(self) -> None:
+        if QGuiApplication.platformName() != "windows":
+            return
         try:
-            import ctypes
-
             ctypes.windll.user32.SetWindowPos(
                 int(self.winId()),
                 -1,  # HWND_TOPMOST

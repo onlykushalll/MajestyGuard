@@ -193,6 +193,8 @@ class ControlCenter(QMainWindow):
         self._tray_color = None
         self._quitting = False
         self._about_dialog: QDialog | None = None
+        self._touchpad_settings_button: QPushButton | None = None
+        self._touchpad_note: QLabel | None = None
         self._action_note = ""
         self._async_actions = async_actions
         self._operation = None
@@ -461,37 +463,6 @@ class ControlCenter(QMainWindow):
         idle_box.addWidget(self._timeout_note)
         box.addWidget(idle)
 
-        keys, keys_box = _card(page)
-        keys_box.addWidget(_label("Privacy overlay", "cardTitle", keys))
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(14)
-        grid.setVerticalSpacing(10)
-        for r, (key, title, note) in enumerate((
-            ("SPACE", "Verify your face", "Look at the camera. Failed attempts wait a little longer each time."),
-            ("TAB", "Windows sign-in fallback", "Press Tab twice to lock with Windows, then sign in as usual."),
-        )):
-            cap = _label(key, "keycap", keys)
-            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cap.setMinimumWidth(72)
-            grid.addWidget(cap, r, 0, Qt.AlignmentFlag.AlignTop)
-            col = QVBoxLayout()
-            col.setSpacing(1)
-            col.addWidget(_label(title, "rowTitle", keys))
-            col.addWidget(_label(note, "rowMeta", keys, True))
-            grid.addLayout(col, r, 1)
-        grid.setColumnStretch(1, 1)
-        keys_box.addLayout(grid)
-        box.addWidget(keys)
-        touchpad, touchpad_box = _card(page)
-        touchpad_box.addWidget(_label("Touchpad gestures", "cardTitle", touchpad))
-        touchpad_box.addWidget(_label(
-            "Windows gestures can switch apps or open system panels over this overlay. "
-            "Use the Windows lock when leaving your PC unattended.", "detail", touchpad, True))
-        self._touchpad_settings_button = QPushButton("Touchpad settings", touchpad)
-        self._touchpad_settings_button.setObjectName("secondary")
-        self._touchpad_settings_button.clicked.connect(self.open_touchpad_settings)
-        touchpad_box.addWidget(self._touchpad_settings_button, 0, Qt.AlignmentFlag.AlignLeft)
-        box.addWidget(touchpad)
         box.addStretch(1)
         self._mark_current_preset()
         return page
@@ -716,15 +687,21 @@ class ControlCenter(QMainWindow):
         return page
 
     def show_about(self) -> None:
+        if self._operation is not None or self._controls_locked():
+            return
         if self._about_dialog is not None:
             self._about_dialog.raise_()
             return
         page = QDialog(self)
         page.setWindowTitle("About MajestyGuard")
         page.setObjectName("aboutDialog")
+        page.setProperty("ccTheme", self.property("ccTheme"))
         page.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        page.finished.connect(lambda _result: setattr(self, "_about_dialog", None))
-        page.setMinimumWidth(400)
+        page.finished.connect(self._about_closed)
+        page.setMinimumWidth(350)
+        screen = self.screen()
+        height = min(650, screen.availableGeometry().height() - 84) if screen else 570
+        page.resize(490, max(300, height))
         box = QVBoxLayout(page)
         header = QHBoxLayout()
         mark = QLabel(page)
@@ -732,14 +709,46 @@ class ControlCenter(QMainWindow):
         header.addWidget(mark)
         header.addWidget(_label("MajestyGuard", "pageTitle", page), 1)
         box.addLayout(header)
-        priv, pbox = _card(page)
+        scroll = QScrollArea(page)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        body = QWidget(scroll)
+        body.setObjectName("pageContent")
+        content = QVBoxLayout(body)
+        content.setContentsMargins(0, 0, 4, 0)
+        scroll.setWidget(body)
+        box.addWidget(scroll, 1)
+        priv, pbox = _card(body)
         pbox.addWidget(_label("Privacy overlay", "cardTitle", priv))
-        pbox.addWidget(_label("MajestyGuard covers your desktop while apps keep running. It is not the Windows lock screen: "
-                              "Windows touchpad gestures and system panels may still be available.", "detail", priv, True))
-        pbox.addWidget(_label("For Windows sign-in protection, press Tab twice on the overlay or use Win+L from the desktop.",
-                              "detail", priv, True))
-        box.addWidget(priv)
-        files, fbox = _card(page)
+        pbox.addWidget(_label("The overlay covers your desktop while apps keep running. It is not the Windows lock screen. "
+                              "Windows gestures and system windows can still appear above it.", "detail", priv, True))
+        controls = QGridLayout()
+        controls.setHorizontalSpacing(12)
+        controls.setVerticalSpacing(8)
+        for row, (key, title, detail) in enumerate((
+            ("Space", "Verify your face", "Look at the camera to resume. Repeated failures increase the retry delay."),
+            ("Tab twice", "Windows sign-in fallback", "Switch to Windows lock, then sign in as usual."),
+            ("Win + L", "Lock from the desktop", "Use Windows lock before leaving the PC unattended."),
+        )):
+            cap = _label(key, "keycap", priv)
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            controls.addWidget(cap, row, 0, Qt.AlignmentFlag.AlignTop)
+            text = QVBoxLayout()
+            text.setSpacing(2)
+            text.addWidget(_label(title, "rowTitle", priv))
+            text.addWidget(_label(detail, "rowMeta", priv, True))
+            controls.addLayout(text, row, 1)
+        controls.setColumnStretch(1, 1)
+        pbox.addLayout(controls)
+        self._touchpad_settings_button = QPushButton("Touchpad settings", priv)
+        self._touchpad_settings_button.setObjectName("secondary")
+        self._touchpad_settings_button.clicked.connect(self.open_touchpad_settings)
+        pbox.addWidget(self._touchpad_settings_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self._touchpad_note = _label("", "detail", priv, True)
+        self._touchpad_note.hide()
+        pbox.addWidget(self._touchpad_note)
+        content.addWidget(priv)
+        files, fbox = _card(body)
         fbox.addWidget(_label("Local data", "cardTitle", files))
         fbox.addWidget(_label("Your encrypted face profile stays on this PC. Camera frames are not saved or uploaded.",
                               "detail", files, True))
@@ -750,8 +759,8 @@ class ControlCenter(QMainWindow):
         directory.setToolTip(directory.text())
         directory.setCursorPosition(0)
         fbox.addWidget(directory)
-        box.addWidget(files)
-        keys, kbox = _card(page)
+        content.addWidget(files)
+        keys, kbox = _card(body)
         kbox.addWidget(_label("Keyboard shortcuts", "cardTitle", keys))
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -764,12 +773,18 @@ class ControlCenter(QMainWindow):
             grid.addWidget(_label(what, "detail", keys), r, 1)
         grid.setColumnStretch(2, 1)
         kbox.addLayout(grid)
-        box.addWidget(keys)
+        content.addWidget(keys)
+        content.addStretch()
         close = QPushButton("Done", page)
         close.clicked.connect(page.accept)
         box.addWidget(close, 0, Qt.AlignmentFlag.AlignRight)
         self._about_dialog = page
         page.open()
+
+    def _about_closed(self, _result: int) -> None:
+        self._about_dialog = None
+        self._touchpad_settings_button = None
+        self._touchpad_note = None
 
     def _page_appearance(self) -> QWidget:
         page, box = self._page()
@@ -947,9 +962,11 @@ class ControlCenter(QMainWindow):
     # --------------------------------------------------------------- refresh
     def _apply_lock_state(self, locked: bool) -> None:
         for widget in (self._reenroll_btn, self._startover_btn, self._timeout_input,
-                       self._save_timeout_button, self._touchpad_settings_button, *self._preset_buttons):
+                       self._save_timeout_button, self._info_button, *self._preset_buttons):
             widget.setEnabled(not locked)
         if locked:
+            if self._about_dialog is not None:
+                self._about_dialog.reject()
             self._primary_button.setEnabled(False)
             self._tray_primary_action.setEnabled(False)
             self._detail_label.setText(_LOCKED_NOTE)
@@ -1308,8 +1325,10 @@ class ControlCenter(QMainWindow):
     def open_touchpad_settings(self) -> None:
         if self._refuse_while_locked():
             return
-        if not QDesktopServices.openUrl(QUrl("ms-settings:devices-touchpad")):
-            self._timeout_note.setText("Open Windows Settings > Bluetooth & devices > Touchpad.")
+        opened = QDesktopServices.openUrl(QUrl("ms-settings:devices-touchpad"))
+        if self._touchpad_note is not None:
+            self._touchpad_note.setText("Open Windows Settings > Bluetooth & devices > Touchpad.")
+            self._touchpad_note.setVisible(not opened)
 
     def copy_diagnostics(self) -> None:
         if self._operation is not None:

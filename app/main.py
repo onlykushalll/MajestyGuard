@@ -9,9 +9,6 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from app.runtime import Supervisor, packaged_child_env
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the MajestyGuard Control Center.")
     parser.add_argument(
@@ -60,6 +57,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         importlib.import_module("PyQt6.QtWidgets")
         importlib.import_module("app.control_center")
         if getattr(sys, "frozen", False):
+            from app.runtime import packaged_child_env
+
             root, _ = default_paths()
             daemon = default_daemon_executable(root)
             if daemon is None:
@@ -80,15 +79,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
         return 0
 
-    from PyQt6.QtCore import QSettings, Qt, QTimer
-    from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout
-    from ui.brand import BrandTrace, brand_icon
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtWidgets import QApplication
 
     root, settings_path = default_paths()
     app = QApplication([sys.argv[0]])
     app.setApplicationName("MajestyGuard")
-    app.setWindowIcon(brand_icon())
     app.setQuitOnLastWindowClosed(False)
+
+    if not args.background:
+        from app.launch import open_foreground
+
+        return open_foreground(app, root, settings_path, default_daemon_executable)
+
+    from app.control_center import ControlCenter
+    from app.runtime import Supervisor
 
     supervisor = Supervisor(
         root,
@@ -96,40 +101,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings_path,
         daemon_executable=default_daemon_executable(root),
     )
-    splash = None
-    center = None
-    if not args.background:
-        splash = QFrame(None, Qt.WindowType.SplashScreen)
-        splash.setWindowTitle("Opening MajestyGuard")
-        splash.setFixedSize(292, 224)
-        splash.setStyleSheet("QFrame {background:#182026;} QLabel {color:#E4EDF2;font:600 17px 'Segoe UI';}")
-        appearance = QSettings(str(settings_path.with_name("appearance.ini")), QSettings.Format.IniFormat)
-        splash.setProperty("ccReduceMotion", appearance.value("reduceMotion", False, type=bool))
-        layout = QVBoxLayout(splash)
-        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mark = BrandTrace(splash, size=120)
-        mark.set_busy(True)
-        layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
-        title = QLabel("Opening MajestyGuard", splash)
-        layout.addWidget(title, 0, Qt.AlignmentFlag.AlignHCenter)
-        screen = app.primaryScreen()
-        if screen is not None:
-            splash.move(screen.availableGeometry().center() - splash.rect().center())
-        splash.show()
-        app.processEvents()
-
-    from app.control_center import ControlCenter
-
     center = ControlCenter(supervisor, settings_path, async_actions=True)
+    app.setWindowIcon(center.windowIcon())
     center.show_tray()
-    if args.background and center.enrollment_present():
+    if center.enrollment_present():
         QTimer.singleShot(0, center.start_protection)
     else:
         center.show_center()
-        center._brand.play_once()
-    if splash is not None:
-        mark.set_busy(False)
-        splash.close()
 
     return app.exec()
 

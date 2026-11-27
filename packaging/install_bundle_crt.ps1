@@ -14,12 +14,18 @@ if (-not $VCRedistDir) {
         $candidates = foreach ($install in $installs) {
             Get-ChildItem -Path (Join-Path $install "VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT") -Directory -ErrorAction SilentlyContinue
         }
-        $best = $candidates | Sort-Object { [version]$_.Parent.Parent.Name } -Descending | Select-Object -First 1
+        $best = $candidates |
+            Where-Object { $_.Parent.Parent.Name -match '^\d+(\.\d+){1,3}$' } |
+            Sort-Object { [version]$_.Parent.Parent.Name } -Descending |
+            Select-Object -First 1
         if ($best) { $VCRedistDir = $best.FullName }
     }
 }
 if (-not $VCRedistDir) {
     throw "Pass -VCRedistDir pointing to the x64 Microsoft.VC*.CRT redistributable folder from Visual Studio Build Tools."
+}
+if (-not (Test-Path -LiteralPath $VCRedistDir -PathType Container)) {
+    throw "CRT redistributable directory not found: $VCRedistDir"
 }
 # Put a coherent Microsoft runtime next to the daemon exe. Qt's wheel also
 # ships older copies; selecting those first makes the MediaPipe DLL fail to initialize.
@@ -34,7 +40,16 @@ foreach ($dll in $runtime) {
         throw "Expected a signed Microsoft redistributable: $($dll.Name)"
     }
 }
+# Keep Qt's private copies coherent too: enrollment loads both Qt and SciPy
+# in the same process, unlike the standalone UI.
+$qtBin = Join-Path $DaemonDir "_internal\PyQt6\Qt6\bin"
 foreach ($dll in $runtime) {
     Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $DaemonDir $dll.Name) -Force
+    foreach ($directory in @((Join-Path $DaemonDir "_internal"), $qtBin)) {
+        $existing = Join-Path $directory $dll.Name
+        if (Test-Path -LiteralPath $existing -PathType Leaf) {
+            Copy-Item -LiteralPath $dll.FullName -Destination $existing -Force
+        }
+    }
 }
 Write-Host "App-local daemon CRT: $VCRedistDir"

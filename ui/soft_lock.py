@@ -33,6 +33,10 @@ from PyQt6.QtWidgets import QApplication, QWidget
 
 from states import IslandState, get_state
 import lock_layout as _layout
+try:
+    from ui.brand import paint_mark
+except ModuleNotFoundError:
+    from brand import paint_mark
 import tokens as _tok
 from tab_confirm import ACTION_LOCK, TabConfirmGate
 
@@ -1343,8 +1347,17 @@ class SoftLockOverlay(QWidget):
     def _paint_brand_signature(self, painter: QPainter) -> None:
         lay = self._layout()
         rect = QRectF(*lay.brand)
-        self._draw_text(painter, rect, "Secured by MajestyGuard",
-                        _font(9.5 * lay.scale, QFont.Weight.Medium), self._ink(195, 1), Qt.AlignmentFlag.AlignRight)
+        text = "Secured by MajestyGuard"
+        font = _font(9.5 * lay.scale, QFont.Weight.Medium)
+        ink = self._ink(195, 1)
+        self._draw_text(painter, rect, text, font, ink, Qt.AlignmentFlag.AlignRight)
+        painter.save()
+        painter.setFont(font)
+        size = 20 * lay.scale
+        left = rect.right() - painter.fontMetrics().horizontalAdvance(text) - size - 4 * lay.scale
+        if left >= rect.left():
+            paint_mark(painter, QRectF(left, rect.center().y() - size / 2, size, size), ink)
+        painter.restore()
 
     def _status_label(self) -> str:
         return _layout.status_label(self._state.name)

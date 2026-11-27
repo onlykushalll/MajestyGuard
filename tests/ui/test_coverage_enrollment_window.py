@@ -45,6 +45,23 @@ def _preview():
     return img
 
 
+def test_preparation_mark_hands_off_to_first_frame_or_failure(win, monkeypatch):
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    win.setProperty("ccReduceMotion", False)
+    from PyQt6.QtCore import Qt
+    win.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+    win.set_loading(True)
+    win.show()
+    assert win._visuals.currentIndex() == 1
+    assert win._load_mark._timer.isActive() and not win.percent.text()
+    win.set_preview(_preview())
+    assert win._visuals.currentIndex() == 0 and not win._load_mark._timer.isActive()
+    win.set_loading(True)
+    win.show_result(False, "Camera unavailable")
+    assert win._visuals.currentIndex() == 0 and not win._load_mark._timer.isActive()
+    assert win.hint.text() == "Camera unavailable"
+
+
 def _ring_pixel(win, fill, state=ec.COLLECTING):
     ring = win.ring
     ring.resize(500, 500)

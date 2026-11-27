@@ -74,13 +74,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 1
         return 0
 
-    from PyQt6.QtWidgets import QApplication
-
-    from app.control_center import ControlCenter
+    from PyQt6.QtCore import QSettings, Qt, QTimer
+    from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QVBoxLayout
+    from ui.brand import BrandTrace, brand_icon
 
     root, settings_path = default_paths()
     app = QApplication([sys.argv[0]])
     app.setApplicationName("MajestyGuard")
+    app.setWindowIcon(brand_icon())
     app.setQuitOnLastWindowClosed(False)
 
     supervisor = Supervisor(
@@ -89,13 +90,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings_path,
         daemon_executable=default_daemon_executable(root),
     )
+    splash = None
+    center = None
+    if not args.background:
+        splash = QFrame(None, Qt.WindowType.SplashScreen)
+        splash.setWindowTitle("Opening MajestyGuard")
+        splash.setFixedSize(292, 224)
+        splash.setStyleSheet("QFrame {background:#182026;} QLabel {color:#E4EDF2;font:600 17px 'Segoe UI';}")
+        appearance = QSettings(str(settings_path.with_name("appearance.ini")), QSettings.Format.IniFormat)
+        splash.setProperty("ccReduceMotion", appearance.value("reduceMotion", False, type=bool))
+        layout = QVBoxLayout(splash)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark = BrandTrace(splash, size=120)
+        mark.set_busy(True)
+        layout.addWidget(mark, 0, Qt.AlignmentFlag.AlignHCenter)
+        title = QLabel("Opening MajestyGuard", splash)
+        layout.addWidget(title, 0, Qt.AlignmentFlag.AlignHCenter)
+        screen = app.primaryScreen()
+        if screen is not None:
+            splash.move(screen.availableGeometry().center() - splash.rect().center())
+        splash.show()
+        app.processEvents()
+
+    from app.control_center import ControlCenter
+
     center = ControlCenter(supervisor, settings_path, async_actions=True)
     center.show_tray()
-
     if args.background and center.enrollment_present():
-        center.start_protection()
+        QTimer.singleShot(0, center.start_protection)
     else:
         center.show_center()
+        center._brand.play_once()
+    if splash is not None:
+        mark.set_busy(False)
+        splash.close()
 
     return app.exec()
 

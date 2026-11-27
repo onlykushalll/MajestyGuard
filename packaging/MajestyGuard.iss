@@ -11,11 +11,17 @@ DefaultDirName={localappdata}\Programs\MajestyGuard
 DefaultGroupName=MajestyGuard
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+AppMutex=Global\MajestyGuardDaemon,Global\MajestyGuardMonitor
+CloseApplications=no
+RestartApplications=no
 OutputDir=..\dist\installer
 OutputBaseFilename=MajestyGuard-Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+#ifdef BrandIcon
+SetupIconFile={#BrandIcon}
+#endif
 UninstallDisplayIcon={app}\MajestyGuard\MajestyGuard.exe
 
 [Files]

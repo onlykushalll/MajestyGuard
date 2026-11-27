@@ -18,6 +18,19 @@ def test_build_requirements_pin_pyinstaller():
     assert any(line.startswith("pyinstaller==") for line in text.splitlines())
 
 
+def test_build_only_uses_verified_crt_for_isolated_import_probes():
+    folder = ROOT / "packaging"
+    build = (folder / "build_bundle.ps1").read_text(encoding="utf-8")
+    installer = (folder / "install_bundle_crt.ps1").read_text(encoding="utf-8")
+    crt = (folder / "bundle_crt.ps1").read_text(encoding="utf-8")
+    assert "Get-BundleCrtFiles" in build and "Get-BundleCrtFiles" in installer
+    assert "Get-AuthenticodeSignature" in crt and "O=Microsoft Corporation" in crt
+    assert 'Join-Path $PSScriptRoot "build_runtime"' in build
+    assert '$env:PYTHONPATH = $priorPythonPath' in build
+    assert '$env:MG_BUILD_CRT_DIR = $priorBuildCrt' in build
+    assert '"--icon", $brandIcon' in build
+
+
 def test_bundle_script_requires_models_and_builds_all_three_processes():
     text = (ROOT / "packaging" / "build_bundle.ps1").read_text(encoding="utf-8")
 

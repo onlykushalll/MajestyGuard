@@ -1,5 +1,7 @@
 # MajestyGuard
 
+<img src="assets/majestyguard.svg" alt="MajestyGuard MG monogram" width="76">
+
 MajestyGuard is a local, current-user Windows presence-verification app. It
 combines webcam recognition, layered liveness checks, a PyQt Dynamic Island,
 and a full-screen soft-lock overlay for an already signed-in desktop session.

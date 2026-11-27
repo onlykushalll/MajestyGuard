@@ -335,6 +335,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     config = CoverageConfig()
     qt_app = QApplication.instance() or QApplication(sys.argv)
     window = CoverageEnrollmentWindow()
+    window.set_loading(True)
     window.title.setText("Preparing face setup")
     window.hint.setText("Loading the recognition engine on this PC.")
     collector = CoverageCollector(config)

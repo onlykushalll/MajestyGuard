@@ -36,6 +36,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--motion", action="store_true", help="also render a short GIF of the Qt animations")
+    parser.add_argument("--brand-motion", action="store_true", help="capture the native enrollment loader in motion")
     parser.add_argument("--compare", type=Path, help="previous overview render at the same resolution")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
@@ -94,6 +95,34 @@ def main():
         app.processEvents()
         capture(view._quick, "tray.png")
         view._quick.hide()
+        if args.brand_motion:
+            from PIL import Image
+            from PyQt6.QtTest import QTest
+            from ui.coverage_enrollment_window import CoverageEnrollmentWindow
+
+            os.environ.pop("MG_UI_REDUCE_MOTION", None)
+            enrollment = CoverageEnrollmentWindow()
+            enrollment.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+            enrollment.setProperty("ccReduceMotion", False)
+            enrollment.set_loading(True)
+            enrollment.title.setText("Preparing face setup")
+            enrollment.hint.setText("Loading the recognition engine on this PC.")
+            enrollment.resize(420, 550)
+            enrollment.show()
+            frames = []
+            for _ in range(30):
+                QTest.qWait(48)
+                data = QByteArray()
+                buffer = QBuffer(data)
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                enrollment.grab().save(buffer, "PNG")
+                with Image.open(io.BytesIO(bytes(data))) as bitmap:
+                    frames.append(bitmap.convert("RGB"))
+            frames[0].save(args.output / "enrollment-loader.gif", save_all=True,
+                           append_images=frames[1:], duration=50, loop=0)
+            enrollment.set_loading(False)
+            enrollment.hide()
+            os.environ["MG_UI_REDUCE_MOTION"] = "1"
         if args.motion:
             from PIL import Image
 

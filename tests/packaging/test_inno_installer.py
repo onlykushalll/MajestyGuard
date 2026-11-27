@@ -26,6 +26,14 @@ def test_installer_does_not_contain_legacy_privileged_integrations():
     assert "new-service" not in text
 
 
+def test_installer_waits_for_protection_to_exit_without_shutting_apps_down():
+    text = (ROOT / "packaging" / "MajestyGuard.iss").read_text(encoding="utf-8")
+    assert "AppMutex=Global\\MajestyGuardDaemon,Global\\MajestyGuardMonitor" in text
+    assert "CloseApplications=no" in text and "RestartApplications=no" in text
+    assert "taskkill" not in text.lower()
+    assert "SetupIconFile={#BrandIcon}" in text
+
+
 def test_uninstall_preserves_enrollment_unless_explicitly_selected():
     text = (ROOT / "packaging" / "MajestyGuard.iss").read_text(encoding="utf-8")
 

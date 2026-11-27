@@ -41,6 +41,7 @@ from app.cc_widgets import Dot, EventMarker, MemoryTrace, NavButton, Surface, Ta
 from app.diagnostics import ResourceSampler, read_verify_timing
 from app.quick_controls import QuickControls
 from app.runtime import RuntimeStatus
+from ui.brand import BrandTrace
 
 
 class SupervisorProtocol(Protocol):
@@ -226,6 +227,7 @@ class ControlCenter(QMainWindow):
 
     def _build_window(self) -> None:
         self.setWindowTitle("MajestyGuard")
+        self.setWindowIcon(make_tray_icon("#9DB9C4"))
         self.setMinimumSize(720, 510)
         self.resize(960, 680)
         self.setStyleSheet(stylesheet(THEMES[self.property("ccTheme")]))
@@ -238,9 +240,8 @@ class ControlCenter(QMainWindow):
         header.setObjectName("masthead")
         bar = QHBoxLayout(header)
         bar.setContentsMargins(25, 12, 25, 12)
-        mark = QLabel(header)
-        mark.setPixmap(make_tray_icon("#C4D6E2").pixmap(29, 29))
-        bar.addWidget(mark)
+        self._brand = BrandTrace(header, size=35)
+        bar.addWidget(self._brand)
         bar.addWidget(_label("MajestyGuard", "mastBrand", header))
         bar.addSpacing(5)
         bar.addWidget(_label("Control Center", "mastSub", header))
@@ -725,7 +726,12 @@ class ControlCenter(QMainWindow):
         page.finished.connect(lambda _result: setattr(self, "_about_dialog", None))
         page.setMinimumWidth(400)
         box = QVBoxLayout(page)
-        box.addWidget(_label("MajestyGuard", "pageTitle", page))
+        header = QHBoxLayout()
+        mark = QLabel(page)
+        mark.setPixmap(make_tray_icon("#9DB9C4").pixmap(43, 43))
+        header.addWidget(mark)
+        header.addWidget(_label("MajestyGuard", "pageTitle", page), 1)
+        box.addLayout(header)
         priv, pbox = _card(page)
         pbox.addWidget(_label("Privacy overlay", "cardTitle", priv))
         pbox.addWidget(_label("MajestyGuard covers your desktop while apps keep running. It is not the Windows lock screen: "
@@ -805,6 +811,8 @@ class ControlCenter(QMainWindow):
     def _set_reduced_motion(self, value):
         self.setProperty("ccReduceMotion", value)
         self._quick.setProperty("ccReduceMotion", value)
+        self._brand.set_busy(self._operation is not None)
+        self._quick.brand.set_busy(self._operation is not None)
         if value:
             self._tab_bar.select(self._nav[self.current_page()], False)
         if value:
@@ -1202,6 +1210,8 @@ class ControlCenter(QMainWindow):
             done(work())
             return
         self._operation = (_LIFECYCLE_WORKER.submit(work), done)
+        self._brand.set_busy(True)
+        self._quick.brand.set_busy(True)
         self._apply_lock_state(True)
         self._detail_label.setText(label)
         self._diagnostic_note.setText(label)
@@ -1220,6 +1230,8 @@ class ControlCenter(QMainWindow):
             return
         self._operation_poll.stop()
         self._operation = None
+        self._brand.set_busy(False)
+        self._quick.brand.set_busy(False)
         self._copy_diagnostics_button.setEnabled(True)
         try:
             result = future.result()

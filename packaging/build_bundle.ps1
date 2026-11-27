@@ -33,6 +33,7 @@ $InsightFaceModelDir = (Resolve-Path $InsightFaceModelDir).Path
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 $BundleRoot = Join-Path $OutputDir "MajestyGuard"
 $BuildRoot = Join-Path $Root "build\pyinstaller"
+. (Join-Path $PSScriptRoot "bundle_crt.ps1")
 
 function Require-File {
     param([string]$Path, [string]$Description)
@@ -43,9 +44,18 @@ function Require-File {
 
 function Invoke-PyInstaller {
     param([string[]]$Arguments)
-    & $PythonPath -m PyInstaller @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller failed with exit code $LASTEXITCODE."
+    $priorPythonPath = $env:PYTHONPATH
+    $priorBuildCrt = $env:MG_BUILD_CRT_DIR
+    try {
+        $env:PYTHONPATH = Join-Path $PSScriptRoot "build_runtime"
+        $env:MG_BUILD_CRT_DIR = $VCRedistDir
+        & $PythonPath -m PyInstaller @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "PyInstaller failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        $env:PYTHONPATH = $priorPythonPath
+        $env:MG_BUILD_CRT_DIR = $priorBuildCrt
     }
 }
 
@@ -77,6 +87,9 @@ function New-FrozenBundle {
         throw "Bundle directory is not empty. Pass a fresh -OutputDir to preserve previous builds."
     }
     New-Item -ItemType Directory -Force -Path $BundleRoot, $BuildRoot | Out-Null
+    $brandIcon = Join-Path $BuildRoot "majestyguard.ico"
+    & $PythonPath (Join-Path $Root "tools\render_brand_icon.py") $brandIcon
+    if ($LASTEXITCODE -ne 0) { throw "Could not render the MajestyGuard icon." }
 
     $commonArguments = @(
         "--noconfirm",
@@ -84,7 +97,8 @@ function New-FrozenBundle {
         "--paths", $Root,
         "--workpath", $BuildRoot,
         "--specpath", $BuildRoot,
-        "--distpath", $BundleRoot
+        "--distpath", $BundleRoot,
+        "--icon", $brandIcon
     )
 
     # Keep every executable in an onedir bundle. This avoids one-file archive
@@ -125,6 +139,7 @@ function New-FrozenBundle {
     ))
 }
 
+$VCRedistDir = @(Get-BundleCrtFiles -VCRedistDir $VCRedistDir)[0].DirectoryName
 if (-not $FinalizeExistingBundle) { New-FrozenBundle }
 
 $ControlCenter = Join-Path $BundleRoot "MajestyGuard\MajestyGuard.exe"
@@ -148,7 +163,13 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($CreateInstaller) {
     $installerDir = Join-Path $OutputDir "installer"
-    & $isccPath "/O$installerDir" "/DBundleRoot=$BundleRoot" (Join-Path $PSScriptRoot "MajestyGuard.iss")
+    $brandIcon = Join-Path $BuildRoot "majestyguard.ico"
+    if (-not (Test-Path -LiteralPath $brandIcon -PathType Leaf)) {
+        New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
+        & $PythonPath (Join-Path $Root "tools\render_brand_icon.py") $brandIcon
+        if ($LASTEXITCODE -ne 0) { throw "Could not render the installer icon." }
+    }
+    & $isccPath "/O$installerDir" "/DBundleRoot=$BundleRoot" "/DBrandIcon=$brandIcon" (Join-Path $PSScriptRoot "MajestyGuard.iss")
     if ($LASTEXITCODE -ne 0) {
         throw "Inno Setup failed with exit code $LASTEXITCODE."
     }

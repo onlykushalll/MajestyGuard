@@ -1,5 +1,4 @@
 """Painted building blocks for the Control Center (no business logic).
-
 Everything is drawn with QPainter so the window needs no image assets and stays
 crisp at any display scale. Colours come from the shared design tokens, so the
 Control Center, the lock overlay and the island read as one product.
@@ -11,6 +10,7 @@ import time
 from collections import deque
 
 from app.cc_theme import reduced_motion, theme_for
+from ui.brand import brand_icon as make_tray_icon
 
 from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, QTimer, pyqtProperty
 from PyQt6.QtGui import (
@@ -598,28 +598,3 @@ class EventMarker(QWidget):
         p.setPen(QPen(colour, 1.5))
         p.setBrush(colour if self._first else QColor(theme_for(self).bg))
         p.drawEllipse(QPointF(x, y), 3.1, 3.1)
-
-
-def make_tray_icon(accent_hex: str) -> QIcon:
-    """Crisp 64x64 vector shield/orb icon for the notification area."""
-    pixmap = QPixmap(64, 64)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    bg = QPainterPath()
-    bg.addRoundedRect(QRectF(4, 4, 56, 56), 16, 16)
-    painter.fillPath(bg, QColor("#0B0F17"))
-    painter.setPen(QPen(QColor(accent_hex), 2.5))
-    painter.drawPath(bg)
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(accent_hex))
-    painter.drawEllipse(QPointF(32, 32), 7.5, 7.5)
-    ring = QColor("#F2F4F8")
-    ring.setAlpha(210)
-    painter.setBrush(ring)
-    for idx in range(6):
-        angle = idx * 1.04719755
-        r = 15.5 * (1.0 if idx % 2 == 0 else 0.92)
-        painter.drawEllipse(QPointF(32 + r * math.cos(angle), 32 + r * math.sin(angle)), 2.4, 2.4)
-    painter.end()
-    return QIcon(pixmap)

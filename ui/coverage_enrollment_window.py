@@ -16,9 +16,14 @@ import os
 import time
 from typing import Optional
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen
-from PyQt6.QtWidgets import QApplication, QPushButton, QVBoxLayout, QLabel, QWidget
+from PyQt6.QtWidgets import QApplication, QPushButton, QStackedWidget, QVBoxLayout, QLabel, QWidget
+
+try:
+    from ui.brand import BrandTrace, brand_icon
+except ModuleNotFoundError:  # Direct source launch through the ui directory.
+    from brand import BrandTrace, brand_icon
 
 try:
     from fonts import ui_font as _ui_font
@@ -267,12 +272,26 @@ class CoverageEnrollmentWindow(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("MajestyGuard enrollment")
+        self.setWindowIcon(brand_icon())
+        local = os.environ.get("LOCALAPPDATA")
+        if local:
+            preferences = QSettings(os.path.join(local, "MajestyGuard", "appearance.ini"),
+                                    QSettings.Format.IniFormat)
+            self.setProperty("ccReduceMotion", preferences.value("reduceMotion", False, type=bool))
         self.setMinimumWidth(320)
         self.setStyleSheet("background:#0E1116;")
         self.finished = False
         self.last_feedback = None
 
         self.ring = CoverageRing(self)
+        self._visuals = QStackedWidget(self)
+        self._visuals.addWidget(self.ring)
+        prep = QWidget(self._visuals)
+        prep_box = QVBoxLayout(prep)
+        prep_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._load_mark = BrandTrace(prep, size=150)
+        prep_box.addWidget(self._load_mark)
+        self._visuals.addWidget(prep)
         self.title = QLabel("Look straight at the camera", self)
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setWordWrap(True)
@@ -301,7 +320,7 @@ class CoverageEnrollmentWindow(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(24, 20, 24, 20)
         lay.setSpacing(10)
-        lay.addWidget(self.ring, 1)
+        lay.addWidget(self._visuals, 1)
         lay.addWidget(self.title)
         lay.addWidget(self.hint)
         lay.addWidget(self.percent)
@@ -318,13 +337,23 @@ class CoverageEnrollmentWindow(QWidget):
 
     # ---- slots ----------------------------------------------------------------
 
+    def set_loading(self, loading: bool) -> None:
+        self._load_mark.set_busy(loading)
+        self._visuals.setCurrentIndex(int(loading))
+        if loading:
+            self.percent.clear()
+
     def set_preview(self, image) -> None:
         if not self.finished:
+            if self._visuals.currentIndex() != 0:
+                self.set_loading(False)
             self.ring.set_preview(image)
 
     def apply_feedback(self, fb) -> None:
         if self.finished:
             return
+        if self._visuals.currentIndex() != 0:
+            self.set_loading(False)
         self.last_feedback = fb
         self.ring.set_feedback(fb)
         self.percent.setText(f"{int(fb.progress * 100)}%" if fb.state != "calibrating" else "")
@@ -340,6 +369,7 @@ class CoverageEnrollmentWindow(QWidget):
 
     def show_result(self, ok: bool, message: str) -> None:
         self.finished = True
+        self.set_loading(False)
         self.ring.set_preview(None)
         self.title.setText("Face enrolled" if ok else "Enrollment not saved")
         self.hint.setText(message)

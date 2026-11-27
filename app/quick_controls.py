@@ -5,8 +5,9 @@ from PyQt6.QtCore import QEasingCurve, QPoint, QPropertyAnimation, QRect, QSize,
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from app.aperture import Aperture
-from app.cc_widgets import TransportButton, make_tray_icon
+from app.cc_widgets import TransportButton
 from app.cc_theme import reduced_motion
+from ui.brand import BrandTrace
 
 
 def popup_position(anchor: QRect, work: QRect, size: QSize) -> QPoint:
@@ -36,9 +37,8 @@ class QuickControls(QFrame):
         box.setContentsMargins(20, 16, 20, 14)
         box.setSpacing(10)
         header = QHBoxLayout()
-        mark = QLabel(self)
-        mark.setPixmap(make_tray_icon("#BCC8C5").pixmap(22, 22))
-        header.addWidget(mark)
+        self.brand = BrandTrace(self, size=28, ink="#718C9D")
+        header.addWidget(self.brand)
         header.addWidget(self._label("MajestyGuard", "brand"), 1)
         header.addWidget(self._label("Quick controls", "rowMeta"))
         box.addLayout(header)

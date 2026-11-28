@@ -9,8 +9,10 @@ from app.runtime import RuntimeStatus
 
 
 class PreviewSupervisor:
+    runtime_status = RuntimeStatus.STOPPED
+
     def status(self):
-        return RuntimeStatus.STOPPED
+        return self.runtime_status
 
     def enrollment_present(self):
         return True
@@ -32,14 +34,13 @@ def run() -> int:
         panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         panel.show()
         app.processEvents()
-        if panel.still.isNull() or not panel.movie.isValid() or panel.movie.frameCount() < 2:
-            return 5
-        if not _has_content(panel):
+        if not _has_content(panel) or not _has_content(panel.mark):
             return 5
         panel.finish()
         if panel.isVisible():
             return 6
-        center = ControlCenter(PreviewSupervisor(), settings_path)
+        supervisor = PreviewSupervisor()
+        center = ControlCenter(supervisor, settings_path)
         center.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         center._quick.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         center._refresh_timer.stop()
@@ -50,6 +51,14 @@ def run() -> int:
             return 1
         if not _has_content(center) or not _has_content(center._brand):
             return 2
+        supervisor.runtime_status = RuntimeStatus.RUNNING
+        center.refresh()
+        aperture = center._aperture
+        if (aperture._art_opacity != 1 or aperture._movie is None
+                or aperture._movie.frameCount() < 2 or not _has_content(aperture)):
+            return 8
+        supervisor.runtime_status = RuntimeStatus.STOPPED
+        center.refresh()
         center._quick.adjustSize()
         center._quick.show()
         app.processEvents()

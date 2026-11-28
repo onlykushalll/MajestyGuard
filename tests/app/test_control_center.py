@@ -831,6 +831,79 @@ def test_shutter_uses_only_explicit_live_capture_readings(qapp, tmp_path, monkey
             assert not aperture._travel.state().value
 
 
+def test_overview_plays_supplied_reel_only_while_visible_and_active(qapp, tmp_path, monkeypatch):
+    from PyQt6.QtGui import QMovie
+    from PyQt6.QtTest import QTest
+
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    sup = FakeSupervisor(RuntimeStatus.PAUSED)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view.show()
+    art = view._aperture
+    try:
+        assert art._movie is None
+        for status in (RuntimeStatus.STARTING, RuntimeStatus.RUNNING):
+            sup._status = status
+            view.refresh()
+            assert art._movie.isValid() and art._movie.frameCount() == 72
+            assert art._movie.state() == QMovie.MovieState.Running
+            assert art._movie.speed() == (100 if status is RuntimeStatus.STARTING else 75)
+            assert view._camera_caption.text() == "Not reported"
+            assert art.opening == 0
+            assert view._quick.aperture._movie is None
+        first = art._movie.currentFrameNumber()
+        view.refresh()
+        assert art._movie.currentFrameNumber() == first
+        QTest.qWait(160)
+        assert art._movie.currentFrameNumber() > first
+
+        view.show_page(1)
+        assert art._movie.state() == QMovie.MovieState.NotRunning
+        view.show_page(0)
+        assert art._movie.state() == QMovie.MovieState.Running
+        view._set_reduced_motion(True)
+        assert art._movie.state() == QMovie.MovieState.NotRunning
+        assert art._art_opacity == 1 and not art._still.isNull()
+        view._set_reduced_motion(False)
+        assert art._movie.state() == QMovie.MovieState.Running
+        sup._status = RuntimeStatus.PAUSED
+        view.refresh()
+        assert art._movie.state() == QMovie.MovieState.NotRunning
+        art._fade.setCurrentTime(art._fade.duration())
+        assert art._art_opacity == 0
+    finally:
+        view.hide()
+
+
+def test_resume_animates_while_worker_is_pending_then_recovers_on_failure(qapp, tmp_path, monkeypatch):
+    import threading
+    from PyQt6.QtGui import QMovie
+
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    release = threading.Event()
+    sup = FakeSupervisor(RuntimeStatus.PAUSED)
+
+    def resume():
+        release.wait(3)
+        return False
+
+    sup.resume = resume
+    view = ControlCenter(sup, tmp_path / "settings.json", async_actions=True)
+    view.show()
+    try:
+        view._primary_button.click()
+        assert view._operation is not None
+        assert view._aperture._movie.state() == QMovie.MovieState.Running
+        release.set()
+        view._operation[0].result(timeout=3)
+        view._complete_operation()
+        assert view._aperture._movie.state() == QMovie.MovieState.NotRunning
+        assert view.status_text() == "Protection paused"
+    finally:
+        release.set()
+        view.hide()
+
+
 def test_transport_icon_morphs_on_state_change_not_poll(qapp, tmp_path, monkeypatch):
     monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
     sup = FakeSupervisor(RuntimeStatus.PAUSED)

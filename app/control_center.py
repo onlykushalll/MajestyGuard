@@ -830,9 +830,8 @@ class ControlCenter(QMainWindow):
         self._quick.brand.set_busy(self._operation is not None)
         if value:
             self._tab_bar.select(self._nav[self.current_page()], False)
-        if value:
-            self._aperture._settle()
-            self._quick.aperture._settle()
+        self._aperture.sync_motion_preference()
+        self._quick.aperture.sync_motion_preference()
         self._appearance.setValue("reduceMotion", value)
         self._appearance.sync()
         if self._appearance.status() != QSettings.Status.NoError:
@@ -1069,6 +1068,9 @@ class ControlCenter(QMainWindow):
             self._tray.setIcon(make_tray_icon(color))
             self._tray_color = color
         self._enrolled = enrolled
+        artwork = ("starting" if status is RuntimeStatus.STARTING else
+                   "running" if status is RuntimeStatus.RUNNING else None)
+        self._aperture.set_protection_art(artwork if enrolled and not enrolling else None)
         # Keep supervision and command guards alive in the tray. The hidden window
         # need not scan log tails, rebuild timelines or poll process memory.
         if self.sender() is not self._refresh_timer or self.isVisible() or self._quick.isVisible():
@@ -1222,7 +1224,7 @@ class ControlCenter(QMainWindow):
         return f"{minutes} min" if not rest else f"{minutes} min {rest} s"
 
     # --------------------------------------------------------------- actions
-    def _run_lifecycle(self, label, work, done):
+    def _run_lifecycle(self, label, work, done, *, protection_start=False):
         if not self._async_actions:
             done(work())
             return
@@ -1231,6 +1233,11 @@ class ControlCenter(QMainWindow):
         self._quick.brand.set_busy(True)
         self._apply_lock_state(True)
         self._detail_label.setText(label)
+        if protection_start:
+            self._status_label.setText("Starting protection")
+            self._aperture.set_protection_art("starting")
+        else:
+            self._aperture.set_protection_art(None)
         self._diagnostic_note.setText(label)
         self._diagnostic_note.show()
         self._quick.note.setText(label)
@@ -1266,7 +1273,8 @@ class ControlCenter(QMainWindow):
         if self._refuse_while_locked():
             return
         self._run_lifecycle("Starting protection...", self._supervisor.start,
-                            lambda ok: self._result_note(ok, "Protection could not start. Check Diagnostics."))
+                            lambda ok: self._result_note(ok, "Protection could not start. Check Diagnostics."),
+                            protection_start=True)
 
     def apply_timeout_preset(self, seconds: int) -> None:
         if self._refuse_while_locked():
@@ -1377,7 +1385,8 @@ class ControlCenter(QMainWindow):
                                 lambda ok: self._result_note(ok, "Could not pause protection. Check Diagnostics."))
         elif status is RuntimeStatus.PAUSED:
             self._run_lifecycle("Resuming protection...", self._supervisor.resume,
-                                lambda ok: self._result_note(ok, "Protection could not resume. Check Diagnostics."))
+                                lambda ok: self._result_note(ok, "Protection could not resume. Check Diagnostics."),
+                                protection_start=True)
         else:
             self.start_protection()
             return

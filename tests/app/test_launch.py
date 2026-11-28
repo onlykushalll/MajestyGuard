@@ -2,8 +2,6 @@ import os
 import threading
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QMovie
-from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 from app import launch
@@ -19,52 +17,11 @@ def test_panel_animates_only_while_visible_and_dissolves(tmp_path, monkeypatch):
     panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     panel.show()
     app.processEvents()
-    assert panel.movie.isValid()
-    assert panel.movie.frameCount() == 72
-    assert panel.movie.state() == QMovie.MovieState.Running
-    first = panel.movie.currentImage()
-    assert not first.isNull()
-    assert panel.movie.loopCount() == -1
-    QTest.qWait(160)
-    assert panel.movie.currentFrameNumber() > 0
-    assert panel.movie.currentImage() != first
+    assert panel.mark._timer.isActive()
     panel.finish()
     assert panel.isVisible()
     panel._fade.setCurrentTime(panel._fade.duration())
-    assert not panel.isVisible()
-    assert panel.movie.state() == QMovie.MovieState.NotRunning
-
-
-def test_reduced_motion_shows_original_still_without_playing(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    monkeypatch.setenv("MG_UI_REDUCE_MOTION", "1")
-    panel = launch.LaunchPanel(tmp_path / "settings.json")
-    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    panel.show()
-    app.processEvents()
-    try:
-        assert panel.movie.state() == QMovie.MovieState.NotRunning
-        assert not panel.still.isNull()
-        assert not panel.mark.isVisible()
-    finally:
-        panel.finish()
-
-
-def test_missing_animation_uses_native_fallback(tmp_path, monkeypatch):
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance() or QApplication([])
-    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
-    monkeypatch.setattr(launch, "_LOADER_ART", tmp_path / "missing.webp")
-    panel = launch.LaunchPanel(tmp_path / "settings.json")
-    panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
-    panel.show()
-    app.processEvents()
-    try:
-        assert panel.still.isNull()
-        assert panel.mark.isVisible() and panel.mark._timer.isActive()
-    finally:
-        panel.hide()
+    assert not panel.isVisible() and not panel.mark._timer.isActive()
 
 
 def test_startup_paints_first_and_event_loop_stays_responsive_until_ready(tmp_path, monkeypatch):

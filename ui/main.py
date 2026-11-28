@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QObject, QSettings, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -254,9 +254,16 @@ def main() -> None:
         on_verify_requested=_request_verification,
         on_windows_lock_used=command_writer.windows_lock_used
     )
+    prefs_dir = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    prefs = QSettings(str(prefs_dir / "MajestyGuard" / "appearance.ini"), QSettings.Format.IniFormat)
+    def preferred_display():
+        prefs.sync()
+        return prefs.value("islandDisplay", "", type=str)
+
     widget = IslandWidget(
         on_verify_requested=_request_verification,
         on_overlay_dissolve=shield.dissolve if shield is not None else None,
+        preferred_display=preferred_display,
     )
     if shield is not None:
         widget.setParent(shield, widget.windowFlags())

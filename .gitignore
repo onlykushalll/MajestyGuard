@@ -16,6 +16,7 @@ models/*
 # Build output
 build/
 dist/
+release/
 obj/
 bin/
 
@@ -43,7 +44,7 @@ config.json
 !.env.example
 docs/MAJESTYGUARD_LIVE_TEST_REPORT_*.md
 
-# Local agent/operator state & AI traces
+# Local tool and operator state
 .agents/
 .claude/
 .codex/
@@ -73,7 +74,7 @@ MajestyGuard.CVEngine/
 logs/
 
 
-# AI & Session residue
+# Session residue
 *.handoff.md
 *SESSION_HANDOFF*
 # Secrets / key material (FIX-1, AUD-E repo hygiene)

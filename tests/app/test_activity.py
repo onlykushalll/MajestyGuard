@@ -44,6 +44,26 @@ def test_digest_matches_the_daemon_so_verification_agrees():
     assert activity._digest("0" * 64, body) == audit_log._digest("0" * 64, body)
 
 
+def test_profile_coverage_uses_only_kept_and_known_views(tmp_path, monkeypatch):
+    path = tmp_path / "embeddings_v2_meta.json"
+    path.touch()
+    monkeypatch.setattr(activity, "load_enrollment_metadata", lambda _: {
+        "profile": "continuous-coverage",
+        "selected_count": 4,
+        "bucket_counts": {"up": 12},
+        "selected_samples": [
+            {"angle": "center"}, {"angle": "right_wide"}, {"angle": "near"},
+            {"angle": "not a recognized angle"}, {"angle": ["bad"]},
+        ],
+    })
+
+    summary, coverage = activity.profile_overview(path)
+
+    assert summary == "4 templates | Coverage scan"
+    assert coverage == ("Head position: straight ahead, wide right", "Distance: near",
+                        "Light: not recorded separately")
+
+
 def test_intact_log_verifies_and_tampering_is_reported(tmp_path):
     path = _log(tmp_path, [("daemon_start", {"pid": 1}), ("soft_lock", {"reason": "idle"}), ("unlock_face", {})])
     ok, count, msg = activity.verify_integrity(path)

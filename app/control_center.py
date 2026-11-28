@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
     QBoxLayout,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -43,6 +44,7 @@ from app.cc_widgets import Dot, EventMarker, MemoryTrace, NavButton, Surface, Ta
 from app.config import load_settings
 from app.diagnostics import ResourceSampler, TimingSnapshot, format_ms, read_timing_snapshot
 from app.motion_preview import MotionPreview
+from app.recovery_practice import RecoveryPractice
 from app.quick_controls import QuickControls
 from app.runtime import RuntimeStatus
 from ui.brand import BrandTrace
@@ -199,6 +201,8 @@ class ControlCenter(QMainWindow):
         self._quitting = False
         self._about_dialog: QDialog | None = None
         self._motion_preview: MotionPreview | None = None
+        self._practice = None
+        self._release_watch = None
         self._pause_reminder_until: float | None = None
         self._pause_reminder_due = False
         self._touchpad_settings_button: QPushButton | None = None
@@ -390,6 +394,13 @@ class ControlCenter(QMainWindow):
         body.addSpacing(12)
         heading = QHBoxLayout()
         heading.addWidget(_label("Recent activity", "cardTitle", journal), 1)
+        self._history_visibility = QPushButton(journal)
+        self._history_visibility.setObjectName("link")
+        self._history_visibility.setCheckable(True)
+        self._history_visibility.setChecked(self._appearance.value("hideOverviewHistory", False, type=bool))
+        self._history_visibility.setToolTip("Hide unlock times and recent events on Overview only")
+        self._history_visibility.toggled.connect(self._toggle_history)
+        heading.addWidget(self._history_visibility)
         more = QPushButton("View all", journal)
         more.setObjectName("link")
         more.clicked.connect(lambda: self.show_page(_ACTIVITY_PAGE))
@@ -397,6 +408,7 @@ class ControlCenter(QMainWindow):
         body.addLayout(heading)
         self._recent_list = ActivityList(journal)
         body.addWidget(self._recent_list)
+        self._display_history_visibility()
         body.addStretch()
         split.addWidget(journal, 5)
         box.addLayout(split, 1)
@@ -416,6 +428,22 @@ class ControlCenter(QMainWindow):
         self._gallery_chip, self._lock_chip, self._perf_chip = values
         box.addLayout(footer)
         return page
+
+    def _display_history_visibility(self):
+        hidden = self._history_visibility.isChecked()
+        self._history_visibility.setText("Show history" if hidden else "Hide history")
+        self._recent_list.setVisible(not hidden)
+        self._stat_last.parentWidget().setVisible(not hidden)
+
+    def _toggle_history(self, hidden):
+        if self._controls_locked():
+            self._history_visibility.blockSignals(True)
+            self._history_visibility.setChecked(not hidden)
+            self._history_visibility.blockSignals(False)
+            return
+        self._appearance.setValue("hideOverviewHistory", hidden)
+        self._appearance.sync()
+        self._display_history_visibility()
 
     def _stat_card(self, parent: QWidget, row: QHBoxLayout, caption: str, page_index: int | None = None) -> QLabel:
         card, box = _card(parent, radius=20, margins=(20, 14, 20, 14), spacing=2)
@@ -511,6 +539,11 @@ class ControlCenter(QMainWindow):
         pause_box.addLayout(actions)
         box.addWidget(pause)
 
+        self._practice_button = QPushButton("Practice lock recovery", page)
+        self._practice_button.setObjectName("secondary")
+        self._practice_button.setToolTip("Try the overlay keys without turning on the camera or locking Windows")
+        self._practice_button.clicked.connect(self._open_practice)
+        box.addWidget(self._practice_button, 0, Qt.AlignmentFlag.AlignLeft)
         box.addStretch(1)
         self._mark_current_preset()
         return page
@@ -718,6 +751,11 @@ class ControlCenter(QMainWindow):
         self._camera_privacy_button.clicked.connect(self.open_camera_privacy_settings)
         self._camera_privacy_button.hide()
         cbox.addWidget(self._camera_privacy_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self._release_alert = QPushButton("Notify when camera is released", card)
+        self._release_alert.setObjectName("secondary")
+        self._release_alert.clicked.connect(self._toggle_release_watch)
+        self._release_alert.hide()
+        cbox.addWidget(self._release_alert, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(card)
 
         self._camera_meta = _label("", "rowMeta", card, True)
@@ -764,6 +802,32 @@ class ControlCenter(QMainWindow):
         box.addWidget(card, 1)
         return page
 
+    def _toggle_release_watch(self):
+        if self._refuse_while_locked():
+            return
+        cam = activity.read_camera_health(self._state_dir() / "camera_health.json")
+        running = self._supervisor.status() is RuntimeStatus.RUNNING
+        if self._release_watch is not None:
+            self._release_watch = None
+        elif running and cam and cam.capture_open is True and cam.status == "healthy" and cam.age_s < 60:
+            self._release_watch = (cam.updated_at, monotonic() + 900)
+        self._update_release_watch(cam, running)
+
+    def _update_release_watch(self, cam, running):
+        if self._release_watch is not None:
+            after, deadline = self._release_watch
+            if not running or monotonic() >= deadline:
+                self._release_watch = None
+            elif (cam and cam.status == "healthy" and cam.capture_open is False and cam.age_s < 60
+                  and cam.updated_at > after and not self._controls_locked()):
+                self._release_watch = None
+                self._tray.showMessage("MajestyGuard", "MajestyGuard has released the camera.")
+        waiting = self._release_watch is not None
+        self._release_alert.setVisible(waiting or bool(running and cam and cam.capture_open is True
+                                                       and cam.status == "healthy" and cam.age_s < 60))
+        self._release_alert.setText("Cancel release alert" if waiting else "Notify when camera is released")
+        self._release_alert.setToolTip("One notification in the next 15 minutes. Other apps may still be using the camera.")
+
     def _filter_activity(self, *_):
         query = self._activity_search.text().casefold().strip()
         alerts = self._alerts_only.isChecked()
@@ -796,6 +860,12 @@ class ControlCenter(QMainWindow):
         self._enroll_result = _label("", "detail", page, True)
         self._enroll_result.hide()
         box.addWidget(self._enroll_result)
+        coverage, coverage_box = _card(page)
+        coverage_box.addWidget(_label("Views in your saved profile", "cardTitle", coverage))
+        self._coverage_note = _label("", "detail", coverage, True)
+        coverage_box.addWidget(self._coverage_note)
+        self._coverage_card = coverage
+        box.addWidget(coverage)
         reset, reset_box = _card(page)
         reset_box.addWidget(_label("Replace face profile", "cardTitle", reset))
         reset_box.addWidget(_label("Use this if your existing profile no longer matches. "
@@ -961,8 +1031,57 @@ class ControlCenter(QMainWindow):
         self._preview_motion_button.clicked.connect(self.show_motion_preview)
         motion_box.addWidget(self._preview_motion_button, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(motion)
+        display, dbox = _card(page)
+        dbox.addWidget(_label("Dynamic Island display", "rowTitle", display))
+        self._display_choice = QComboBox(display)
+        self._display_choice.setAccessibleName("Dynamic Island display")
+        self._fill_displays()
+        self._display_choice.currentIndexChanged.connect(self._select_display)
+        QApplication.instance().screenAdded.connect(self._fill_displays)
+        QApplication.instance().screenRemoved.connect(self._fill_displays)
+        dbox.addWidget(self._display_choice, 0, Qt.AlignmentFlag.AlignLeft)
+        dbox.addWidget(_label("Applies when the Island next appears. If disconnected, it uses the primary display.",
+                              "detail", display, True))
+        box.addWidget(display)
         box.addStretch(1)
         return page
+
+    def _fill_displays(self, *_):
+        choice = self._display_choice
+        saved = self._appearance.value("islandDisplay", "", type=str)
+        choice.blockSignals(True)
+        try:
+            choice.clear()
+            choice.addItem("Follow primary display", "")
+            for index, screen in enumerate(QApplication.screens(), 1):
+                if screen.name():
+                    size = screen.size()
+                    choice.addItem(f"Display {index}: {screen.model() or screen.name()} ({size.width()} x {size.height()})",
+                                   screen.name())
+            if saved and choice.findData(saved) < 0:
+                choice.addItem("Preferred display (disconnected)", saved)
+            choice.setCurrentIndex(max(0, choice.findData(saved)))
+        finally:
+            choice.blockSignals(False)
+
+    def _select_display(self, _):
+        if self._refuse_while_locked():
+            self._fill_displays()
+            return
+        self._appearance.setValue("islandDisplay", self._display_choice.currentData())
+        self._appearance.sync()
+
+    def _open_practice(self):
+        if self._refuse_while_locked():
+            return
+        if self._practice is None:
+            self._practice = RecoveryPractice(self)
+            self._practice.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            self._practice.finished.connect(self._practice_closed)
+        self._practice.open()
+
+    def _practice_closed(self, _):
+        self._practice = None
 
     def _set_reduced_motion(self, value):
         self.setProperty("ccReduceMotion", value)
@@ -1103,9 +1222,13 @@ class ControlCenter(QMainWindow):
     # --------------------------------------------------------------- refresh
     def _apply_lock_state(self, locked: bool) -> None:
         for widget in (self._reenroll_btn, self._startover_btn, self._timeout_input,
-                       self._save_timeout_button, self._info_button, self._media_stop_switch, *self._preset_buttons):
+                       self._save_timeout_button, self._info_button, self._media_stop_switch,
+                       self._history_visibility, self._practice_button, self._display_choice,
+                       self._release_alert, *self._preset_buttons):
             widget.setEnabled(not locked)
         if locked:
+            if self._practice is not None:
+                self._practice.reject()
             if self._about_dialog is not None:
                 self._about_dialog.reject()
             if self._motion_preview is not None:
@@ -1129,7 +1252,9 @@ class ControlCenter(QMainWindow):
 
     def _refresh_telemetry_chips(self, enrolled: bool) -> str:
         state_dir = self._state_dir()
-        gallery = activity.gallery_summary(state_dir / "embeddings_v2_meta.json") if enrolled else "Not enrolled"
+        gallery, coverage = activity.profile_overview(state_dir / "embeddings_v2_meta.json") if enrolled else ("Not enrolled", ())
+        self._coverage_card.setVisible(enrolled)
+        self._coverage_note.setText("\n".join(coverage) or "No direction breakdown is available for this profile.")
         self._gallery_chip.setText(gallery)
 
         lock_file = state_dir / "lock_state.txt"
@@ -1232,6 +1357,9 @@ class ControlCenter(QMainWindow):
         if self.sender() is not self._refresh_timer or self.isVisible() or self._quick.isVisible():
             self._gallery_text = self._refresh_telemetry_chips(enrolled)
             self._refresh_pages()
+        elif self._release_watch is not None:
+            self._update_release_watch(activity.read_camera_health(self._state_dir() / "camera_health.json"),
+                                       status is RuntimeStatus.RUNNING)
         locked = self._controls_locked()
         self._apply_lock_state(locked)
         self._refresh_pause_controls(status, locked, enrolling)
@@ -1265,6 +1393,7 @@ class ControlCenter(QMainWindow):
 
         cam = activity.read_camera_health(state / "camera_health.json")
         running = self._operation is None and self._supervisor.status() is RuntimeStatus.RUNNING
+        self._update_release_watch(cam, running)
         parked = cam is not None and cam.capture_open is False and cam.status == "healthy"
         live = cam is not None and (cam.age_s < 60 or parked) and running
         self._camera_privacy_button.setVisible(bool(live and cam.status != "healthy" and cam.fault == "privacy_blocked"))

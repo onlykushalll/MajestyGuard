@@ -1,48 +1,36 @@
 # Privacy Policy
 
-MajestyGuard is designed as a local-first Windows security project. Its privacy goal is to protect the user's desktop session without sending biometric data to external services.
+**Last reviewed:** November 29, 2026
 
-## Summary
+This policy describes the MajestyGuard Windows desktop application in this repository. It is an operational description, not a claim of legal compliance or a promise that every future build will behave identically. Review the policy for each release.
 
-- Camera frames are processed on the local machine.
-- MajestyGuard does not intentionally upload camera frames, face embeddings, or biometric templates to cloud services.
-- Enrollment artifacts are intended to stay on the user's device and be protected with Windows user-profile security such as DPAPI.
-- Runtime logs should avoid storing raw camera frames or biometric templates.
+## Data Processed on This PC
 
-## Data Processed Locally
+When the relevant feature is used, MajestyGuard may process:
 
-MajestyGuard may process the following data on the user's own Windows device:
+- Live webcam frames for face detection, owner matching, and liveness checks.
+- Enrollment face embeddings and profile metadata, including selected view/coverage labels.
+- Local security events and diagnostic details such as timestamps, state changes, camera status, timing/resource measurements, and error information. Logs may reveal local paths or device/runtime details; review them before sharing.
+- Local settings needed to run the application.
 
-- webcam frames used for face detection, recognition, and liveness checks
-- face embeddings generated during enrollment
-- local confidence scores and liveness signals
-- local state-machine events such as scanning, active, locked, or suppressed-lock states
-- configuration required to run the local service, overlay, or CV engine
+Camera frames are processed in memory and are not intentionally saved as image or video files by the active application. Enrollment data and settings are stored on the device under the current Windows user profile. The face gallery is protected using Windows DPAPI in the active implementation; related metadata, settings, and diagnostic logs are separate files and should not be assumed to receive the same encryption. Anyone with access to the signed-in Windows account or a process running as that user may be able to access data available to that account.
 
-## Data Not Intentionally Collected Remotely
+MajestyGuard does not store Windows passwords or PINs. Never enter a Windows password into an untrusted prompt or share enrollment data, logs, or diagnostic bundles publicly.
 
-MajestyGuard does not intentionally send the following to project maintainers or third-party services:
+## Network and Third Parties
 
-- webcam images or video
-- biometric templates or face embeddings
-- passwords, PINs, or Windows credentials
-- browsing history
-- private documents
+The active application has no project-operated account, analytics, or telemetry service and does not intentionally transmit camera frames, face embeddings, or local diagnostics to project maintainers. The current installer is built from local model inputs and does not automatically download models. Windows, camera drivers, security software, and separately installed dependencies remain subject to their own behavior and policies.
 
-## Logs
+Future model-download or update features would change this description and must be documented before release. Model hashes verify file integrity against a reference; they do not establish license permission or guarantee model quality.
 
-Development builds may write diagnostic logs for debugging. Logs should be reviewed before being shared publicly because they may include local paths, timing information, machine state, or other operational details. Raw biometric data and camera frames should not be logged.
+## Retention and User Controls
 
-## User Control
+Enrollment files, settings, and logs remain on the local device until removed by the user or an uninstall option. Standard uninstall is intended to preserve user data unless the user explicitly chooses its removal. Back up or delete local data only through the documented application/uninstaller controls; do not manually remove files while protection is running.
 
-MajestyGuard's machine-level features are intended to be opt-in. Installation and uninstallation scripts should clearly describe system changes and provide a rollback path.
+## Shared Devices and Other People
 
-## Third-Party Components
-
-MajestyGuard depends on third-party open-source components such as .NET, Python packages, ONNX/runtime tooling, and Windows SDK components. Those components may have their own licenses and documentation.
+Use the camera only where you have appropriate permission. Tell people who may be in view that the camera is being used for local presence verification. Do not enroll another person or run a test against them without their informed agreement. Do not publish images, biometric data, or identifying logs.
 
 ## Contact
 
-Use the GitHub repository issue tracker for project questions and privacy-related concerns:
-
-the official project maintainers
+For general questions, use the [project repository](https://github.com/onlykushalll/MajestyGuard). Do not post biometric files, credentials, private logs, or detailed vulnerability information in a public issue. See [SECURITY.md](SECURITY.md) for security reports.

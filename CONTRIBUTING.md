@@ -1,73 +1,43 @@
-# Contributing to MajestyGuard
+# Contributing
 
-Thank you for contributing to MajestyGuard! This project implements local-first biometrics, Windows services, and lock-screen security integration, so contributions require diligence around security, performance, and platform safety.
+Thank you for considering a contribution. MajestyGuard handles camera input, biometric templates, and desktop input protection, so changes should be small, testable, and explicit about their security limits.
 
----
+## Before You Start
 
-## 🛠️ Developer Environment Setup
+- Open an issue to discuss substantial changes, especially changes to recognition, liveness, enrollment, IPC, overlay input, installation, or Windows lock behavior.
+- Do not include face images, embeddings, local logs, personal paths, credentials, signing keys, or model files in commits or issue attachments.
+- The repository license is proprietary and reserves rights. Ask the maintainer to confirm the licensing terms for a proposed contribution before submitting code; do not assume that public access or a pull request grants reuse rights.
+- Model weights and dependency artifacts may have separate licenses. Do not add them without verifying redistribution permission.
 
-MajestyGuard is divided into C#/.NET components (Core, Service, Overlay, Companion) and Python components (CVEngine).
+## Development Setup
 
-### Prerequisites
-* Windows 11
-* .NET SDK 8.0
-* Python 3.11
-* Visual Studio Build Tools (with C++ Desktop development workloads for Credential Provider compile tasks)
+Use Windows 11 and Python 3.11. Create an isolated environment and install dependencies from the hash-pinned lock file:
 
-### C# Setup & Build
-1. Open the solution in Visual Studio or build from CLI:
-   ```powershell
-   dotnet restore .\MajestyGuard.sln
-   dotnet build .\MajestyGuard.sln --configuration Debug
-   ```
-2. Run .NET Unit Tests:
-   ```powershell
-   dotnet test .\src\MajestyGuard.Tests\MajestyGuard.Tests.csproj
-   ```
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --require-hashes -r requirements.lock.txt
+python -m pip install -r packaging\requirements-build.txt
+```
 
-### Python CVEngine Setup
-1. Create and activate a Python virtual environment under the CVEngine directory:
-   ```powershell
-   cd src\MajestyGuard.CVEngine
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
-2. Run Python Unit Tests:
-   ```powershell
-   # From repository root (with virtual environment active)
-   pytest daemon/
-   ```
+Run focused tests while iterating, then the full supported suite:
 
----
+```powershell
+python -m pytest tests\app\test_control_center.py -q
+python -m pytest tests daemon -q --tb=short
+```
 
-## 📐 Coding Style Standards
+Some Windows camera, input-hook, installer, and lock behavior cannot be established by offscreen or unit tests. Do not enable real Windows locking or install startup tasks on a daily-use PC during automated tests. Document any live-device steps and their recovery route.
 
-### Python (CVEngine / Daemon / UI)
-* Follow **PEP 8** style guidelines.
-* Maintain clean variable and function naming conventions (use `snake_case`).
-* Use type hints for all public functions where possible.
-* Use `black` and `flake8` for linting before submitting pull requests.
+## Change Expectations
 
-### C# / .NET
-* Follow standard **Microsoft C# Coding Conventions**.
-* Use PascalCase for class and method names, camelCase for local variables, and `_camelCase` for private fields.
-* Ensure code is cleanly formatted using standard Visual Studio rules (`dotnet format`).
+- Keep camera ownership and security decisions in the daemon; UI code must not grant access on its own.
+- Preserve explicit fallback to Windows sign-in. Never describe the soft-lock as Secure Desktop.
+- Avoid network access for biometric data, telemetry, or remote decisions.
+- Add focused regression tests for behavior changes. Do not lower recognition or liveness thresholds to make tests pass.
+- Keep generated installers, bundles, test captures, local state, and signing material out of commits.
+- Describe observed behavior accurately; distinguish automated checks from physical-device validation.
 
----
+## Pull Requests
 
-## 🚀 Pull Request Guidelines
-
-Before opening a pull request, please run all unit tests and ensure your code complies with local development guidelines.
-
-### PR Requirements
-1. **No telemetry/remote logging**: MajestyGuard is built to keep all biometric and authentication data strictly local. Do not add cloud uploading or external API requests for private data.
-2. **No committed biometric data**: Never commit face embeddings, local logs, or personal photos to Git. Use the test stubs and mock faces in existing unit tests.
-3. **No hardcoded secrets**: Ensure no personal configuration secrets or passwords are left in source code or local settings files.
-4. **Matched Installers**: Changes to installation paths or scripts must maintain matching uninstall/cleanup tasks.
-
-### Checklist
-- [ ] Code compiles and builds cleanly.
-- [ ] All C# and Python tests pass.
-- [ ] Code styles match standards (PEP-8, Microsoft C# standards).
-- [ ] Security boundaries (DPAPI configurations, file permissions) are not weakened.
+Summarize the user-visible and security impact, list tests actually run, and identify untested Windows-specific behavior. Include only source, tests, and documentation needed for the change.

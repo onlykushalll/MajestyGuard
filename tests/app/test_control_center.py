@@ -1,9 +1,12 @@
+import json
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication
 
 import app.control_center as control_center_module
@@ -67,6 +70,65 @@ def test_control_center_start_action_starts_stopped_supervisor(qapp, tmp_path):
     assert supervisor.start_calls == 1
     assert view.status_text() == "Protection running"
     view.close()
+
+
+def test_hide_overview_history_persists_without_touching_the_log(qapp, tmp_path):
+    path = tmp_path / "settings.json"
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.STOPPED), path)
+    history = tmp_path / "audit.log"
+    history.write_text("local records", encoding="utf-8")
+    view._history_visibility.click()
+    assert view._recent_list.isHidden() and view._stat_last.parentWidget().isHidden()
+    assert history.read_text(encoding="utf-8") == "local records"
+    reopened = ControlCenter(FakeSupervisor(RuntimeStatus.STOPPED), path)
+    assert reopened._history_visibility.isChecked()
+    reopened._history_visibility.click()
+    assert not reopened._recent_list.isHidden()
+
+
+def test_practice_space_and_two_tabs_never_change_protection(qapp, tmp_path):
+    supervisor = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(supervisor, tmp_path / "settings.json")
+    view._open_practice()
+    practice = view._practice
+    QTest.keyClick(practice.pad, Qt.Key.Key_Space)
+    assert "Simulated: camera unavailable" in practice.note.text()
+    QTest.keyClick(practice.pad, Qt.Key.Key_Tab)
+    assert practice.gate.armed
+    QTest.keyClick(practice.pad, Qt.Key.Key_Tab)
+    assert "Practice complete" in practice.note.text()
+    assert not practice.gate.armed
+    assert supervisor.start_calls == supervisor.stop_calls == 0
+    practice.reject()
+
+
+def test_camera_release_alert_requires_a_fresh_closed_snapshot_and_only_fires_once(qapp, tmp_path, monkeypatch):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.RUNNING), tmp_path / "settings.json")
+    notices = []
+    monkeypatch.setattr(view._tray, "showMessage", lambda *args: notices.append(args))
+    snapshot = tmp_path / "camera_health.json"
+    stamp = time.time() - 1
+    def report(updated, opened):
+        snapshot.write_text(json.dumps({"updated_at": updated, "capture_open": opened}), encoding="utf-8")
+        view.refresh()
+    report(stamp, True)
+    view._release_alert.click()
+    assert view._release_watch is not None
+    report(stamp, False)
+    assert not notices
+    report(stamp + 0.5, False)
+    view.refresh()
+    assert len(notices) == 1
+    assert view._release_watch is None
+
+
+def test_disconnected_island_display_preference_is_preserved(qapp, tmp_path):
+    view = ControlCenter(FakeSupervisor(RuntimeStatus.STOPPED), tmp_path / "settings.json")
+    view._appearance.setValue("islandDisplay", "disconnected")
+    view._fill_displays()
+    assert view._display_choice.currentData() == "disconnected"
+    view._display_choice.setCurrentIndex(0)
+    assert view._appearance.value("islandDisplay", "", type=str) == ""
 
 
 def test_pause_reminder_only_arms_on_success_and_never_resumes(qapp, tmp_path, monkeypatch):

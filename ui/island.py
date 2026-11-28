@@ -94,8 +94,10 @@ _PILL_FADE_MS = 400
 class IslandWidget(QWidget):
     """Frameless top-center pill widget."""
 
-    def __init__(self, on_verify_requested=None, on_overlay_dissolve=None):
+    def __init__(self, on_verify_requested=None, on_overlay_dissolve=None, preferred_display=None):
         super().__init__()
+        self._preferred_display = preferred_display
+        self._display_name = ""
         self._state: IslandState = get_state("idle")
         self._on_verify_requested = on_verify_requested
         self._on_overlay_dissolve = on_overlay_dissolve
@@ -151,7 +153,7 @@ class IslandWidget(QWidget):
 
         self._setup_window()
         self._setup_timers()
-        self._reposition()
+        self._read_display()
 
     def _setup_window(self) -> None:
         self.setWindowFlags(
@@ -170,9 +172,19 @@ class IslandWidget(QWidget):
 
         app = QApplication.instance()
         if app is not None:
-            primary = QApplication.primaryScreen()
-            if primary is not None:
-                primary.geometryChanged.connect(lambda *_: self._reposition())
+            for screen in app.screens():
+                self._watch_screen(screen)
+            app.screenAdded.connect(self._watch_screen)
+            app.screenRemoved.connect(self._reposition)
+            app.primaryScreenChanged.connect(self._reposition)
+
+    def _watch_screen(self, screen):
+        screen.geometryChanged.connect(self._reposition)
+        self._reposition()
+
+    def _read_display(self):
+        self._display_name = self._preferred_display() if self._preferred_display else ""
+        self._reposition()
 
     def _route_pointer(self, state_name):
         interactive = state_name in _VERIFY_REQUEST_STATES and self._on_verify_requested is not None
@@ -206,6 +218,8 @@ class IslandWidget(QWidget):
         self._welcome_dwell_timer.timeout.connect(self._begin_pill_fade)
 
     def apply_state(self, state: IslandState) -> None:
+        if state.name != "idle" and self._state.name == "idle":
+            self._read_display()
         if state.name == "idle":
             if self._state.name == "idle" and self.isHidden():
                 return
@@ -680,8 +694,9 @@ class IslandWidget(QWidget):
 
     # ── Layout ──────────────────────────────────────────────────────────
 
-    def _reposition(self) -> None:
-        screen = QApplication.primaryScreen()
+    def _reposition(self, *_) -> None:
+        screen = next((s for s in QApplication.screens() if self._display_name
+                       and s.name() == self._display_name), None) or QApplication.primaryScreen()
         if screen is None:
             return
         sg = screen.geometry()

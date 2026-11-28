@@ -22,29 +22,52 @@ _TAIL_BYTES = 96 * 1024
 
 
 def gallery_summary(path: Path) -> str:
+    return profile_overview(path)[0]
+
+
+def profile_overview(path: Path) -> tuple[str, tuple[str, ...]]:
     try:
         stamp = path.stat()
-        return _gallery_summary_at(path, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino)
+        return _profile_at(path, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino)
     except (OSError, ValueError):
-        return "Enrolled"
+        return "Enrolled", ()
 
 
 @lru_cache(maxsize=4)
-def _gallery_summary_at(path: Path, mtime: int, size: int, inode: int) -> str:
+def _profile_at(path: Path, mtime: int, size: int, inode: int) -> tuple[str, tuple[str, ...]]:
     if size > 1_048_576:
-        return "Enrolled"
+        return "Enrolled", ()
     try:
         meta = load_enrollment_metadata(path)
     except (OSError, ValueError, RecursionError):
-        return "Enrolled"
+        return "Enrolled", ()
     count = meta.get("selected_count")
     if type(count) is not int or count <= 0:
-        return "Enrolled"
+        return "Enrolled", ()
     label = {"continuous-coverage": "Coverage scan", "robust": "Robust", "quick": "Quick",
              "real-life": "Real-life"}
     profile = meta.get("profile")
     mode = label.get(profile) if isinstance(profile, str) else None
-    return f"{count} {'template' if count == 1 else 'templates'}" + (f" | {mode}" if mode else "")
+    summary = f"{count} {'template' if count == 1 else 'templates'}" + (f" | {mode}" if mode else "")
+    samples = meta.get("selected_samples")
+    if profile != "continuous-coverage" or not isinstance(samples, list):
+        return summary, ()
+    kept = {s["angle"] for s in samples if isinstance(s, dict) and isinstance(s.get("angle"), str)}
+    groups = {
+        "Head position": ("center", "left_mild", "left_wide", "right_mild", "right_wide",
+                          "up", "down", "up_left", "up_right", "down_left", "down_right", "tilt_left", "tilt_right"),
+        "Distance": ("near", "far"), "Light": ("dim", "bright"),
+    }
+    if not any(kept.intersection(keys) for keys in groups.values()):
+        return summary, ()
+    def describe(key):
+        return {"center": "straight ahead", "left_mild": "slight left", "right_mild": "slight right",
+                "left_wide": "wide left", "right_wide": "wide right"}.get(key, key.replace("_", " "))
+    lines = []
+    for title, keys in groups.items():
+        names = ", ".join(describe(k) for k in keys if k in kept)
+        lines.append(f"{title}: {names or 'not recorded separately'}")
+    return summary, tuple(lines)
 
 # event -> (headline, tone). Tone drives the dot colour: ok | info | warn | bad.
 _EVENTS = {
@@ -231,6 +254,7 @@ class CameraInfo:
     age_s: float
     capture_open: Optional[bool] = None
     fault: str = ""
+    updated_at: float = 0.0
 
 
 def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[CameraInfo]:
@@ -257,7 +281,8 @@ def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[Came
             events=tuple(str(e) for e in events[-6:]),
             age_s=max(0.0, (time.time() if now is None else now) - updated) if updated else 1e9,
             capture_open=data.get("capture_open") if isinstance(data.get("capture_open"), bool) else None,
-                fault=data.get("fault") if isinstance(data.get("fault"), str) else "",
+            fault=data.get("fault") if isinstance(data.get("fault"), str) else "",
+            updated_at=updated,
         )
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return None

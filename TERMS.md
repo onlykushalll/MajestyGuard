@@ -1,38 +1,27 @@
-# Terms of Service — MajestyGuard
+# MajestyGuard Use Terms and Limitations
 
-**Last Updated:** September 7, 2026
+**Last reviewed:** November 29, 2026
 
-Please read these Terms of Service ("Terms") carefully before installing or utilizing MajestyGuard ("the Software"). By installing the Windows service or running the companion application, you agree to these Terms.
+These notes describe the intended use and limitations of this project. They do not replace or broaden the rights in [LICENSE.md](LICENSE.md). Third-party libraries, model files, and other bundled components may have separate terms that apply to them.
 
----
+## Experimental Software
 
-## 1. Description of Service & Physical Security Limits
+MajestyGuard is an actively developed experimental application. It has not been certified as a security product and is not guaranteed to detect every absence, stranger, spoof, camera failure, or input path. Recognition can fail or take longer depending on the camera, lighting, pose, device load, and enrollment quality. False accepts and false rejects are possible.
 
-MajestyGuard provides automated workstation presence verification and bystander detection:
-- **Physical Detection Limits:** The software relies on the field of view, lighting conditions, and resolution of your connected camera hardware. It cannot detect individuals outside the camera's optical range or under severe backlighting.
-- **Not a Physical Access Barrier:** MajestyGuard is a software-based workstation lock manager. It does not replace physical room security, biometric door access controls, or user vigilance.
+The overlay is a user-space layer over an already signed-in Windows session. It is not equivalent to Windows Secure Desktop and cannot guarantee that another process or a sufficiently privileged user cannot bypass it. Keep Windows sign-in, device security, and the Windows lock screen enabled. Use **Win+L** when leaving the PC unattended. Do not rely on MajestyGuard as the only barrier protecting confidential work.
 
----
+## Responsible Use
 
-## 2. Permitted Use & Surveillance Disclosures
+Use the software only on a device you own or are authorized to administer. Obtain appropriate agreement before enrolling another person or using a camera where other people may be captured. Do not use the software to secretly monitor people or to make consequential decisions about them.
 
-- You may use MajestyGuard for personal, commercial, and enterprise workstation security.
-- You agree to comply with all applicable workplace privacy and surveillance laws regarding camera operation in shared or public environments.
+Review system prompts and the installer before proceeding. Do not disable Windows security features to run a build. Keep backups of important data and maintain a usable Windows sign-in method in case the camera or app fails.
 
----
+## License and Third-Party Materials
 
-## 3. Disclaimer of Warranties
+The repository license is currently proprietary and reserves rights; public visibility on GitHub does not itself grant permission to copy, modify, redistribute, or commercially use the project. See [LICENSE.md](LICENSE.md). Obtain model files only from sources whose terms permit your intended use. MajestyGuard does not grant rights to third-party models or dependencies.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF UNINTERRUPTED PRESENCE TRACKING OR ABSOLUTE IMMUNITY FROM UNAUTHORIZED WORKSTATION VIEWING.
+## No Warranty or Security Guarantee
 
----
+The software and documentation are provided as-is, without a promise of uninterrupted operation, accurate recognition, attack prevention, or suitability for a particular purpose. Keep an independent recovery path to Windows. This statement is not legal advice; obtain qualified advice for legal questions about distribution or deployment.
 
-## 4. Limitation of Liability
-
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY SECURITY BREACHES, DATA LOSS, UNINTENDED WORKSTATION LOCKOUTS, OR WORKPLACE DISPUTES ARISING OUT OF THE OPERATION OF THIS SOFTWARE.
-
----
-
-## 5. License
-
-MajestyGuard is open-source software licensed under the MIT License.
+MajestyGuard is an independent project and is not affiliated with Microsoft, Apple, or the makers of any camera or biometric model. Product and company names are used only to describe compatibility or inspiration where relevant.

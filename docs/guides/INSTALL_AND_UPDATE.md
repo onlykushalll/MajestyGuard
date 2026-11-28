@@ -16,11 +16,13 @@ your own device.
 
 ## Signing and Windows Protection
 
-Until the project has trusted code signing, local release builds are unsigned.
-Windows reputation checks or Smart App Control can warn about, or block,
-unsigned unknown software. Treat that as a safety boundary: install only a build
-you produced or received from a source you trust. This guide does not provide
-instructions to bypass Windows protections.
+The project has no production-supported release or publicly trusted publisher
+certificate. A local build may carry a self-issued development signature; that
+does not establish a publicly trusted publisher identity. Windows reputation
+checks or Smart App Control may warn about or block experimental software.
+Treat this as a safety boundary: install only a build you produced or received
+from a source you trust, verify its published hash, and do not bypass Windows
+protections to run it.
 
 ## Daily Use
 
@@ -64,3 +66,11 @@ been recorded on the intended device:
 
 These physical checks cannot be replaced by automated tests because camera,
 lighting, placement, and real presentation attacks are device-specific.
+
+## Current Release Limits
+
+The installer currently packages model files supplied to the local build; it
+does not download models from the web. A future downloader must use authorized
+sources, pinned versions, and verified hashes, and must document model licenses
+before release. Installer upgrade behavior also requires a successful test in
+a disposable Windows account or VM before claiming it as validated.

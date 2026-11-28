@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="1024" height="1024" fill="none">
+  <!-- MajestyGuard Straightened Geometric MG Monogram (Zero Wobble, Optically Balanced) -->
+  <g transform="translate(2 -1)" stroke="#111418" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Stroke 1: Dead-straight vertical M stem, crisp diagonal valley, continuous smooth arch -->
+    <path d="M 40 162 L 40 38 L 82 88 C 100 26 154 18 156 84" />
+    <!-- Stroke 2: Intentional hinge gap -> symmetric G cradle -> dead-straight horizontal crossbar -->
+    <path d="M 82 108 L 82 126 C 82 150 97 164 119 164 C 141 164 156 150 156 126 L 156 114 L 120 114" />
+  </g>
+</svg>

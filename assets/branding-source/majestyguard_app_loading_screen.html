@@ -1,0 +1,2035 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="obsidian">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>MajestyGuard — Dynamic Logo Loading Screen</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0D1013;
+      --surface: rgba(18, 23, 28, 0.78);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #F5F6F3;
+      --muted: rgba(245, 246, 243, 0.62);
+      --accent: #82F2CB;
+      --accent2: #0A84FF;
+    }
+
+    html[data-theme="glass"] {
+      --bg: #EBF0FA;
+      --surface: rgba(255, 255, 255, 0.74);
+      --border: rgba(20, 26, 42, 0.14);
+      --text: #141A2A;
+      --muted: rgba(20, 26, 42, 0.62);
+      --accent: #0A84FF;
+      --accent2: #7A5AF8;
+    }
+
+    html[data-theme="swiss"] {
+      --bg: #F4F2EC;
+      --surface: rgba(244, 242, 236, 0.86);
+      --border: rgba(16, 18, 24, 0.18);
+      --text: #101218;
+      --muted: rgba(16, 18, 24, 0.62);
+      --accent: #1B3BFF;
+      --accent2: #FF3B30;
+    }
+
+    * {
+      box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+      user-select: none;
+    }
+
+    #stage {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      cursor: crosshair;
+      touch-action: none;
+    }
+
+    /* Minimal Top Floating Pill (Brand + Live Beat Badge + Sound Trigger) */
+    .top-bar {
+      position: fixed;
+      top: 14px;
+      left: 16px;
+      right: 16px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      pointer-events: none;
+    }
+
+    .pill {
+      pointer-events: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: var(--text);
+      transition: transform 0.18s ease, border-color 0.2s ease, opacity 0.2s ease;
+    }
+
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 10px var(--accent);
+    }
+
+    .btn-chip {
+      pointer-events: auto;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      color: var(--text);
+      transition: transform 0.15s ease, background 0.2s ease, border-color 0.2s ease;
+    }
+
+    .btn-chip:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+    }
+
+    .btn-chip:active {
+      transform: scale(0.96);
+    }
+
+    .btn-chip.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #091114;
+    }
+
+    html[data-theme="glass"] .btn-chip.active,
+    html[data-theme="swiss"] .btn-chip.active {
+      color: #FFFFFF;
+    }
+
+    /* Razor-Thin Director Dock at Bottom */
+    .dock-wrap {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: 12px;
+      z-index: 12;
+      display: flex;
+      justify-content: center;
+      pointer-events: none;
+    }
+
+    .dock {
+      pointer-events: auto;
+      width: 100%;
+      max-width: 980px;
+      padding: 10px 14px 10px 14px;
+      border-radius: 18px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      opacity: 0.88;
+      transition: opacity 0.25s ease;
+    }
+
+    .dock:hover {
+      opacity: 1;
+    }
+
+    /* Timeline Scrubber */
+    .scrubber-hit {
+      position: relative;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      touch-action: none;
+    }
+
+    .scrubber-rail {
+      position: relative;
+      width: 100%;
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(128, 138, 152, 0.28);
+    }
+
+    .scrubber-fill {
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 0%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      pointer-events: none;
+    }
+
+    .scrubber-knob {
+      position: absolute;
+      top: 50%;
+      left: 0%;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--text);
+      border: 2px solid var(--accent);
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 10px var(--accent);
+      pointer-events: none;
+    }
+
+    .chapter-pip {
+      position: absolute;
+      top: -3px;
+      width: 2px;
+      height: 10px;
+      border-radius: 2px;
+      background: var(--muted);
+      opacity: 0.65;
+      pointer-events: none;
+    }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .seg {
+      display: inline-flex;
+      padding: 2px;
+      border-radius: 999px;
+      background: rgba(128, 138, 152, 0.14);
+      border: 1px solid var(--border);
+      gap: 2px;
+    }
+
+    .seg button {
+      cursor: pointer;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      padding: 5px 10px;
+      border-radius: 999px;
+      transition: all 0.16s ease;
+    }
+
+    .seg button.active {
+      background: var(--text);
+      color: var(--bg);
+    }
+
+    .icon-btn {
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(128, 138, 152, 0.12);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      transition: all 0.15s ease;
+    }
+
+    .icon-btn:hover {
+      border-color: var(--accent);
+    }
+
+    .icon-btn.primary {
+      background: var(--text);
+      color: var(--bg);
+      border-color: var(--text);
+    }
+
+    .smpte {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text);
+      min-width: 112px;
+    }
+
+    .smpte span {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .toast {
+      position: fixed;
+      top: 60px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-8px);
+      z-index: 30;
+      padding: 8px 16px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--accent);
+      color: var(--text);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      backdrop-filter: blur(14px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.25s ease, transform 0.25s ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    @media (max-width: 680px) {
+      .hide-sm { display: none !important; }
+      .dock { padding: 8px 10px; border-radius: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="stage" aria-label="MajestyGuard Dynamic Logo Loading Screen"></canvas>
+
+  <!-- Top Telemetry Pill & Audio Toggle -->
+  <div class="top-bar">
+    <div class="pill">
+      <span class="pill-dot"></span>
+      <span id="beatBadge">BEAT 01 // APERTURE IGNITION</span>
+    </div>
+    <div style="display:flex; gap:6px; align-items:center;">
+      <button id="soundBtn" class="btn-chip" type="button" title="Toggle Procedural SFX (M)">
+        <span id="soundLabel">CLICK FOR SOUND</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast" role="status" aria-live="polite">READY</div>
+
+  <!-- Bottom Director Dock -->
+  <div class="dock-wrap">
+    <div class="dock">
+      <div id="scrubberHit" class="scrubber-hit" role="slider" aria-label="Animation timeline" aria-valuemin="0" aria-valuemax="6.80" aria-valuenow="0">
+        <div class="scrubber-rail">
+          <div id="scrubberFill" class="scrubber-fill"></div>
+          <div id="chapterPips"></div>
+          <div id="scrubberKnob" class="scrubber-knob"></div>
+        </div>
+      </div>
+
+      <div class="controls-row">
+        <div class="ctrl-group">
+          <button id="playBtn" class="icon-btn primary" type="button" title="Play / Pause (Space)">❚❚</button>
+          <button id="replayBtn" class="icon-btn" type="button" title="Replay from 0.00s (R)">↺ REPLAY</button>
+          <div id="smpte" class="smpte">00:00:00 <span>/ 00:06:24</span></div>
+        </div>
+
+        <div class="ctrl-group">
+          <div class="seg" role="group" aria-label="Animation Mode">
+            <button id="modeIntro" class="active" type="button">INTRO REEL</button>
+            <button id="modeLoader" type="button">APP LOADER</button>
+          </div>
+
+          <div class="seg" role="group" aria-label="Color Theme">
+            <button data-theme-btn="obsidian" class="active" type="button">OBSIDIAN</button>
+            <button data-theme-btn="glass" type="button">GLASS</button>
+            <button data-theme-btn="swiss" type="button">SWISS</button>
+          </div>
+        </div>
+
+        <div class="ctrl-group hide-sm">
+          <button id="exportSvgBtn" class="icon-btn" type="button" title="Download clean straightened transparent MG.svg">↓ MG.SVG</button>
+          <button id="exportPngBtn" class="icon-btn" type="button" title="Download crisp 1024x1024 transparent MG.png">↓ MG.PNG</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      /* =========================================================================
+         1. EXACT STRAIGHTENED GEOMETRIC MG MONOGRAM (200x200 SPACE, ZERO WOBBLE)
+         ========================================================================= */
+      const MG_STROKE_W = 14.5;
+      const MG_PATH_1_SVG = "M 36 162 L 36 42 L 78 90 C 98 44 144 34 152 88";
+      const MG_PATH_2_SVG = "M 78 106 C 78 148 93 164 115 164 C 138 164 152 146 152 114 L 116 114";
+
+      // High-density arclength-parameterized polyline sampler for 3D projection & comet tracing
+      function sampleLine(x0, y0, x1, y1, steps) {
+        const pts = [];
+        for (let i = 0; i <= steps; i++) {
+          const u = i / steps;
+          pts.push({ x: x0 + (x1 - x0) * u, y: y0 + (y1 - y0) * u });
+        }
+        return pts;
+      }
+
+      function sampleCubic(x0, y0, cx1, cy1, cx2, cy2, x1, y1, steps) {
+        const pts = [];
+        for (let i = 1; i <= steps; i++) {
+          const u = i / steps;
+          const m = 1 - u;
+          const x = m * m * m * x0 + 3 * m * m * u * cx1 + 3 * m * u * u * cx2 + u * u * u * x1;
+          const y = m * m * m * y0 + 3 * m * m * u * cy1 + 3 * m * u * u * cy2 + u * u * u * y1;
+          pts.push({ x, y });
+        }
+        return pts;
+      }
+
+      function buildArcLengthTable(rawPts) {
+        // Center around (100, 100) with optical centering offset (+6, +1.5)
+        const centered = rawPts.map((p) => ({ x: p.x + 6 - 100, y: p.y + 1.5 - 100 }));
+        const dists = [0];
+        let total = 0;
+        for (let i = 1; i < centered.length; i++) {
+          total += Math.hypot(centered[i].x - centered[i - 1].x, centered[i].y - centered[i - 1].y);
+          dists.push(total);
+        }
+        return { pts: centered, dists, total };
+      }
+
+      function sampleTable(tbl, u) {
+        const clamped = Math.max(0, Math.min(1, u));
+        const target = clamped * tbl.total;
+        let lo = 0;
+        let hi = tbl.dists.length - 1;
+        while (lo < hi - 1) {
+          const mid = (lo + hi) >> 1;
+          if (tbl.dists[mid] <= target) lo = mid;
+          else hi = mid;
+        }
+        const span = Math.max(1e-6, tbl.dists[hi] - tbl.dists[lo]);
+        const frac = (target - tbl.dists[lo]) / span;
+        const a = tbl.pts[lo];
+        const b = tbl.pts[hi];
+        return { x: a.x + (b.x - a.x) * frac, y: a.y + (b.y - a.y) * frac };
+      }
+
+      const STROKE_1 = buildArcLengthTable(
+        sampleLine(36, 162, 36, 42, 34)
+          .concat(sampleLine(36, 42, 78, 90, 26).slice(1))
+          .concat(sampleCubic(78, 90, 98, 44, 144, 34, 152, 88, 52))
+      );
+
+      const STROKE_2 = buildArcLengthTable(
+        sampleCubic(78, 106, 78, 148, 93, 164, 115, 164, 42)
+          .concat(sampleCubic(115, 164, 138, 164, 152, 146, 152, 114, 34))
+          .concat(sampleLine(152, 114, 116, 114, 24).slice(1))
+      );
+
+      /* =========================================================================
+         2. AUTHENTIC MAJESTYGUARD THEMES (FROM app/cc_theme.py & ui/glass.py)
+         ========================================================================= */
+      const THEMES = {
+        obsidian: {
+          name: "Obsidian Mint",
+          dark: true,
+          bgA: "#0B0E11",
+          bgB: "#151C22",
+          grid: "rgba(211, 236, 227, 0.055)",
+          ink: "#F5F6F3",
+          extrude: "#222E37",
+          extrudeEdge: "#3E5361",
+          accent: "#82F2CB",
+          accent2: "#0A84FF",
+          accent3: "#FF453A",
+          bladeA: "#4E5D68",
+          bladeB: "#1B232A",
+          bladeRim: "rgba(210, 232, 245, 0.34)",
+          islandBg: "rgba(4, 7, 10, 0.90)",
+          islandBorder: "rgba(130, 242, 203, 0.34)",
+          islandText: "#F5F6F3",
+          flashBg: "#F5F6F3",
+          flashInk: "#0B0E11",
+        },
+        glass: {
+          name: "Liquid Glass",
+          dark: false,
+          bgA: "#F4F6FD",
+          bgB: "#DDE6F8",
+          grid: "rgba(20, 26, 42, 0.06)",
+          ink: "#141A2A",
+          extrude: "#899BB8",
+          extrudeEdge: "#B9C9E4",
+          accent: "#0A84FF",
+          accent2: "#7A5AF8",
+          accent3: "#FF2D87",
+          bladeA: "#C5D2E8",
+          bladeB: "#8E9FBC",
+          bladeRim: "rgba(255, 255, 255, 0.72)",
+          islandBg: "rgba(12, 15, 22, 0.88)",
+          islandBorder: "rgba(255, 255, 255, 0.28)",
+          islandText: "#FFFFFF",
+          flashBg: "#0E1320",
+          flashInk: "#F4F6FD",
+        },
+        swiss: {
+          name: "Swiss Kinetic",
+          dark: false,
+          bgA: "#F4F2EC",
+          bgB: "#E8E4DA",
+          grid: "rgba(16, 18, 24, 0.085)",
+          ink: "#101218",
+          extrude: "#1B3BFF",
+          extrudeEdge: "#5B74FF",
+          accent: "#1B3BFF",
+          accent2: "#FF3B30",
+          accent3: "#00B894",
+          bladeA: "#262B36",
+          bladeB: "#101218",
+          bladeRim: "rgba(244, 242, 236, 0.35)",
+          islandBg: "#101218",
+          islandBorder: "rgba(27, 59, 255, 0.55)",
+          islandText: "#F4F2EC",
+          flashBg: "#1B3BFF",
+          flashInk: "#F4F2EC",
+        },
+      };
+
+      /* =========================================================================
+         3. TIMELINE CONSTANTS & EASING PHYSICS
+         ========================================================================= */
+      const INTRO_DUR = 6.80;
+      const LOADER_DUR = 2.40;
+      const BPM = 128;
+      const BEAT_SEC = 60 / BPM; // 0.46875s
+
+      const INTRO_BEATS = [
+        { t: 0.00, label: "BEAT 01 // APERTURE IGNITION" },
+        { t: 0.95, label: "BEAT 02 // 3D BIOMETRIC VORTEX" },
+        { t: 2.15, label: "BEAT 03 // CHROMATIC MG IMPACT" },
+        { t: 3.60, label: "BEAT 04 // LIQUID GLASS & ISLAND" },
+        { t: 5.10, label: "BEAT 05 // LIVING PRESENCE LOOP" },
+      ];
+
+      const BOOT_STEPS = [
+        "Prehashing local ONNX models",
+        "Arming 12-layer passive liveness",
+        "Warming ArcFace / AdaFace engine",
+        "Presence guard ready",
+      ];
+
+      function clamp(v, a, b) {
+        return Math.max(a, Math.min(b, v));
+      }
+      function lerp(a, b, t) {
+        return a + (b - a) * t;
+      }
+      function prog(t, s, e) {
+        return clamp((t - s) / Math.max(1e-5, e - s), 0, 1);
+      }
+      function easeOutExpo(x) {
+        return x >= 1 ? 1 : 1 - Math.pow(2, -10 * x);
+      }
+      function easeInExpo(x) {
+        return x <= 0 ? 0 : Math.pow(2, 10 * (x - 1));
+      }
+      function easeInOutCubic(x) {
+        return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+      }
+      function easeOutBack(x) {
+        const c1 = 1.70158;
+        const c3 = c1 + 1;
+        return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+      }
+      function springDamped(x, freq, decay) {
+        if (x <= 0) return 0;
+        if (x >= 1) return 1;
+        return 1 - Math.exp(-decay * x) * Math.cos(freq * x * Math.PI);
+      }
+
+      /* =========================================================================
+         4. PROCEDURAL WEB AUDIO ENGINE (CRISP MECHANICAL & BIOMETRIC SFX)
+         ========================================================================= */
+      class MotionAudio {
+        constructor() {
+          this.ctx = null;
+          this.master = null;
+          this.noiseBuf = null;
+          this.enabled = false;
+          this.firedCues = new Set();
+        }
+
+        ensure() {
+          if (!this.ctx) {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            this.ctx = new AC();
+            this.master = this.ctx.createGain();
+            this.master.gain.value = 0.48;
+            this.master.connect(this.ctx.destination);
+            const len = Math.floor(this.ctx.sampleRate * 1.0);
+            this.noiseBuf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+            const ch = this.noiseBuf.getChannelData(0);
+            for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+          }
+          if (this.ctx && this.ctx.state === "suspended") {
+            this.ctx.resume();
+          }
+        }
+
+        toggle(force) {
+          this.enabled = force !== undefined ? !!force : !this.enabled;
+          if (this.enabled) {
+            this.ensure();
+            this.ping(680, 0.14);
+          }
+        }
+
+        resetCues() {
+          this.firedCues.clear();
+        }
+
+        shutterClick() {
+          if (!this.enabled || !this.ctx || !this.noiseBuf) return;
+          const now = this.ctx.currentTime;
+          const src = this.ctx.createBufferSource();
+          src.buffer = this.noiseBuf;
+          const bp = this.ctx.createBiquadFilter();
+          bp.type = "bandpass";
+          bp.frequency.setValueAtTime(2800, now);
+          bp.Q.value = 2.4;
+          const g = this.ctx.createGain();
+          g.gain.setValueAtTime(0.32, now);
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.065);
+          src.connect(bp);
+          bp.connect(g);
+          g.connect(this.master);
+          src.start(now);
+          src.stop(now + 0.075);
+        }
+
+        riser(dur) {
+          if (!this.enabled || !this.ctx || !this.noiseBuf) return;
+          const now = this.ctx.currentTime;
+          const src = this.ctx.createBufferSource();
+          src.buffer = this.noiseBuf;
+          const bp = this.ctx.createBiquadFilter();
+          bp.type = "bandpass";
+          bp.Q.value = 3.2;
+          bp.frequency.setValueAtTime(240, now);
+          bp.frequency.exponentialRampToValueAtTime(3800, now + dur);
+          const g = this.ctx.createGain();
+          g.gain.setValueAtTime(0.002, now);
+          g.gain.linearRampToValueAtTime(0.22, now + dur * 0.92);
+          g.gain.exponentialRampToValueAtTime(0.001, now + dur);
+          src.connect(bp);
+          bp.connect(g);
+          g.connect(this.master);
+          src.start(now);
+          src.stop(now + dur + 0.02);
+        }
+
+        impactDrop() {
+          if (!this.enabled || !this.ctx) return;
+          const now = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(165, now);
+          osc.frequency.exponentialRampToValueAtTime(38, now + 0.28);
+          g.gain.setValueAtTime(0.72, now);
+          g.gain.exponentialRampToValueAtTime(0.001, now + 0.34);
+          osc.connect(g);
+          g.connect(this.master);
+          osc.start(now);
+          osc.stop(now + 0.36);
+          this.shutterClick();
+        }
+
+        latchChime() {
+          if (!this.enabled || !this.ctx) return;
+          const now = this.ctx.currentTime;
+          const notes = [523.25, 783.99, 1046.5];
+          notes.forEach((f, idx) => {
+            const osc = this.ctx.createOscillator();
+            const g = this.ctx.createGain();
+            osc.type = "triangle";
+            const t0 = now + idx * 0.032;
+            osc.frequency.setValueAtTime(f, t0);
+            g.gain.setValueAtTime(0.001, t0);
+            g.gain.linearRampToValueAtTime(0.14, t0 + 0.01);
+            g.gain.exponentialRampToValueAtTime(0.0008, t0 + 0.34);
+            osc.connect(g);
+            g.connect(this.master);
+            osc.start(t0);
+            osc.stop(t0 + 0.36);
+          });
+        }
+
+        ping(freq, vol) {
+          if (!this.enabled || !this.ctx) return;
+          const now = this.ctx.currentTime;
+          const osc = this.ctx.createOscillator();
+          const g = this.ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(freq || 880, now);
+          g.gain.setValueAtTime(0.001, now);
+          g.gain.linearRampToValueAtTime(vol || 0.12, now + 0.008);
+          g.gain.exponentialRampToValueAtTime(0.0006, now + 0.22);
+          osc.connect(g);
+          g.connect(this.master);
+          osc.start(now);
+          osc.stop(now + 0.24);
+        }
+
+        updateForTime(prevT, t, mode) {
+          if (!this.enabled || t < prevT) {
+            this.resetCues();
+            return;
+          }
+          const cues = mode === "intro"
+            ? [
+                [0.08, () => this.shutterClick()],
+                [0.52, () => this.impactDrop()],
+                [1.45, () => this.riser(0.68)],
+                [2.15, () => this.impactDrop()],
+                [3.25, () => this.latchChime()],
+                [3.65, () => this.ping(784, 0.11)],
+                [6.35, () => this.shutterClick()],
+              ]
+            : [
+                [0.05, () => this.shutterClick()],
+                [0.55, () => this.impactDrop()],
+                [1.35, () => this.latchChime()],
+              ];
+
+          for (let i = 0; i < cues.length; i++) {
+            const ct = cues[i][0];
+            const key = mode + "_" + i;
+            if (!this.firedCues.has(key) && prevT <= ct && t >= ct) {
+              this.firedCues.add(key);
+              cues[i][1]();
+            }
+          }
+        }
+      }
+
+      const audio = new MotionAudio();
+
+      /* =========================================================================
+         5. PRECOMPUTED 3D GOLDEN-ANGLE ORB NODES & SPEED LINES
+         ========================================================================= */
+      const GOLDEN_ANGLE = 2.399963229728653;
+      const ORB_COUNT = 180;
+      const ORB_NODES = [];
+      for (let i = 0; i < ORB_COUNT; i++) {
+        const y = 1 - (i / (ORB_COUNT - 1)) * 2;
+        const r = Math.sqrt(Math.max(0, 1 - y * y));
+        const theta = GOLDEN_ANGLE * i;
+        ORB_NODES.push({
+          x: Math.cos(theta) * r,
+          y: y,
+          z: Math.sin(theta) * r,
+          size: 1.5 + ((i * 19) % 10) * 0.22,
+          phase: (i * 0.37) % (Math.PI * 2),
+        });
+      }
+
+      const SPEED_LINES = [];
+      for (let i = 0; i < 36; i++) {
+        const ang = (i / 36) * Math.PI * 2 + (i % 3) * 0.04;
+        SPEED_LINES.push({
+          ang,
+          inner: 0.22 + (i % 5) * 0.06,
+          outer: 0.78 + (i % 4) * 0.12,
+          w: 1.2 + (i % 3) * 1.1,
+        });
+      }
+
+      const SPARKS = [];
+      for (let i = 0; i < 24; i++) {
+        const ang = (i / 24) * Math.PI * 2 + ((i * 7) % 11) * 0.03;
+        SPARKS.push({
+          ang,
+          spd: 55 + ((i * 37) % 95),
+          size: 1.8 + (i % 3) * 1.1,
+        });
+      }
+
+      /* =========================================================================
+         6. ENGINE STATE & DOM REFERENCES
+         ========================================================================= */
+      const canvas = document.getElementById("stage");
+      const ctx = canvas.getContext("2d");
+
+      const dom = {
+        beatBadge: document.getElementById("beatBadge"),
+        soundBtn: document.getElementById("soundBtn"),
+        soundLabel: document.getElementById("soundLabel"),
+        toast: document.getElementById("toast"),
+        scrubberHit: document.getElementById("scrubberHit"),
+        scrubberFill: document.getElementById("scrubberFill"),
+        scrubberKnob: document.getElementById("scrubberKnob"),
+        chapterPips: document.getElementById("chapterPips"),
+        playBtn: document.getElementById("playBtn"),
+        replayBtn: document.getElementById("replayBtn"),
+        smpte: document.getElementById("smpte"),
+        modeIntro: document.getElementById("modeIntro"),
+        modeLoader: document.getElementById("modeLoader"),
+        exportSvgBtn: document.getElementById("exportSvgBtn"),
+        exportPngBtn: document.getElementById("exportPngBtn"),
+      };
+
+      const state = {
+        w: window.innerWidth,
+        h: window.innerHeight,
+        dpr: Math.min(window.devicePixelRatio || 1, 2),
+        mode: "intro", // "intro" | "loader"
+        themeKey: "obsidian",
+        playing: true,
+        scrubbing: false,
+        t: 0,
+        lastTs: performance.now(),
+        pointer: { nx: 0, ny: 0, sx: 0, sy: 0 },
+        impulses: [],
+      };
+
+      let toastTimer = null;
+      function showToast(msg) {
+        dom.toast.textContent = msg;
+        dom.toast.classList.add("show");
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => dom.toast.classList.remove("show"), 2000);
+      }
+
+      function currentDuration() {
+        return state.mode === "intro" ? INTRO_DUR : LOADER_DUR;
+      }
+
+      function resize() {
+        state.w = window.innerWidth;
+        state.h = window.innerHeight;
+        state.dpr = Math.min(window.devicePixelRatio || 1, 2);
+        canvas.width = Math.floor(state.w * state.dpr);
+        canvas.height = Math.floor(state.h * state.dpr);
+        ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+      }
+
+      /* =========================================================================
+         7. 3D PROJECTION & CORE GEOMETRY RENDERERS
+         ========================================================================= */
+      function project3D(x, y, z, xf) {
+        // Rotate Y then X then Z
+        const cy = Math.cos(xf.ry), sy = Math.sin(xf.ry);
+        const cx = Math.cos(xf.rx), sx = Math.sin(xf.rx);
+        const cz = Math.cos(xf.rz), sz = Math.sin(xf.rz);
+
+        let x1 = x * cy + z * sy;
+        let z1 = -x * sy + z * cy;
+        let y2 = y * cx - z1 * sx;
+        let z2 = y * sx + z1 * cx;
+        let x3 = x1 * cz - y2 * sz;
+        let y3 = x1 * sz + y2 * cz;
+
+        const fov = xf.fov || 680;
+        const persp = fov / Math.max(120, fov + z2 + (xf.zOff || 0));
+        return {
+          x: xf.cx + x3 * xf.scale * persp,
+          y: xf.cy + y3 * xf.scale * persp,
+          z: z2,
+          persp: persp,
+        };
+      }
+
+      function drawPoly3D(tbl, uStart, uEnd, xf, opts) {
+        if (uEnd <= uStart + 0.001) return;
+        const steps = opts.steps || 54;
+        const zLayer = opts.zLayer !== undefined ? opts.zLayer : 0;
+        const baseW = (opts.lineWidth || MG_STROKE_W) * xf.scale;
+
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+
+        if (opts.taper) {
+          for (let i = 0; i < steps; i++) {
+            const fa = i / steps;
+            const fb = (i + 1) / steps;
+            const ua = lerp(uStart, uEnd, fa);
+            const ub = lerp(uStart, uEnd, fb);
+            const pa = sampleTable(tbl, ua);
+            const pb = sampleTable(tbl, ub);
+            const p0 = project3D(pa.x, pa.y, zLayer, xf);
+            const p1 = project3D(pb.x, pb.y, zLayer, xf);
+            const taper = Math.pow(fb, 0.72);
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.strokeStyle = opts.color;
+            ctx.lineWidth = Math.max(1.2, baseW * taper);
+            ctx.globalAlpha = clamp((opts.alpha !== undefined ? opts.alpha : 1) * (0.14 + 0.86 * taper), 0, 1);
+            ctx.stroke();
+          }
+        } else {
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) {
+            const u = lerp(uStart, uEnd, i / steps);
+            const p = sampleTable(tbl, u);
+            const pr = project3D(p.x, p.y, zLayer, xf);
+            if (i === 0) ctx.moveTo(pr.x, pr.y);
+            else ctx.lineTo(pr.x, pr.y);
+          }
+          ctx.strokeStyle = opts.color;
+          ctx.lineWidth = Math.max(1.4, baseW);
+          ctx.globalAlpha = opts.alpha !== undefined ? opts.alpha : 1;
+          if (opts.shadowBlur) {
+            ctx.shadowColor = opts.shadowColor || opts.color;
+            ctx.shadowBlur = opts.shadowBlur;
+          }
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
+      /* =========================================================================
+         8. VISUAL MODULES: BACKDROP, 7-BLADE APERTURE, 3D ORB, HERO MG, ISLAND
+         ========================================================================= */
+      function drawBackdrop(theme, t, cx, cy, minDim) {
+        const w = state.w;
+        const h = state.h;
+
+        if (state.themeKey === "glass") {
+          // Luminous pastel silk backdrop inspired directly by ui/glass.py
+          const bg = ctx.createLinearGradient(0, 0, w, h);
+          bg.addColorAt ? null : null;
+          bg.addColorStop(0, "#F5F7FE");
+          bg.addColorStop(1, "#DCE5F7");
+          ctx.fillStyle = bg;
+          ctx.fillRect(0, 0, w, h);
+
+          const orbs = [
+            [0.18 + 0.05 * Math.sin(t * 0.7), 0.22, 0.42, "rgba(112, 168, 255, 0.46)"],
+            [0.82 - 0.05 * Math.cos(t * 0.6), 0.20, 0.38, "rgba(186, 138, 255, 0.42)"],
+            [0.72 + 0.04 * Math.sin(t * 0.8), 0.80, 0.44, "rgba(255, 126, 178, 0.36)"],
+            [0.20, 0.82, 0.36, "rgba(104, 214, 232, 0.36)"],
+          ];
+          for (let i = 0; i < orbs.length; i++) {
+            const ox = orbs[i][0] * w;
+            const oy = orbs[i][1] * h;
+            const or = orbs[i][2] * Math.max(w, h);
+            const rg = ctx.createRadialGradient(ox, oy, 0, ox, oy, or);
+            rg.addColorStop(0, orbs[i][3]);
+            rg.addColorStop(1, "rgba(255, 255, 255, 0)");
+            ctx.fillStyle = rg;
+            ctx.fillRect(0, 0, w, h);
+          }
+
+          // Refractive Liquid Glass hero card frame
+          const cw = Math.min(w * 0.84, 680);
+          const ch = Math.min(h * 0.64, 460);
+          const rx = cx - cw / 2;
+          const ry = cy - ch / 2 - 14;
+          ctx.save();
+          ctx.beginPath();
+          ctx.roundRect(rx, ry, cw, ch, 36);
+          const cardGrad = ctx.createLinearGradient(rx, ry, rx, ry + ch);
+          cardGrad.addColorStop(0, "rgba(255, 255, 255, 0.56)");
+          cardGrad.addColorStop(1, "rgba(240, 245, 255, 0.28)");
+          ctx.fillStyle = cardGrad;
+          ctx.fill();
+          ctx.lineWidth = 1.6;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.82)";
+          ctx.stroke();
+          ctx.restore();
+        } else {
+          const rg = ctx.createRadialGradient(cx, cy * 0.9, minDim * 0.05, cx, cy, Math.max(w, h) * 0.82);
+          rg.addColorStop(0, theme.bgB);
+          rg.addColorStop(1, theme.bgA);
+          ctx.fillStyle = rg;
+          ctx.fillRect(0, 0, w, h);
+        }
+
+        // Precision architectural grid
+        ctx.save();
+        ctx.strokeStyle = theme.grid;
+        ctx.lineWidth = 1;
+        const step = 48;
+        const ox = (state.pointer.sx * -14) % step;
+        const oy = (state.pointer.sy * -14) % step;
+        ctx.beginPath();
+        for (let x = ox; x < w; x += step) {
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, h);
+        }
+        for (let y = oy; y < h; y += step) {
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+        }
+        ctx.stroke();
+
+        // Corner calibration viewfinders
+        const m = 24;
+        const len = 14;
+        ctx.strokeStyle = theme.dark ? "rgba(245,246,243,0.22)" : "rgba(16,18,24,0.24)";
+        ctx.lineWidth = 1.4;
+        const corners = [
+          [m, 64, 1, 1],
+          [w - m, 64, -1, 1],
+          [m, h - 102, 1, -1],
+          [w - m, h - 102, -1, -1],
+        ];
+        ctx.beginPath();
+        for (let i = 0; i < corners.length; i++) {
+          const c = corners[i];
+          ctx.moveTo(c[0], c[1] + c[3] * len);
+          ctx.lineTo(c[0], c[1]);
+          ctx.lineTo(c[0] + c[2] * len, c[1]);
+        }
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // 8B. 7-Blade Mechanical Camera Aperture (app/aperture.py)
+      function drawAperture(theme, cx, cy, radius, opening, rotOffset, alpha) {
+        if (alpha <= 0.01) return;
+        ctx.save();
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+        ctx.translate(cx, cy);
+
+        // 84 vernier housing ticks
+        for (let i = 0; i < 84; i++) {
+          const a = (i / 84) * Math.PI * 2 + rotOffset * 0.2;
+          const major = i % 7 === 0;
+          const r0 = radius * (major ? 0.90 : 0.94);
+          const r1 = radius * 1.00;
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(a) * r0, Math.sin(a) * r0);
+          ctx.lineTo(Math.cos(a) * r1, Math.sin(a) * r1);
+          ctx.strokeStyle = major ? theme.accent : theme.bladeRim;
+          ctx.lineWidth = major ? 1.6 : 0.9;
+          ctx.stroke();
+        }
+
+        // Clip inside optical housing for the 7 offset blades
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 0.84, 0, Math.PI * 2);
+        ctx.clip();
+
+        const hole = radius * (0.04 + 0.78 * clamp(opening, 0, 1));
+        const bladeStep = (Math.PI * 2) / 7;
+        const twist = 0.92 - 0.42 * clamp(opening, 0, 1);
+
+        for (let i = 0; i < 7; i++) {
+          const a = i * bladeStep - 1.5 + rotOffset;
+          ctx.beginPath();
+          for (let j = 0; j <= 10; j++) {
+            const ang = a + (bladeStep * j) / 10;
+            const px = Math.cos(ang) * radius * 0.86;
+            const py = Math.sin(ang) * radius * 0.86;
+            if (j === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.lineTo(Math.cos(a + bladeStep + twist) * hole, Math.sin(a + bladeStep + twist) * hole);
+          ctx.lineTo(Math.cos(a + twist) * hole, Math.sin(a + twist) * hole);
+          ctx.closePath();
+
+          const g = ctx.createLinearGradient(
+            Math.cos(a) * radius * 0.8,
+            Math.sin(a) * radius * 0.8,
+            Math.cos(a + bladeStep) * hole,
+            Math.sin(a + bladeStep) * hole
+          );
+          g.addColorStop(0, theme.bladeA);
+          g.addColorStop(1, theme.bladeB);
+          ctx.fillStyle = g;
+          ctx.fill();
+          ctx.strokeStyle = theme.bladeRim;
+          ctx.lineWidth = 1.05;
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Active telemetry arc on outer bezel
+        ctx.beginPath();
+        ctx.arc(0, 0, radius * 1.05, -Math.PI * 0.35 + rotOffset, Math.PI * 0.05 + rotOffset);
+        ctx.strokeStyle = theme.accent;
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = "round";
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      // 8C. 3D Golden-Angle Biometric Sphere + Gyroscopic Telemetry Rings
+      function drawBiometricOrb(theme, cx, cy, radius, spinY, spinX, collapseAmt, laserU, alpha) {
+        if (alpha <= 0.01) return;
+        ctx.save();
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+
+        // 3 tilted 3D gyro rings
+        const rings = [
+          { r: radius * 1.24, rx: 1.15, ry: spinY * 1.1, col: theme.accent, w: 1.5 },
+          { r: radius * 1.08, rx: -0.95, ry: -spinY * 1.4, col: theme.accent2, w: 1.3 },
+          { r: radius * 1.38, rx: 0.45, ry: spinY * 0.65, col: theme.bladeRim, w: 1.0 },
+        ];
+        for (let r = 0; r < rings.length; r++) {
+          const rg = rings[r];
+          const shrink = 1 - collapseAmt * 0.85;
+          ctx.beginPath();
+          for (let s = 0; s <= 64; s++) {
+            const ang = (s / 64) * Math.PI * 2;
+            const px = Math.cos(ang) * rg.r * shrink;
+            const py = Math.sin(ang) * rg.r * shrink;
+            const pr = project3D(px, py, 0, { cx, cy, scale: 1, rx: rg.rx + spinX, ry: rg.ry, rz: 0, fov: 650 });
+            if (s === 0) ctx.moveTo(pr.x, pr.y);
+            else ctx.lineTo(pr.x, pr.y);
+          }
+          ctx.strokeStyle = rg.col;
+          ctx.lineWidth = rg.w;
+          ctx.stroke();
+        }
+
+        // Depth-sort 180 golden-angle particles
+        const projected = [];
+        const spiralTwist = collapseAmt * 6.5;
+        const radScale = radius * (1 - collapseAmt * 0.92);
+        for (let i = 0; i < ORB_NODES.length; i++) {
+          const n = ORB_NODES[i];
+          const tw = spiralTwist * (0.4 + Math.abs(n.y));
+          const ct = Math.cos(tw), st = Math.sin(tw);
+          const nx = (n.x * ct - n.z * st) * radScale;
+          const nz = (n.x * st + n.z * ct) * radScale;
+          const ny = n.y * radScale;
+          const pr = project3D(nx, ny, nz, { cx, cy, scale: 1, rx: spinX, ry: spinY, rz: 0, fov: 620 });
+          projected.push({ x: pr.x, y: pr.y, z: pr.z, p: pr.persp, size: n.size, ny: n.y });
+        }
+        projected.sort((a, b) => a.z - b.z);
+
+        // Subtle neural mesh filaments connecting front-hemisphere neighbors
+        ctx.strokeStyle = theme.accent;
+        ctx.lineWidth = 0.7;
+        for (let i = projected.length - 55; i < projected.length; i++) {
+          if (i < 0) continue;
+          const a = projected[i];
+          const b = projected[(i + 7) % projected.length];
+          if (Math.hypot(a.x - b.x, a.y - b.y) < radius * 0.42) {
+            ctx.globalAlpha = clamp(alpha * 0.24 * (1 - collapseAmt), 0, 1);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        }
+
+        // Render particles
+        const scanY = lerp(-1.1, 1.1, laserU);
+        for (let i = 0; i < projected.length; i++) {
+          const pt = projected[i];
+          const depthA = clamp((pt.p - 0.65) * 2.1, 0.18, 1);
+          const nearLaser = Math.max(0, 1 - Math.abs(pt.ny - scanY) * 4.5);
+          ctx.globalAlpha = clamp(alpha * depthA, 0, 1);
+          ctx.fillStyle = nearLaser > 0.35 ? "#FFFFFF" : (i % 4 === 0 ? theme.accent2 : theme.accent);
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, pt.size * pt.p * (1 + nearLaser * 0.9), 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Sweeping volumetric biometric laser scan line
+        if (laserU > 0.02 && laserU < 0.98 && collapseAmt < 0.5) {
+          const ly = cy + scanY * radius;
+          const lg = ctx.createLinearGradient(cx - radius * 1.4, ly, cx + radius * 1.4, ly);
+          lg.addColorStop(0, "rgba(130, 242, 203, 0)");
+          lg.addColorStop(0.5, theme.accent);
+          lg.addColorStop(1, "rgba(130, 242, 203, 0)");
+          ctx.globalAlpha = clamp(alpha * 0.85, 0, 1);
+          ctx.strokeStyle = lg;
+          ctx.lineWidth = 2.4;
+          ctx.beginPath();
+          ctx.moveTo(cx - radius * 1.35, ly);
+          ctx.lineTo(cx + radius * 1.35, ly);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+
+      // 8D. 3D Extruded MG Monogram with Chromatic Split & Liquid Glass Prism Sheen
+      function drawHeroMG(theme, xf, p1End, p2End, opts) {
+        const rgbShift = opts.rgbShift || 0;
+        const extrudeDepth = opts.extrudeDepth !== undefined ? opts.extrudeDepth : 10;
+        const prismPhase = opts.prismPhase !== undefined ? opts.prismPhase : -1;
+        const glowAmt = opts.glowAmt !== undefined ? opts.glowAmt : 0.35;
+
+        // 1. Optional RGB Chromatic Aberration impact split layers
+        if (rgbShift > 0.4) {
+          const xfR = Object.assign({}, xf, { cx: xf.cx - rgbShift, cy: xf.cy - rgbShift * 0.3 });
+          const xfB = Object.assign({}, xf, { cx: xf.cx + rgbShift, cy: xf.cy + rgbShift * 0.3 });
+          drawPoly3D(STROKE_1, 0, p1End, xfR, { color: theme.accent3, alpha: 0.62, lineWidth: MG_STROKE_W * 1.04 });
+          drawPoly3D(STROKE_2, 0, p2End, xfR, { color: theme.accent3, alpha: 0.62, lineWidth: MG_STROKE_W * 1.04 });
+          drawPoly3D(STROKE_1, 0, p1End, xfB, { color: theme.accent2, alpha: 0.68, lineWidth: MG_STROKE_W * 1.04 });
+          drawPoly3D(STROKE_2, 0, p2End, xfB, { color: theme.accent2, alpha: 0.68, lineWidth: MG_STROKE_W * 1.04 });
+        }
+
+        // 2. Multi-layer 3D extruded bevel stack
+        if (extrudeDepth > 0) {
+          const layers = 6;
+          for (let l = layers; l >= 1; l--) {
+            const zL = (l / layers) * extrudeDepth;
+            const col = l === 1 ? theme.extrudeEdge : theme.extrude;
+            const a = l === layers ? 0.35 : 0.78;
+            drawPoly3D(STROKE_1, 0, p1End, xf, { zLayer: zL, color: col, alpha: a, lineWidth: MG_STROKE_W });
+            drawPoly3D(STROKE_2, 0, p2End, xf, { zLayer: zL, color: col, alpha: a, lineWidth: MG_STROKE_W });
+          }
+        }
+
+        // 3. Front hero straight geometric MG strokes
+        drawPoly3D(STROKE_1, 0, p1End, xf, {
+          zLayer: 0,
+          color: theme.ink,
+          alpha: 1,
+          lineWidth: MG_STROKE_W,
+          shadowBlur: glowAmt > 0.05 ? 24 * glowAmt : 0,
+          shadowColor: theme.accent,
+        });
+        drawPoly3D(STROKE_2, 0, p2End, xf, {
+          zLayer: 0,
+          color: theme.ink,
+          alpha: 1,
+          lineWidth: MG_STROKE_W,
+          shadowBlur: glowAmt > 0.05 ? 24 * glowAmt : 0,
+          shadowColor: theme.accent,
+        });
+
+        // 4. Sweeping diagonal Liquid Glass specular highlight sheen across both strokes
+        if (prismPhase >= 0 && prismPhase <= 1.2) {
+          const bandStart = clamp(prismPhase - 0.22, 0, 1);
+          const bandEnd = clamp(prismPhase, 0, 1);
+          if (bandEnd > bandStart + 0.01) {
+            drawPoly3D(STROKE_1, bandStart, Math.min(p1End, bandEnd), xf, {
+              zLayer: -1,
+              color: theme.accent,
+              alpha: 0.92,
+              lineWidth: MG_STROKE_W * 0.56,
+              taper: true,
+            });
+            drawPoly3D(STROKE_2, bandStart, Math.min(p2End, bandEnd), xf, {
+              zLayer: -1,
+              color: "#FFFFFF",
+              alpha: 0.85,
+              lineWidth: MG_STROKE_W * 0.44,
+              taper: true,
+            });
+          }
+        }
+      }
+
+      // 8E. Elastic Dynamic Island + 60-Tick Precision Boot Ruler (ui/island.py & ui/soft_lock.py)
+      function drawDynamicIslandAndRuler(theme, cx, y, openP, progress01, stageText, alpha) {
+        if (alpha <= 0.01) return;
+        ctx.save();
+        ctx.globalAlpha = clamp(alpha, 0, 1);
+
+        const pillW = lerp(94, Math.min(state.w - 40, 324), easeOutBack(clamp(openP, 0, 1)));
+        const pillH = 38;
+        const px = cx - pillW / 2;
+        const py = y;
+
+        // Island capsule
+        ctx.beginPath();
+        ctx.roundRect(px, py, pillW, pillH, pillH / 2);
+        ctx.fillStyle = theme.islandBg;
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = theme.islandBorder;
+        ctx.stroke();
+
+        // Living indicator dot + telemetry copy
+        if (openP > 0.35) {
+          const contentA = clamp((openP - 0.35) / 0.45, 0, 1);
+          ctx.save();
+          ctx.globalAlpha = clamp(alpha * contentA, 0, 1);
+          const dotX = px + 20;
+          const dotY = py + pillH / 2;
+          ctx.beginPath();
+          ctx.arc(dotX, dotY, 4.2, 0, Math.PI * 2);
+          ctx.fillStyle = progress01 > 0.94 ? "#30B44E" : theme.accent;
+          ctx.shadowColor = ctx.fillStyle;
+          ctx.shadowBlur = 10;
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          ctx.font = "600 11px 'JetBrains Mono', monospace";
+          ctx.fillStyle = theme.islandText;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(stageText, dotX + 14, dotY + 0.5);
+
+          ctx.textAlign = "right";
+          ctx.fillStyle = theme.accent;
+          ctx.fillText(Math.round(progress01 * 100) + "%", px + pillW - 16, dotY + 0.5);
+          ctx.restore();
+        }
+
+        // 60-tick precision ruler beneath island
+        const rulerW = Math.min(state.w - 64, 340);
+        const rx0 = cx - rulerW / 2;
+        const ry0 = py + pillH + 22;
+        const ticks = 48;
+        const litX = rx0 + rulerW * clamp(progress01, 0, 1);
+
+        for (let i = 0; i <= ticks; i++) {
+          const tx = rx0 + (i / ticks) * rulerW;
+          const major = i % 6 === 0;
+          const near = Math.max(0, 1 - Math.abs(tx - litX) / 28);
+          const th = (major ? 10 : 5) + near * 6;
+          ctx.beginPath();
+          ctx.moveTo(tx, ry0);
+          ctx.lineTo(tx, ry0 - th);
+          ctx.strokeStyle = tx <= litX ? theme.accent : (theme.dark ? "rgba(245,246,243,0.22)" : "rgba(16,18,24,0.22)");
+          ctx.lineWidth = major ? 1.5 : 1;
+          ctx.stroke();
+        }
+
+        // Active marker needle
+        ctx.beginPath();
+        ctx.moveTo(litX, ry0 + 2);
+        ctx.lineTo(litX, ry0 - 16);
+        ctx.strokeStyle = progress01 > 0.94 ? "#30B44E" : theme.accent;
+        ctx.lineWidth = 2.4;
+        ctx.lineCap = "round";
+        ctx.stroke();
+
+        ctx.restore();
+      }
+
+      /* =========================================================================
+         9. DETERMINISTIC 5-BEAT INTRO REEL & DEDICATED APP LOADER COMPOSITOR
+         ========================================================================= */
+      function renderIntroReel(theme, t) {
+        const w = state.w;
+        const h = state.h;
+        const minDim = Math.min(w, h);
+        const baseScale = clamp(minDim / 390, 0.72, 1.48);
+
+        // Micro camera impact shake on Beat 1 blast (0.52s), Beat 3 cut (2.15s) & Crossbar latch (3.25s)
+        let shake = 0;
+        if (t >= 0.52 && t < 0.78) shake += (1 - (t - 0.52) / 0.26) * 8;
+        if (t >= 2.15 && t < 2.42) shake += (1 - (t - 2.15) / 0.27) * 14;
+        if (t >= 3.25 && t < 3.45) shake += (1 - (t - 3.25) / 0.20) * 6;
+
+        const sx = shake > 0 ? Math.sin(t * 145) * shake : 0;
+        const sy = shake > 0 ? Math.cos(t * 172) * shake : 0;
+        const cx = w * 0.5 + sx;
+        const cy = h * 0.46 + sy;
+
+        // 2-Frame Stark Polarity Inversion Flash Cut right at Beat 3 drop (2.15s..2.22s)!
+        if (t >= 2.15 && t < 2.22) {
+          ctx.fillStyle = theme.flashBg;
+          ctx.fillRect(0, 0, w, h);
+          const xfFlash = { cx, cy, scale: baseScale * 1.18, rx: 0, ry: -0.32, rz: 0, fov: 680 };
+          drawPoly3D(STROKE_1, 0, 1, xfFlash, { color: theme.flashInk, lineWidth: MG_STROKE_W * 1.15 });
+          drawPoly3D(STROKE_2, 0, 1, xfFlash, { color: theme.flashInk, lineWidth: MG_STROKE_W * 1.15 });
+          return;
+        }
+
+        drawBackdrop(theme, t, cx, cy, minDim);
+
+        /* ---- BEAT 1 (0.00s - 0.95s): SHUTTER WIPE + 7-BLADE APERTURE IGNITION ---- */
+        if (t < 1.15) {
+          const pOpen = easeOutExpo(prog(t, 0.52, 0.96));
+          const pExit = easeInExpo(prog(t, 0.92, 1.15));
+          const apAlpha = 1 - pExit;
+
+          // Monumental parallax kinetic typography behind aperture
+          ctx.save();
+          ctx.globalAlpha = clamp((1 - pExit) * 0.11, 0, 1);
+          ctx.font = "800 " + Math.round(minDim * 0.22) + "px 'Syne', sans-serif";
+          ctx.fillStyle = theme.ink;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("PRESENCE", cx + lerp(-90, 40, prog(t, 0, 1)), cy - minDim * 0.16);
+          ctx.fillText("LOCAL", cx + lerp(90, -40, prog(t, 0, 1)), cy + minDim * 0.18);
+          ctx.restore();
+
+          // Aperture snaps shut at 0.28..0.48 then blasts wide open at 0.52
+          const opening = t < 0.52
+            ? lerp(0.55, 0.02, easeInOutCubic(prog(t, 0.12, 0.48)))
+            : lerp(0.02, 1.0, pOpen);
+          const apRad = minDim * (0.24 + 0.08 * pOpen + 0.22 * pExit);
+          drawAperture(theme, cx, cy, apRad, opening, t * 1.6, apAlpha);
+
+          // Superheated pinpoint ignition core + blast shockwave
+          if (t >= 0.34 && t < 0.92) {
+            const coreP = prog(t, 0.34, 0.52);
+            const blastP = prog(t, 0.52, 0.92);
+            const rCore = t < 0.52 ? lerp(2, 14, coreP) : lerp(18, 2, easeOutExpo(blastP));
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(cx, cy, rCore, 0, Math.PI * 2);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.shadowColor = theme.accent;
+            ctx.shadowBlur = 28;
+            ctx.fill();
+            if (blastP > 0) {
+              ctx.beginPath();
+              ctx.arc(cx, cy, lerp(12, minDim * 0.48, easeOutExpo(blastP)), 0, Math.PI * 2);
+              ctx.strokeStyle = theme.accent;
+              ctx.lineWidth = (1 - blastP) * 8;
+              ctx.globalAlpha = 1 - blastP;
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          // Opening vertical shutter curtains (0.00..0.28s)
+          if (t < 0.30) {
+            const cut = easeOutExpo(prog(t, 0.02, 0.30));
+            const halfH = (h * 0.5) * (1 - cut);
+            ctx.fillStyle = theme.dark ? "#050709" : "#101218";
+            ctx.fillRect(0, 0, w, halfH);
+            ctx.fillRect(0, h - halfH, w, halfH);
+            ctx.fillStyle = theme.accent;
+            ctx.fillRect(0, halfH - 2, w, 2);
+            ctx.fillRect(0, h - halfH, w, 2);
+          }
+        }
+
+        /* ---- BEAT 2 (0.85s - 2.15s): 3D BIOMETRIC VORTEX & SLINGSHOT COLLAPSE ---- */
+        if (t >= 0.80 && t < 2.15) {
+          const pIn = easeOutExpo(prog(t, 0.80, 1.25));
+          const pCollapse = easeInExpo(prog(t, 1.72, 2.15));
+          const laserU = prog(t, 1.05, 1.85);
+          const orbRad = minDim * 0.21 * lerp(0.55, 1.06, pIn);
+          drawBiometricOrb(
+            theme,
+            cx,
+            cy,
+            orbRad,
+            t * 2.2 + pCollapse * 5.0 + state.pointer.sx * 0.6,
+            Math.sin(t * 1.4) * 0.32 - state.pointer.sy * 0.4,
+            pCollapse,
+            laserU,
+            pIn
+          );
+
+          // Squash-and-stretch anticipation flash sphere right before 2.15s drop
+          if (pCollapse > 0.2) {
+            const r = lerp(24, 5, pCollapse);
+            ctx.save();
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, r * (1 + pCollapse * 0.8), r * (1 - pCollapse * 0.45), 0, 0, Math.PI * 2);
+            ctx.fillStyle = "#FFFFFF";
+            ctx.shadowColor = theme.accent;
+            ctx.shadowBlur = 36 * pCollapse;
+            ctx.fill();
+            ctx.restore();
+          }
+        }
+
+        /* ---- BEAT 3, 4 & 5 (2.22s - 6.80s): HERO 3D MG REVEAL -> LOCKUP -> LIVING LOOP ---- */
+        if (t >= 2.22) {
+          const pSwing = prog(t, 2.22, 3.35);
+          const pDolly = easeInOutCubic(prog(t, 3.60, 4.30));
+          const pReset = easeInExpo(prog(t, 6.28, 6.80));
+
+          // 36 Radial Speed Lines exploding right at Beat 3 impact (2.22..2.65s)
+          if (t < 2.70) {
+            const sp = prog(t, 2.22, 2.70);
+            ctx.save();
+            ctx.globalAlpha = (1 - sp) * 0.72;
+            ctx.strokeStyle = theme.accent;
+            for (let i = 0; i < SPEED_LINES.length; i++) {
+              const l = SPEED_LINES[i];
+              const r0 = minDim * (l.inner + sp * 0.45);
+              const r1 = minDim * (l.outer + sp * 0.35);
+              ctx.lineWidth = l.w * (1 - sp);
+              ctx.beginPath();
+              ctx.moveTo(cx + Math.cos(l.ang) * r0, cy + Math.sin(l.ang) * r0);
+              ctx.lineTo(cx + Math.cos(l.ang) * r1, cy + Math.sin(l.ang) * r1);
+              ctx.stroke();
+            }
+            ctx.restore();
+          }
+
+          // Subtle background aperture ring framing the hero MG during Beats 4 & 5
+          if (t >= 3.45) {
+            const bgApA = easeOutExpo(prog(t, 3.45, 4.10)) * (1 - pReset * 0.4) * (theme.dark ? 0.22 : 0.16);
+            drawAperture(theme, cx, cy - pDolly * minDim * 0.09, minDim * 0.29, 0.92 - pReset * 0.92, t * 0.22, bgApA);
+          }
+
+          // Staggered 3-color kinetic energy ribbons whipping ahead of the solid MG strokes (2.22..3.30s)
+          const p1Draw = easeOutExpo(prog(t, 2.22, 2.92));
+          const p2Draw = easeOutExpo(prog(t, 2.52, 3.25));
+
+          // 3D spring rotation (-44 deg -> 0 deg) + pointer parallax + breathing
+          const rotY = lerp(-0.76, 0, springDamped(pSwing, 2.5, 4.2))
+            + state.pointer.sx * 0.30 * pDolly
+            + Math.sin(t * 1.9) * 0.08 * pDolly;
+          const rotX = lerp(0.28, 0, easeOutExpo(pSwing))
+            - state.pointer.sy * 0.22 * pDolly
+            + Math.cos(t * 1.5) * 0.05 * pDolly;
+
+          const heroScale = baseScale
+            * lerp(1.26, 1.0, easeOutExpo(prog(t, 2.22, 2.95)))
+            * lerp(1.0, 0.88, pDolly)
+            * (1 + 0.018 * Math.sin(t * Math.PI * 2 / BEAT_SEC) * pDolly)
+            * (1 + pReset * 0.45);
+
+          const heroCy = cy - pDolly * minDim * 0.095;
+          const xf = { cx, cy: heroCy, scale: heroScale, rx: rotX, ry: rotY, rz: 0, fov: 680 };
+
+          if (t < 3.35) {
+            const r1 = easeOutExpo(prog(t, 2.22, 2.75));
+            const r2 = easeOutExpo(prog(t, 2.46, 3.10));
+            drawPoly3D(STROKE_1, clamp(r1 - 0.55, 0, 1), r1, xf, { zLayer: -6, color: theme.accent2, alpha: 0.9, lineWidth: MG_STROKE_W * 1.35, taper: true });
+            drawPoly3D(STROKE_1, clamp(r1 - 0.35, 0, 1), r1, xf, { zLayer: -3, color: theme.accent, alpha: 0.95, lineWidth: MG_STROKE_W * 1.15, taper: true });
+            drawPoly3D(STROKE_2, clamp(r2 - 0.55, 0, 1), r2, xf, { zLayer: -6, color: theme.accent2, alpha: 0.9, lineWidth: MG_STROKE_W * 1.35, taper: true });
+            drawPoly3D(STROKE_2, clamp(r2 - 0.35, 0, 1), r2, xf, { zLayer: -3, color: theme.accent, alpha: 0.95, lineWidth: MG_STROKE_W * 1.15, taper: true });
+          }
+
+          // Hero 3D Extruded MG Monogram
+          const rgbShift = t < 2.65 ? (1 - prog(t, 2.22, 2.65)) * 12 : (t >= 3.25 && t < 3.45 ? (1 - prog(t, 3.25, 3.45)) * 5 : 0);
+          const prismPhase = t >= 3.70 && t < 4.85 ? prog(t, 3.70, 4.85) * 1.2 : -1;
+          drawHeroMG(theme, xf, p1Draw, p2Draw, {
+            rgbShift,
+            extrudeDepth: 11,
+            prismPhase,
+            glowAmt: 0.32 + (t < 2.7 ? 0.5 : 0),
+          });
+
+          // Crossbar Mechanical Latch Impact Burst at 3.25s (double shockwave + 24 sparks)
+          if (t >= 3.25 && t < 3.95) {
+            const lp = prog(t, 3.25, 3.95);
+            const latchPt = project3D(116 + 6 - 100, 114 + 1.5 - 100, 0, xf);
+            ctx.save();
+            ctx.strokeStyle = theme.accent;
+            ctx.lineWidth = (1 - lp) * 4.5;
+            ctx.globalAlpha = 1 - lp;
+            ctx.beginPath();
+            ctx.arc(latchPt.x, latchPt.y, lerp(6, 130 * heroScale, easeOutExpo(lp)), 0, Math.PI * 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = theme.accent2;
+            ctx.lineWidth = (1 - lp) * 2.5;
+            ctx.beginPath();
+            ctx.arc(latchPt.x, latchPt.y, lerp(4, 86 * heroScale, easeOutExpo(lp)), 0, Math.PI * 2);
+            ctx.stroke();
+
+            for (let i = 0; i < SPARKS.length; i++) {
+              const sp = SPARKS[i];
+              const d = sp.spd * heroScale * easeOutExpo(lp);
+              const px = latchPt.x + Math.cos(sp.ang) * d;
+              const py = latchPt.y + Math.sin(sp.ang) * d;
+              ctx.fillStyle = i % 2 === 0 ? theme.accent : "#FFFFFF";
+              ctx.beginPath();
+              ctx.arc(px, py, sp.size * (1 - lp), 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.restore();
+          }
+
+          // Beat 5 (4.85s - 6.30s): Dual Living Plasma Comets racing along both MG paths
+          if (t >= 4.85 && t < 6.45) {
+            const cometAlpha = easeOutExpo(prog(t, 4.85, 5.15)) * (1 - pReset);
+            const c1 = ((t - 4.85) * 0.78) % 1.0;
+            const c2 = ((t - 4.85) * 0.78 + 0.50) % 1.0;
+            drawPoly3D(STROKE_1, clamp(c1 - 0.28, 0, 1), c1, xf, {
+              zLayer: -2,
+              color: theme.accent,
+              alpha: 0.95 * cometAlpha,
+              lineWidth: MG_STROKE_W * 0.54,
+              taper: true,
+            });
+            drawPoly3D(STROKE_2, clamp(c2 - 0.28, 0, 1), c2, xf, {
+              zLayer: -2,
+              color: theme.accent2,
+              alpha: 0.92 * cometAlpha,
+              lineWidth: MG_STROKE_W * 0.50,
+              taper: true,
+            });
+
+            // Glowing hinge pinpoint dot right inside the intentional M/G gap (78, 98)
+            const hinge = project3D(78 + 6 - 100, 98 + 1.5 - 100, -1, xf);
+            const pulse = 0.5 + 0.5 * Math.sin(t * 7.5);
+            ctx.save();
+            ctx.globalAlpha = cometAlpha * (0.55 + 0.45 * pulse);
+            ctx.fillStyle = theme.accent;
+            ctx.shadowColor = theme.accent;
+            ctx.shadowBlur = 14;
+            ctx.beginPath();
+            ctx.arc(hinge.x, hinge.y, 3.6 * heroScale, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // Beat 4 & 5: Masked Spring-Rising "MAJESTYGUARD" Wordmark + Dynamic Island + Boot Ruler
+          if (t >= 3.65) {
+            const pWord = easeOutExpo(prog(t, 3.65, 4.25));
+            const uiFade = (1 - pReset);
+            const wordY = heroCy + 106 * heroScale;
+
+            ctx.save();
+            ctx.globalAlpha = clamp(pWord * uiFade, 0, 1);
+            ctx.beginPath();
+            ctx.rect(0, wordY - 26, w, 46);
+            ctx.clip();
+            const fontSize = Math.round(clamp(minDim * 0.044, 18, 30));
+            ctx.font = "800 " + fontSize + "px 'Syne', sans-serif";
+            ctx.fillStyle = theme.ink;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            const letterSpace = lerp(12, 4, pWord);
+            const title = "MAJESTYGUARD";
+            const chars = title.split("");
+            let totalW = 0;
+            for (let i = 0; i < chars.length; i++) {
+              totalW += ctx.measureText(chars[i]).width + (i < chars.length - 1 ? letterSpace : 0);
+            }
+            let curX = cx - totalW / 2;
+            for (let i = 0; i < chars.length; i++) {
+              const cp = easeOutBack(clamp(prog(t, 3.65 + i * 0.022, 4.05 + i * 0.022), 0, 1));
+              const cw = ctx.measureText(chars[i]).width;
+              ctx.fillText(chars[i], curX + cw / 2, wordY + lerp(32, 0, cp));
+              curX += cw + letterSpace;
+            }
+            ctx.restore();
+
+            // Dynamic Island + 60-Tick Boot Ruler
+            const bootProg = easeInOutCubic(prog(t, 3.85, 5.75));
+            const stepIdx = Math.min(BOOT_STEPS.length - 1, Math.floor(bootProg * BOOT_STEPS.length));
+            drawDynamicIslandAndRuler(
+              theme,
+              cx,
+              wordY + 34,
+              prog(t, 3.78, 4.35),
+              bootProg,
+              BOOT_STEPS[stepIdx],
+              uiFade
+            );
+          }
+
+          // Beat 5 Finale: Whip-Zoom 7-Blade Iris Snap-Close (6.30s..6.80s) for Seamless Loop!
+          if (t >= 6.28) {
+            const closeP = easeInOutCubic(prog(t, 6.28, 6.78));
+            drawAperture(theme, cx, cy, Math.hypot(w, h) * 0.65, 1.0 - closeP, closeP * 1.4, closeP);
+          }
+        }
+
+        // Interactive Click Shockwaves
+        renderImpulses(theme);
+      }
+
+      /* =========================================================================
+         10. DEDICATED TIGHT 2.40s APP LOADER LOOP MODE
+         ========================================================================= */
+      function renderAppLoader(theme, t) {
+        const w = state.w;
+        const h = state.h;
+        const minDim = Math.min(w, h);
+        const baseScale = clamp(minDim / 410, 0.72, 1.38);
+        const cx = w * 0.5;
+        const cy = h * 0.44;
+
+        drawBackdrop(theme, t, cx, cy, minDim);
+
+        const u = (t % LOADER_DUR) / LOADER_DUR;
+        const breath = 0.5 + 0.5 * Math.sin(u * Math.PI * 2);
+
+        // Ambient 7-blade breathing aperture halo
+        drawAperture(theme, cx, cy, minDim * 0.25, 0.72 + 0.14 * breath, u * Math.PI * 0.65, theme.dark ? 0.34 : 0.22);
+
+        // Orbiting golden-angle ring
+        drawBiometricOrb(theme, cx, cy, minDim * 0.20, u * Math.PI * 2 + state.pointer.sx * 0.5, 0.22 - state.pointer.sy * 0.35, 0.0, u, 0.46);
+
+        // 3D Hero Straightened MG with lively spring tilt & dual continuous plasma comets
+        const xf = {
+          cx,
+          cy,
+          scale: baseScale * (0.98 + 0.03 * Math.sin(u * Math.PI * 4)),
+          rx: Math.cos(u * Math.PI * 2) * 0.12 - state.pointer.sy * 0.25,
+          ry: Math.sin(u * Math.PI * 2) * 0.26 + state.pointer.sx * 0.34,
+          rz: 0,
+          fov: 680,
+        };
+
+        drawHeroMG(theme, xf, 1, 1, {
+          rgbShift: breath > 0.92 ? (breath - 0.92) * 45 : 0,
+          extrudeDepth: 10,
+          prismPhase: (u * 1.4) % 1.2,
+          glowAmt: 0.42,
+        });
+
+        // Dual comets tracing both paths seamlessly
+        const c1 = u;
+        const c2 = (u + 0.5) % 1.0;
+        drawPoly3D(STROKE_1, clamp(c1 - 0.32, 0, 1), c1, xf, { zLayer: -2, color: theme.accent, alpha: 0.95, lineWidth: MG_STROKE_W * 0.55, taper: true });
+        drawPoly3D(STROKE_2, clamp(c2 - 0.32, 0, 1), c2, xf, { zLayer: -2, color: theme.accent2, alpha: 0.92, lineWidth: MG_STROKE_W * 0.52, taper: true });
+
+        // Dynamic Island loader telemetry
+        const stepIdx = Math.floor((t * 0.65) % BOOT_STEPS.length);
+        drawDynamicIslandAndRuler(theme, cx, cy + 124 * baseScale, 1, u, BOOT_STEPS[stepIdx], 1);
+
+        renderImpulses(theme);
+      }
+
+      function renderImpulses(theme) {
+        for (let i = state.impulses.length - 1; i >= 0; i--) {
+          const imp = state.impulses[i];
+          imp.p += 0.032;
+          if (imp.p >= 1) {
+            state.impulses.splice(i, 1);
+            continue;
+          }
+          const e = easeOutExpo(imp.p);
+          ctx.save();
+          ctx.globalAlpha = 1 - imp.p;
+          ctx.strokeStyle = theme.accent;
+          ctx.lineWidth = (1 - imp.p) * 3.5;
+          ctx.beginPath();
+          ctx.arc(imp.x, imp.y, lerp(8, 160, e), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = theme.accent2;
+          ctx.lineWidth = (1 - imp.p) * 1.8;
+          ctx.beginPath();
+          ctx.arc(imp.x, imp.y, lerp(4, 105, e), 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
+
+      /* =========================================================================
+         11. CLEAN TRANSPARENT MG.SVG & 1024x1024 MG.PNG EXPORTERS
+         ========================================================================= */
+      function exportCleanSVG() {
+        try {
+          const theme = THEMES[state.themeKey];
+          const svgParts = [
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="1024" height="1024" fill="none">',
+            '  <g transform="translate(6 1.5)" stroke="' + theme.ink + '" stroke-width="' + MG_STROKE_W + '" stroke-linecap="round" stroke-linejoin="round">',
+            '    <path d="' + MG_PATH_1_SVG + '" />',
+            '    <path d="' + MG_PATH_2_SVG + '" />',
+            '  </' + 'g>',
+            '</' + 'svg>'
+          ];
+          const blob = new Blob([svgParts.join("\n")], { type: "image/svg+xml;charset=utf-8" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "MajestyGuard_MG_" + state.themeKey + ".svg";
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          showToast("EXPORTED TRANSPARENT MG.SVG (" + theme.ink + ")");
+        } catch (err) {
+          console.error("SVG export failed:", err);
+          showToast("SVG EXPORT FAILED");
+        }
+      }
+
+      function exportCleanPNG() {
+        try {
+          const theme = THEMES[state.themeKey];
+          const off = document.createElement("canvas");
+          off.width = 1024;
+          off.height = 1024;
+          const octx = off.getContext("2d");
+          octx.scale(1024 / 200, 1024 / 200);
+          octx.translate(6, 1.5);
+          octx.strokeStyle = theme.ink;
+          octx.lineWidth = MG_STROKE_W;
+          octx.lineCap = "round";
+          octx.lineJoin = "round";
+          octx.stroke(new Path2D(MG_PATH_1_SVG));
+          octx.stroke(new Path2D(MG_PATH_2_SVG));
+          off.toBlob((blob) => {
+            if (!blob) return;
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "MajestyGuard_MG_1024_" + state.themeKey + ".png";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            showToast("EXPORTED 1024x1024 TRANSPARENT MG.PNG");
+          }, "image/png");
+        } catch (err) {
+          console.error("PNG export failed:", err);
+          showToast("PNG EXPORT FAILED");
+        }
+      }
+
+      /* =========================================================================
+         12. HUD SYNC, CHAPTER MARKERS & INTERACTION BINDINGS
+         ========================================================================= */
+      function formatSMPTE(sec) {
+        const s = Math.max(0, sec);
+        const mm = String(Math.floor(s / 60)).padStart(2, "0");
+        const ss = String(Math.floor(s % 60)).padStart(2, "0");
+        const ff = String(Math.floor((s - Math.floor(s)) * 30)).padStart(2, "0");
+        return mm + ":" + ss + ":" + ff;
+      }
+
+      function buildChapterMarkers() {
+        dom.chapterPips.textContent = "";
+        if (state.mode !== "intro") return;
+        for (let i = 1; i < INTRO_BEATS.length; i++) {
+          const pip = document.createElement("span");
+          pip.className = "chapter-pip";
+          pip.style.left = ((INTRO_BEATS[i].t / INTRO_DUR) * 100).toFixed(2) + "%";
+          dom.chapterPips.appendChild(pip);
+        }
+      }
+
+      function syncHud() {
+        const dur = currentDuration();
+        const pct = clamp((state.t / dur) * 100, 0, 100);
+        dom.scrubberFill.style.width = pct.toFixed(2) + "%";
+        dom.scrubberKnob.style.left = pct.toFixed(2) + "%";
+        dom.scrubberHit.setAttribute("aria-valuemax", dur.toFixed(2));
+        dom.scrubberHit.setAttribute("aria-valuenow", state.t.toFixed(2));
+
+        dom.smpte.textContent = "";
+        dom.smpte.appendChild(document.createTextNode(formatSMPTE(state.t) + " "));
+        const durSpan = document.createElement("span");
+        durSpan.textContent = "/ " + formatSMPTE(dur);
+        dom.smpte.appendChild(durSpan);
+
+        if (state.mode === "intro") {
+          let activeLabel = INTRO_BEATS[0].label;
+          for (let i = INTRO_BEATS.length - 1; i >= 0; i--) {
+            if (state.t >= INTRO_BEATS[i].t) {
+              activeLabel = INTRO_BEATS[i].label;
+              break;
+            }
+          }
+          dom.beatBadge.textContent = activeLabel;
+        } else {
+          dom.beatBadge.textContent = "APP LOADER // 2.40s SEAMLESS LOOP";
+        }
+      }
+
+      function syncPlayIcon() {
+        dom.playBtn.textContent = state.playing ? "❚❚" : "▶";
+      }
+
+      function syncSoundUI() {
+        dom.soundLabel.textContent = audio.enabled ? "SOUND ON" : "CLICK FOR SOUND";
+        dom.soundBtn.classList.toggle("active", audio.enabled);
+      }
+
+      function setMode(nextMode) {
+        state.mode = nextMode;
+        state.t = 0;
+        audio.resetCues();
+        dom.modeIntro.classList.toggle("active", nextMode === "intro");
+        dom.modeLoader.classList.toggle("active", nextMode === "loader");
+        buildChapterMarkers();
+        syncHud();
+        showToast(nextMode === "intro" ? "MODE: 5-BEAT KINETIC INTRO REEL" : "MODE: 2.40s APP LOADER LOOP");
+      }
+
+      function setTheme(key) {
+        if (!THEMES[key]) return;
+        state.themeKey = key;
+        document.documentElement.setAttribute("data-theme", key);
+        document.querySelectorAll("[data-theme-btn]").forEach((btn) => {
+          btn.classList.toggle("active", btn.getAttribute("data-theme-btn") === key);
+        });
+        audio.ping(740, 0.09);
+        showToast("THEME: " + THEMES[key].name.toUpperCase());
+      }
+
+      function scrubFromClientX(clientX) {
+        const rect = dom.scrubberHit.getBoundingClientRect();
+        const ratio = clamp((clientX - rect.left) / Math.max(1, rect.width), 0, 1);
+        state.t = ratio * currentDuration();
+        audio.resetCues();
+        syncHud();
+      }
+
+      // Event Listeners
+      window.addEventListener("resize", resize);
+
+      window.addEventListener("pointermove", (e) => {
+        state.pointer.nx = (e.clientX / Math.max(1, state.w)) * 2 - 1;
+        state.pointer.ny = (e.clientY / Math.max(1, state.h)) * 2 - 1;
+      });
+
+      canvas.addEventListener("pointerdown", (e) => {
+        state.impulses.push({ x: e.clientX, y: e.clientY, p: 0 });
+        audio.ping(620 + Math.random() * 240, 0.12);
+      });
+
+      dom.playBtn.addEventListener("click", () => {
+        state.playing = !state.playing;
+        syncPlayIcon();
+        audio.ping(state.playing ? 760 : 520, 0.08);
+      });
+
+      dom.replayBtn.addEventListener("click", () => {
+        state.t = 0;
+        state.playing = true;
+        audio.resetCues();
+        syncPlayIcon();
+        audio.shutterClick();
+      });
+
+      dom.soundBtn.addEventListener("click", () => {
+        audio.toggle();
+        syncSoundUI();
+      });
+
+      dom.modeIntro.addEventListener("click", () => setMode("intro"));
+      dom.modeLoader.addEventListener("click", () => setMode("loader"));
+
+      document.querySelectorAll("[data-theme-btn]").forEach((btn) => {
+        btn.addEventListener("click", () => setTheme(btn.getAttribute("data-theme-btn")));
+      });
+
+      dom.exportSvgBtn.addEventListener("click", exportCleanSVG);
+      dom.exportPngBtn.addEventListener("click", exportCleanPNG);
+
+      dom.scrubberHit.addEventListener("pointerdown", (e) => {
+        state.scrubbing = true;
+        dom.scrubberHit.setPointerCapture(e.pointerId);
+        scrubFromClientX(e.clientX);
+      });
+      dom.scrubberHit.addEventListener("pointermove", (e) => {
+        if (state.scrubbing) scrubFromClientX(e.clientX);
+      });
+      const endScrub = () => {
+        state.scrubbing = false;
+      };
+      dom.scrubberHit.addEventListener("pointerup", endScrub);
+      dom.scrubberHit.addEventListener("pointercancel", endScrub);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+          e.preventDefault();
+          state.playing = !state.playing;
+          syncPlayIcon();
+        } else if (e.key === "r" || e.key === "R") {
+          state.t = 0;
+          state.playing = true;
+          audio.resetCues();
+          syncPlayIcon();
+        } else if (e.key === "m" || e.key === "M") {
+          audio.toggle();
+          syncSoundUI();
+        } else if (e.key >= "1" && e.key <= "5" && state.mode === "intro") {
+          state.t = INTRO_BEATS[Number(e.key) - 1].t + 0.01;
+          audio.resetCues();
+          syncHud();
+        }
+      });
+
+      /* =========================================================================
+         13. 60FPS DETERMINISTIC RENDER LOOP
+         ========================================================================= */
+      function tick(ts) {
+        const dt = clamp((ts - state.lastTs) / 1000, 0, 0.06);
+        state.lastTs = ts;
+
+        state.pointer.sx += (state.pointer.nx - state.pointer.sx) * 0.1;
+        state.pointer.sy += (state.pointer.ny - state.pointer.sy) * 0.1;
+
+        const dur = currentDuration();
+        if (state.playing && !state.scrubbing) {
+          const prevT = state.t;
+          state.t += dt;
+          if (state.t >= dur) {
+            state.t = state.t % dur;
+            audio.resetCues();
+          }
+          audio.updateForTime(prevT, state.t, state.mode);
+        }
+
+        const theme = THEMES[state.themeKey];
+        if (state.mode === "intro") {
+          renderIntroReel(theme, state.t);
+        } else {
+          renderAppLoader(theme, state.t);
+        }
+        syncHud();
+        requestAnimationFrame(tick);
+      }
+
+      function startEngine() {
+        resize();
+        buildChapterMarkers();
+        syncPlayIcon();
+        syncSoundUI();
+        syncHud();
+        state.lastTs = performance.now();
+        requestAnimationFrame(tick);
+      }
+
+      if (document.readyState === "complete") {
+        startEngine();
+      } else {
+        window.addEventListener("load", startEngine, { once: true });
+      }
+    })();
+  </script>
+</body>
+</html>

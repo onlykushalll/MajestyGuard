@@ -32,7 +32,9 @@ def run() -> int:
         panel.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         panel.show()
         app.processEvents()
-        if not _has_content(panel) or not _has_content(panel.mark):
+        if panel.still.isNull() or not panel.movie.isValid() or panel.movie.frameCount() < 2:
+            return 5
+        if not _has_content(panel):
             return 5
         panel.finish()
         if panel.isVisible():

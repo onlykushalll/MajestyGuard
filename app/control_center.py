@@ -341,6 +341,8 @@ class ControlCenter(QMainWindow):
         deck.addWidget(self._aperture, 1)
         self._status_label = _label("", "plateTitle", plate, True)
         self._detail_label = _label("", "plateDetail", plate, True)
+        for label in (self._status_label, self._detail_label):
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._detail_label.setTextFormat(Qt.TextFormat.PlainText)
         deck.addWidget(self._status_label)
         deck.addWidget(self._detail_label)
@@ -348,7 +350,7 @@ class ControlCenter(QMainWindow):
         self._primary_button = TransportButton(plate)
         self._primary_button.setObjectName("plateAction")
         self._primary_button.clicked.connect(self._run_primary_action)
-        deck.addWidget(self._primary_button, 0, Qt.AlignmentFlag.AlignLeft)
+        deck.addWidget(self._primary_button, 0, Qt.AlignmentFlag.AlignHCenter)
         split.addWidget(plate, 4)
         journal = QWidget(page)
         body = QVBoxLayout(journal)
@@ -1027,6 +1029,8 @@ class ControlCenter(QMainWindow):
             maintain()
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
+        startup = (getattr(self._supervisor, "startup_reading", lambda: None)()
+                   if status is RuntimeStatus.RUNNING else None)
         if not enrolled:
             text, action, color = "Enrollment required", "Enroll face", "#c06a00"
             detail = "Create a local face profile before starting protection."
@@ -1044,6 +1048,14 @@ class ControlCenter(QMainWindow):
             if callable(note):
                 detail = note() or detail
             pill, tone = _SIDE_PILL[status]
+            if startup == "loading":
+                text, detail = "Starting protection", "Loading the recognition engine and your face profile."
+                pill, tone, color = "Starting", "info", "#0a84ff"
+            elif startup in ("unconfirmed", "profile-unavailable"):
+                text = "Startup not confirmed" if startup == "unconfirmed" else "Face profile unavailable"
+                detail = ("The worker has not confirmed startup. Check Diagnostics."
+                          if startup == "unconfirmed" else "The worker could not load an enrolled face profile.")
+                pill, tone, color = "Needs attention", "warn", "#d97706"
         enrolling = getattr(self._supervisor, "enrollment_running", lambda: False)()
         if enrolling:
             detail = "Face setup is open. Protection cannot use the camera until it closes."
@@ -1068,8 +1080,8 @@ class ControlCenter(QMainWindow):
             self._tray.setIcon(make_tray_icon(color))
             self._tray_color = color
         self._enrolled = enrolled
-        artwork = ("starting" if status is RuntimeStatus.STARTING else
-                   "running" if status is RuntimeStatus.RUNNING else None)
+        artwork = ("starting" if status is RuntimeStatus.STARTING or startup == "loading" else
+                   "running" if status is RuntimeStatus.RUNNING and startup in (None, "ready") else None)
         self._aperture.set_protection_art(artwork if enrolled and not enrolling else None)
         # Keep supervision and command guards alive in the tray. The hidden window
         # need not scan log tails, rebuild timelines or poll process memory.

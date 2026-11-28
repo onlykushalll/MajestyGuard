@@ -843,14 +843,19 @@ def test_overview_plays_supplied_reel_only_while_visible_and_active(qapp, tmp_pa
     try:
         assert art._movie is None
         for status in (RuntimeStatus.STARTING, RuntimeStatus.RUNNING):
+            before = art._movie.currentFrameNumber() if art._movie else None
             sup._status = status
             view.refresh()
-            assert art._movie.isValid() and art._movie.frameCount() == 72
+            assert art._movie.isValid() and art._movie.frameCount() == 204
             assert art._movie.state() == QMovie.MovieState.Running
-            assert art._movie.speed() == (100 if status is RuntimeStatus.STARTING else 75)
+            assert art._movie.speed() == 100
             assert view._camera_caption.text() == "Not reported"
             assert art.opening == 0
             assert view._quick.aperture._movie is None
+            if before is None:
+                QTest.qWait(150)
+            else:
+                assert before > 0 and art._movie.currentFrameNumber() == before
         first = art._movie.currentFrameNumber()
         view.refresh()
         assert art._movie.currentFrameNumber() == first
@@ -861,6 +866,7 @@ def test_overview_plays_supplied_reel_only_while_visible_and_active(qapp, tmp_pa
         assert art._movie.state() == QMovie.MovieState.NotRunning
         view.show_page(0)
         assert art._movie.state() == QMovie.MovieState.Running
+        assert art._movie.frameCount() == 72 and art._movie.speed() == 75
         view._set_reduced_motion(True)
         assert art._movie.state() == QMovie.MovieState.NotRunning
         assert art._art_opacity == 1 and not art._still.isNull()
@@ -869,11 +875,22 @@ def test_overview_plays_supplied_reel_only_while_visible_and_active(qapp, tmp_pa
         sup._status = RuntimeStatus.PAUSED
         view.refresh()
         assert art._movie.state() == QMovie.MovieState.NotRunning
+        assert art._closing and not art._last_image.isNull()
         art._fade.setCurrentTime(art._fade.duration())
         assert art._art_opacity == 0
     finally:
         view.hide()
 
+
+def test_worker_starting_can_be_paused_and_never_implies_ready(qapp, tmp_path):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    for phase, title in (("loading", "Starting protection"), ("unconfirmed", "Startup not confirmed"),
+                         ("profile-unavailable", "Face profile unavailable"), ("ready", "Protection running")):
+        sup.startup_reading = lambda: phase
+        view.refresh()
+        assert view.status_text() == title
+        assert view._primary_button.isEnabled() and view.primary_action_text() == "Pause protection"
 
 def test_resume_animates_while_worker_is_pending_then_recovers_on_failure(qapp, tmp_path, monkeypatch):
     import threading

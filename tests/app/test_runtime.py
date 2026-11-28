@@ -62,6 +62,31 @@ def test_supervisor_fails_closed_when_daemon_entrypoint_is_missing(tmp_path):
     assert supervisor.status() is RuntimeStatus.STOPPED
 
 
+def test_readiness_matches_this_launch_and_late_reports_can_recover(tmp_path, monkeypatch):
+    now = [0]
+    (tmp_path / "daemon").mkdir()
+    (tmp_path / "daemon" / "main.py").touch()
+    sup = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json",
+                     local_app_data=tmp_path, clock=lambda: now[0])
+    env = {}
+    monkeypatch.setattr(sup, "_spawn", lambda _, values: env.update(values) or FakeProcess())
+    assert sup.start()
+    marker = tmp_path / "MajestyGuard" / "startup.status"
+    marker.parent.mkdir()
+    marker.write_text("old ready", encoding="ascii")
+    assert sup.startup_reading() == "loading"
+    now[0] = 46
+    assert sup.startup_reading() == "unconfirmed"
+    marker.write_text(env["MG_STARTUP_TOKEN"] + " profile-unavailable", encoding="ascii")
+    assert sup.startup_reading() == "profile-unavailable"
+    sup._process.returncode = 1
+    assert sup.startup_reading() is None
+    assert sup.start()
+    assert sup.startup_reading() == "loading"
+    marker.write_text(env["MG_STARTUP_TOKEN"] + " ready", encoding="ascii")
+    assert sup.startup_reading() == "ready"
+
+
 def test_supervisor_reports_degraded_when_child_exits_unexpectedly(tmp_path):
     supervisor = Supervisor(tmp_path, Path("python.exe"), tmp_path / "settings.json")
     supervisor._process = FakeProcess(returncode=1)

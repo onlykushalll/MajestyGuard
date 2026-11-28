@@ -8,10 +8,12 @@ const { chromium } = require("playwright");
 
 const root = path.resolve(__dirname, "..");
 const source = path.join(root, "assets", "branding-source", "majestyguard_app_loading_screen.html");
-const target = path.join(root, "assets", "protection-reel.webp");
 
 async function main() {
-  const [python, executablePath] = process.argv.slice(2);
+  const [python, executablePath, mode = "live"] = process.argv.slice(2);
+  if (!["live", "intro"].includes(mode)) throw new Error("Expected intro or live");
+  const intro = mode === "intro";
+  const target = path.join(root, "assets", intro ? "protection-intro.webp" : "protection-reel.webp");
   if (!python) throw new Error("Pass a Python executable with Pillow installed");
 
   // The card supplies its own background and live state; export just the optics.
@@ -41,10 +43,47 @@ async function main() {
     if (html.split(from).length !== 2) throw new Error("Unrecognized loader source: " + from);
     html = html.replace(from, to);
   }
+  if (intro) {
+    // Keep every chapter, but not the full-card white flash or simulated telemetry.
+    replaceOnce("ctx.fillStyle = theme.flashBg;", 'ctx.fillStyle = "transparent";');
+    replaceOnce("drawBackdrop(theme, t, cx, cy, minDim);", "ctx.clearRect(0, 0, w, h);");
+    replaceOnce("const cx = w * 0.5 + sx;", "const cx = w * 0.5 + sx * .12;");
+    replaceOnce("const cy = h * 0.46 + sy;", "const cy = h * 0.5 + sy * .12;");
+    replaceOnce("minDim * 0.22) + \"px 'Syne'", "minDim * 0.062) + \"px 'Syne'");
+    replaceOnce("cy - minDim * 0.16", "cy - minDim * 0.32");
+    replaceOnce("cy + minDim * 0.18", "cy + minDim * 0.32");
+    replaceOnce("theme.dark ? \"#050709\" : \"#101218\"", '"#182026"');
+    html = html.replaceAll("color: theme.flashInk,", "color: theme.accent,");
+    replaceOnce("              BOOT_STEPS[stepIdx],", '              "",');
+    replaceOnce("              uiFade\n", "              0\n");
+    replaceOnce('ctx.fillText(Math.round(progress01 * 100) + "%", px + pillW - 16, dotY + 0.5);', "");
+  }
   replaceOnce("if (document.readyState === \"complete\") {", `
       window.renderLoaderFrame = (time) => {
         resize();
-        renderAppLoader(THEMES.obsidian, time);
+        ${intro ? `
+        renderIntroReel(THEMES.obsidian, time);
+        // Soften the edges of the wide ignition curtains and the final iris.
+        ctx.save();
+        ctx.globalCompositeOperation = "destination-in";
+        const mask = ctx.createRadialGradient(210, 210, 161, 210, 210, 206);
+        mask.addColorStop(0, "#fff"); mask.addColorStop(1, "transparent");
+        ctx.fillStyle = mask; ctx.fillRect(0, 0, 420, 420); ctx.restore();
+        if (time >= 6.24) {
+          const mix = easeInOutCubic(prog(time, 6.24, INTRO_DUR - 1/30));
+          const previous = document.createElement("canvas");
+          previous.width = canvas.width; previous.height = canvas.height;
+          previous.getContext("2d").drawImage(canvas, 0, 0);
+          ctx.clearRect(0, 0, 420, 420);
+          // Same geometry and phase as frame zero of the smaller looping export.
+          state.w = 276; state.h = 276;
+          ctx.save(); ctx.scale(420/276, 420/276);
+          renderAppLoader(THEMES.obsidian, LOADER_DUR - (INTRO_DUR - time));
+          ctx.restore(); ctx.save(); ctx.globalCompositeOperation = "destination-in";
+          ctx.fillStyle = "rgba(0,0,0," + mix + ")"; ctx.fillRect(0, 0, 420, 420);
+          ctx.globalCompositeOperation = "lighter"; ctx.globalAlpha = 1-mix;
+          ctx.drawImage(previous, 0, 0, 420, 420); ctx.restore();
+        }` : "renderAppLoader(THEMES.obsidian, time);"}
         return canvas.toDataURL("image/png").split(",")[1];
       };
       if (document.readyState === "complete") {`);
@@ -54,14 +93,14 @@ async function main() {
   try {
     browser = await chromium.launch({ executablePath, args: ["--disable-gpu"] });
     const context = await browser.newContext({
-      offline: true, viewport: { width: 276, height: 276 }, deviceScaleFactor: 1.5,
+      offline: true, viewport: { width: intro ? 420 : 276, height: intro ? 420 : 276 }, deviceScaleFactor: intro ? 1 : 1.5,
     });
     const page = await context.newPage();
     await page.evaluate(() => { window.requestAnimationFrame = () => 0; });
     await page.setContent(html, { waitUntil: "load" });
-    for (let i = 0; i < 72; i++) {
+    for (let i = 0; i < (intro ? 204 : 72); i++) {
       const png = await page.evaluate((t) => window.renderLoaderFrame(t), i / 30);
-      await fs.writeFile(path.join(frames, String(i).padStart(2, "0") + ".png"), Buffer.from(png, "base64"));
+      await fs.writeFile(path.join(frames, String(i).padStart(3, "0") + ".png"), Buffer.from(png, "base64"));
     }
     await browser.close();
     browser = undefined;

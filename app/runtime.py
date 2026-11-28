@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -79,6 +80,8 @@ class Supervisor:
         self._resume_after_enrollment: bool = False
         self._clock = clock
         self._started_at: Optional[float] = None
+        self._startup_token = ""
+        self._startup_result = None
         self._crashes: list[float] = []
         self._noted_dead: Optional[subprocess.Popen] = None
         self._next_restart_at: float = 0.0
@@ -98,6 +101,25 @@ class Supervisor:
     def enrollment_present(self) -> bool:
         state_dir = self._local_app_data / "MajestyGuard"
         return (state_dir / "embeddings_v2.npy").is_file() or (state_dir / "biometric.mgd").is_file()
+
+    def startup_reading(self):
+        """Presentation only. Never use a UI readiness report to authorize access."""
+        if not self._startup_token or self._process is None or self._process.poll() is not None:
+            return None
+        if self._startup_result is None:
+            marker = self._local_app_data / "MajestyGuard" / "startup.status"
+            try:
+                with marker.open("rb") as stream:
+                    raw = stream.read(128)
+                for result in ("ready", "profile-unavailable"):
+                    if raw == f"{self._startup_token} {result}".encode("ascii"):
+                        self._startup_result = result
+                        break
+            except OSError:
+                pass
+        if self._startup_result is None and self._started_at is not None and self._clock() - self._started_at >= 45:
+            return "unconfirmed"
+        return self._startup_result or "loading"
 
     def start(self) -> bool:
         """Start protection on the user's request (forgives earlier crashes)."""
@@ -235,6 +257,8 @@ class Supervisor:
         packaged_ui = self._packaged_ui_executable()
         if packaged_ui is not None:
             environment["MG_UI_EXECUTABLE"] = str(packaged_ui)
+        token = uuid.uuid4().hex
+        environment["MG_STARTUP_TOKEN"] = token
         try:
             self._process = self._spawn(daemon_command, environment)
         except OSError:
@@ -243,6 +267,8 @@ class Supervisor:
             log.exception("Could not launch protection worker")
             return False
         self._started_at = self._clock()
+        self._startup_token = token
+        self._startup_result = None
         return True
 
     def session_locked(self) -> bool:

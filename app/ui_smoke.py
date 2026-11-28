@@ -22,10 +22,12 @@ def run() -> int:
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
     os.environ["MG_UI_REDUCE_MOTION"] = "1"
     from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QMovie
     from PyQt6.QtWidgets import QApplication
 
     from app.control_center import ControlCenter
     from app.launch import LaunchPanel
+    from app.aperture import _INTRO_PATH
 
     app = QApplication([])
     with TemporaryDirectory(prefix="mg-ui-smoke-") as data:
@@ -36,6 +38,9 @@ def run() -> int:
         app.processEvents()
         if not _has_content(panel) or not _has_content(panel.mark):
             return 5
+        intro = QMovie(str(_INTRO_PATH))
+        if not intro.isValid() or intro.frameCount() != 204:
+            return 9
         panel.finish()
         if panel.isVisible():
             return 6

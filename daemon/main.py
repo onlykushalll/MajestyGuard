@@ -457,6 +457,14 @@ class MajestyGuardDaemon:
             self._cold_start_ms["camera_open"],
             self._cold_start_ms["total"],
         )
+        token = os.environ.get("MG_STARTUP_TOKEN", "")
+        if len(token) == 32 and all(c in "0123456789abcdef" for c in token):
+            # This reports startup, not biometric verification. Heavy liveness stays lazy.
+            result = "ready" if self.face_eng is not None and self.face_eng.has_enrolled_profile else "profile-unavailable"
+            try:
+                _atomic_write_file(_MG_STATE_DIR / "startup.status", f"{token} {result}")
+            except OSError as exc:
+                log.warning("Could not report startup status: %s", exc)
         self._run_loop()
 
     def stop(self) -> None:

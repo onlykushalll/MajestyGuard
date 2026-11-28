@@ -167,19 +167,32 @@ def test_daemon_logging_setup_uses_rotating_file_handler(monkeypatch, tmp_path):
             handler.close()
 
 
-def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
+@pytest.mark.parametrize("has_profile,expected", [(True, "ready"), (False, "profile-unavailable")])
+def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch, tmp_path, has_profile, expected):
     daemon = MajestyGuardDaemon()
     events = []
+    token = "e" * 32
+    monkeypatch.setenv("MG_STARTUP_TOKEN", token)
+    monkeypatch.setattr(daemon_main, "_MG_STATE_DIR", tmp_path)
+    marker = tmp_path / "startup.status"
 
     daemon._write_daemon_pid = lambda: None
     daemon.ipc = MagicMock()
     daemon.ipc.start.side_effect = lambda: events.append("pipe")
     daemon.session_monitor = MagicMock()
     daemon._start_overlay_watchdog = lambda: None
-    daemon._load_cv_engine = lambda: None
-    daemon._warmup_inference = lambda: None
+    def load():
+        assert not marker.exists()
+        daemon.face_eng = MagicMock(has_enrolled_profile=has_profile)
+
+    def warm():
+        assert not marker.exists()
+        events.append("warm")
+
+    daemon._load_cv_engine = load
+    daemon._warmup_inference = warm
     daemon._should_open_camera_on_start = lambda: False
-    daemon._run_loop = lambda: None
+    daemon._run_loop = lambda: events.append(marker.read_text(encoding="ascii"))
     daemon._shutdown = lambda: None
     daemon._launch_ui = lambda: events.append("ui")
     monkeypatch.setattr(daemon_main, "WHCDF_IPC_ENABLED", False)
@@ -193,6 +206,7 @@ def test_normal_start_launches_owned_ui_after_state_pipe(monkeypatch):
     daemon.start()
 
     assert events[:3] == ["pipe", "ui", "command"]
+    assert events[-2:] == ["warm", f"{token} {expected}"]
 
 
 def test_daemon_cleans_up_when_model_initialization_fails(monkeypatch):

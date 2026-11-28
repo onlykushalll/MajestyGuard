@@ -72,6 +72,7 @@ if ($CreateInstaller) {
 
 Require-File (Join-Path $ModelDir "antispoof_minifasv2.onnx") "anti-spoof model"
 Require-File (Join-Path $Root "assets\protection-reel.webp") "protection animation"
+Require-File (Join-Path $Root "assets\protection-intro.webp") "protection intro"
 Require-File (Join-Path $ModelDir "face_detection_yunet_2023mar.onnx") "face detector model"
 Require-File (Join-Path $ModelDir "midas_v21_small_256.onnx") "depth liveness model"
 Require-File (Join-Path $InsightFaceModelDir "models\buffalo_l\det_10g.onnx") "InsightFace detector model"
@@ -110,6 +111,7 @@ function New-FrozenBundle {
         "--name", "MajestyGuard",
         "--hidden-import", "ui.tokens",
         "--add-data", "$Root\assets\protection-reel.webp;assets",
+        "--add-data", "$Root\assets\protection-intro.webp;assets",
         (Join-Path $Root "app\main.py")
     ))
 

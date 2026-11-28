@@ -713,6 +713,10 @@ class FaceEngine:
         result = embedding.copy()
         return result
 
+    @property
+    def has_enrolled_profile(self) -> bool:
+        return bool(self._enrolled_embeddings)
+
     def load_enrolled_embeddings(self, embeddings: list[list[float]]) -> int:
         """
         Load pre-computed embeddings from EmbeddingStore into memory.

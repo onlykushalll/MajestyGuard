@@ -4,13 +4,14 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, pyqtProperty
-from PyQt6.QtGui import QColor, QImage, QImageReader, QLinearGradient, QMovie, QPainter, QPen, QPolygonF, QRadialGradient
+from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, pyqtProperty
+from PyQt6.QtGui import QColor, QImage, QImageReader, QLinearGradient, QMovie, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from app.cc_theme import reduced_motion
 
 _REEL_PATH = Path(__file__).resolve().parents[1] / "assets" / "protection-reel.webp"
+_INTRO_PATH = _REEL_PATH.with_name("protection-intro.webp")
 _REEL_SPEED = {"starting": 100, "running": 75}
 
 
@@ -28,6 +29,12 @@ class Aperture(QWidget):
         self._mini = miniature
         self._mode = None
         self._movie = None
+        self._intro = False
+        self._intro_last_frame = -1
+        self._handoff = QTimer(self, singleShot=True, interval=0)
+        self._handoff.timeout.connect(self._finish_intro)
+        self._closing = False
+        self._last_image = None
         self._still = QImage()
         self._art_opacity = 0.0
         self._fade = QPropertyAnimation(self, b"artOpacity", self)
@@ -58,21 +65,49 @@ class Aperture(QWidget):
     def set_protection_art(self, mode):
         if self._mini or self._mode == mode:
             return
+        if mode == "starting":
+            self._intro = self.isVisible() and not self.window().isMinimized() and not reduced_motion(self)
+        elif mode is None:
+            self._intro = False
+        self._closing = mode is None and self._art_opacity > 0
+        if self._closing and self._movie is not None:
+            self._last_image = self._movie.currentPixmap()
         self._mode = mode
         self._sync_art()
+
+    def _frame_changed(self, frame):
+        self.update()
+        if self._intro and frame == self._intro_last_frame:
+            self._handoff.start()
+
+    def _finish_intro(self):
+        if self._intro:
+            self._intro = False
+            self._sync_art()
 
     def _sync_art(self):
         speed = _REEL_SPEED.get(self._mode)
         visible = self.isVisible() and not self.window().isMinimized()
         if speed and visible and self._movie is None:
-            self._movie = QMovie(str(_REEL_PATH), parent=self)
-            self._movie.frameChanged.connect(self.update)
+            self._movie = QMovie(self)
+            self._movie.frameChanged.connect(self._frame_changed)
             self._still = QImageReader(str(_REEL_PATH)).read()
         use_art = bool(speed and not self._still.isNull())
         motion = visible and not reduced_motion(self)
+        if not motion:
+            self._intro = False
         if self._movie is not None:
+            if use_art:
+                path = (_INTRO_PATH if self._intro else _REEL_PATH).as_posix()
+                if self._movie.fileName() != path:
+                    self._movie.stop()
+                    self._movie.setFileName(path)
+                    if self._intro and not self._movie.isValid():
+                        self._intro = False
+                        self._movie.setFileName(str(_REEL_PATH))
+                    self._intro_last_frame = self._movie.frameCount() - 1 if self._intro else -1
             if use_art and motion:
-                self._movie.setSpeed(speed)
+                self._movie.setSpeed(100 if self._intro else speed)
                 if self._movie.state() == QMovie.MovieState.NotRunning:
                     self._movie.start()
             elif self._movie.state() != QMovie.MovieState.NotRunning:
@@ -83,6 +118,7 @@ class Aperture(QWidget):
         self._fade.stop()
         if motion and self._art_opacity != target:
             self._fade.setStartValue(self._art_opacity)
+            self._fade.setDuration(380 if self._closing else 180)
             self._fade.setEndValue(target)
             self._fade.start()
         else:
@@ -115,6 +151,8 @@ class Aperture(QWidget):
 
     def hideEvent(self, event):
         self._settle()
+        self._intro = self._closing = False
+        self._handoff.stop()
         if self._movie is not None:
             self._movie.stop()
         self._fade.stop()
@@ -131,18 +169,36 @@ class Aperture(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.translate(self.width()/2, self.height()/2)
         size = min(self.width(), self.height(), 276)
+        scale = size / 220
+        if self._closing and self._art_opacity:
+            p.save()
+            p.scale(scale, scale)
+            self._paint_shutter(p)
+            p.restore()
         if self._art_opacity:
             is_still = reduced_motion(self) or self._movie is None
-            frame = self._still if is_still else self._movie.currentImage()
-            if frame.isNull():
-                frame = self._still
+            pixmap = None if is_still else self._movie.currentPixmap()
+            p.save()
+            if self._closing:
+                if self._last_image is not None:
+                    pixmap = self._last_image
+                # A rotating seven-sided opening reveals the stationary shutter underneath.
+                k = self._art_opacity
+                path = QPainterPath()
+                path.addPolygon(QPolygonF([_polar(size * .79 * k, i * math.tau / 7 + (1-k)*.58)
+                                           for i in range(7)]))
+                path.closeSubpath()
+                p.setClipPath(path)
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            p.setOpacity(self._art_opacity)
-            p.drawImage(QRectF(-size/2, -size/2, size, size), frame)
-            p.setOpacity(1.0)
-        scale = size / 220
+            p.setOpacity(1 if self._closing else self._art_opacity)
+            area = QRectF(-size/2, -size/2, size, size)
+            if pixmap is None or pixmap.isNull():
+                p.drawImage(area, self._still)
+            else:
+                p.drawPixmap(area, pixmap, QRectF(pixmap.rect()))
+            p.restore()
         p.scale(scale, scale)
-        if self._art_opacity < 1:
+        if self._art_opacity < 1 and not (self._closing and self._art_opacity):
             p.setOpacity(1 - self._art_opacity)
             self._paint_shutter(p)
             p.setOpacity(1.0)

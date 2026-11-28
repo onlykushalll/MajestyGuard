@@ -1,5 +1,5 @@
 // Build-time only: Node with playwright installed, and Python with Pillow.
-// Usage: node tools/render_protection_reel.cjs <python> [chromium-executable]
+// Usage: node tools/render_protection_reel.cjs <python> [chromium-executable] [live|intro]
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs/promises");
 const os = require("node:os");
@@ -62,7 +62,38 @@ async function main() {
       window.renderLoaderFrame = (time) => {
         resize();
         ${intro ? `
-        renderIntroReel(THEMES.obsidian, time);
+        const theme = THEMES.obsidian;
+        if (time >= .82) renderIntroReel(theme, time);
+        if (time < .96) {
+          const lockup = easeInOutCubic(prog(time, 0, .62));
+          const release = 1 - easeInOutCubic(prog(time, .66, .96));
+          const center = 210;
+          const radius = 140 + 18 * lockup;
+          ctx.save();
+          ctx.translate(center, center);
+          const lens = ctx.createRadialGradient(-26, -38, 8, 0, 0, radius);
+          lens.addColorStop(0, "rgba(83,173,165,0.30)");
+          lens.addColorStop(.62, "rgba(24,65,76,0.38)");
+          lens.addColorStop(1, "rgba(11,25,31,0.86)");
+          ctx.beginPath(); ctx.arc(0, 0, radius * .93, 0, Math.PI*2);
+          ctx.globalAlpha = release; ctx.fillStyle = lens; ctx.fill();
+          ctx.restore();
+          drawAperture(theme, center, center, radius, .11 + .87 * lockup, -.34 * (1-lockup), release);
+          // Opposed highlights make a single sweep across the bezel; no flash cut.
+          ctx.save(); ctx.translate(center, center); ctx.lineCap = "round";
+          for (const [offset, ink, length] of [[0, theme.accent, .91], [Math.PI, theme.accent2, .43]]) {
+            const angle = -2.46 + 2.14 * lockup + offset;
+            ctx.beginPath(); ctx.arc(0, 0, radius * 1.08, angle, angle + length);
+            ctx.globalAlpha = release * (.58 + .42 * lockup);
+            ctx.strokeStyle = ink; ctx.lineWidth = 3;
+            ctx.shadowBlur = 16; ctx.shadowColor = ink; ctx.stroke();
+          }
+          ctx.shadowBlur = 0;
+          ctx.beginPath(); ctx.arc(0, 0, 4 + lockup * 10, 0, Math.PI * 2);
+          ctx.globalAlpha = release * (.78 - lockup * .58);
+          ctx.fillStyle = theme.accent; ctx.fill();
+          ctx.restore();
+        }
         // Soften the edges of the wide ignition curtains and the final iris.
         ctx.save();
         ctx.globalCompositeOperation = "destination-in";

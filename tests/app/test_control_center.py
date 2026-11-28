@@ -681,6 +681,51 @@ def test_diagnostics_reports_latest_measured_verify_and_camera_open(qapp, tmp_pa
     view.close()
 
 
+def test_diagnostics_shows_confirmed_health_and_historical_timings(qapp, tmp_path, monkeypatch):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    sup.startup_reading = lambda: "loading"
+    sup.diagnostic_processes = lambda: {"Protection": []}
+    (tmp_path / "camera_health.json").write_text(json.dumps({
+        "status": "healthy", "capture_open": False, "updated_at": time.time(),
+    }))
+    (tmp_path / "daemon.log").write_text(
+        "Cold start complete: model=830ms warmup=200ms camera=90ms total=1030ms\n"
+        "[VerifyTiming] outcome=owner_verified camera_ready_ms=112 first_result_ms=457 decision_ms=865\n"
+        "[VerifyTiming] outcome=timeout decision_ms=13000\n", encoding="utf-8",
+    )
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view.show_page(5)
+    assert view._health_values["Engine"].text() == "Loading"
+    assert view._health_values["Camera"].text() == "Awaiting worker"
+    assert view._startup_breakdown.text() == "Models 0.83 s  |  Warmup 0.20 s  |  Total 1.03 s"
+    assert view._first_result_time.text() == "0.46 s"
+    sup.startup_reading = lambda: "ready"
+    view.refresh()
+    assert view._health_values["Engine"].text() == "Ready"
+    assert view._health_values["Camera"].text() == "Parked"
+    assert view._health_values["Worker"].text() == "No tracked worker readings"
+    clipboard = []
+    monkeypatch.setattr(QApplication, "clipboard", lambda: type("Clipboard", (), {"setText": staticmethod(clipboard.append)})())
+    view.copy_diagnostics()
+    assert "Camera: Parked" in clipboard[-1] and "Models 0.83 s" in clipboard[-1]
+    sup._status = RuntimeStatus.PAUSED
+    view.refresh()
+    assert view._health_values["Camera"].text() == "Not requested"
+    assert view._health_values["Worker"].text() == "Offloaded"
+    view.close()
+
+
+def test_latest_timing_reader_rejects_partial_records(tmp_path):
+    from app.diagnostics import TimingSnapshot, read_timing_snapshot
+
+    log = tmp_path / "daemon.log"
+    log.write_text("Cold start complete: model=12ms warmup=24ms camera=0ms total=36ms\n"
+                   "Cold start complete: model=100ms warmup=9ms camera=0ms total=2ms\n"
+                   "[VerifyTiming] outcome=owner_verified camera_ready_ms=30 first_result_ms=50 decision_ms=75\n"
+                   "[VerifyTiming] outcome=owner_verified first_result_ms=90 decision_ms=9",
+                   encoding="utf-8")
+    assert read_timing_snapshot(log) == TimingSnapshot(12, 24, 36, 30, 50, 75)
+
 def test_diagnostics_stop_button_stops_degraded_worker(qapp, tmp_path):
     supervisor = FakeSupervisor(RuntimeStatus.DEGRADED)
     view = ControlCenter(supervisor, tmp_path / "settings.json")

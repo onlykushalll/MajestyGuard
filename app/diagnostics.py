@@ -9,24 +9,50 @@ from pathlib import Path
 import psutil
 
 
-def read_verify_timing(path: Path) -> tuple[str, str]:
-    """Read the last successful verification in a bounded log tail."""
+@dataclass(frozen=True)
+class TimingSnapshot:
+    model_ms: int | None = None
+    warmup_ms: int | None = None
+    startup_ms: int | None = None
+    camera_ms: int | None = None
+    first_result_ms: int | None = None
+    decision_ms: int | None = None
+
+
+def format_ms(value: int | None) -> str:
+    return "--" if value is None else f"{value / 1000:.2f} s"
+
+
+def read_timing_snapshot(path: Path) -> TimingSnapshot:
+    """Read complete startup and successful verification records from one bounded tail."""
     try:
         with path.open("rb") as log_file:
             log_file.seek(0, 2)
-            log_file.seek(max(0, log_file.tell() - 64 * 1024))
-            recent = log_file.read().decode("utf-8", errors="replace")
+            start = max(0, log_file.tell() - 64 * 1024)
+            log_file.seek(start)
+            recent = log_file.read(64 * 1024).decode("utf-8", errors="replace")
     except OSError:
-        return "--", "--"
-    for line in reversed(recent.splitlines()):
-        if "[VerifyTiming] outcome=owner_verified " not in line:
-            continue
-        timings = dict(re.findall(r"\b(decision|camera_ready)_ms=([0-9]{1,8})\b", line))
-        if "decision" in timings:
-            verify = f"{int(timings['decision']) / 1000:.2f} s"
-            camera = f"{int(timings['camera_ready']) / 1000:.2f} s" if "camera_ready" in timings else "--"
-            return verify, camera
-    return "--", "--"
+        return TimingSnapshot()
+    startup = verification = ()
+    lines = recent.split("\n")
+    for line in reversed(lines[bool(start):-1]):
+        if not startup:
+            match = re.search(r"Cold start complete: model=(\d{1,8})ms warmup=(\d{1,8})ms camera=(\d{1,8})ms total=(\d{1,8})ms\s*$", line)
+            if match:
+                model, warmup, camera, total = map(int, match.groups())
+                if max(model, warmup, camera) <= total:
+                    startup = (model, warmup, total)
+        if not verification and "[VerifyTiming] outcome=owner_verified " in line:
+            fields = {key: int(value) for key, value in
+                      re.findall(r"\b(decision|camera_ready|first_result)_ms=([0-9]{1,8})(?=\s|$)", line)}
+            decision = fields.get("decision")
+            camera, first = fields.get("camera_ready"), fields.get("first_result")
+            phases = [v for v in (camera, first, decision) if v is not None]
+            if decision is not None and phases == sorted(phases):
+                verification = (camera, first, decision)
+        if startup and verification:
+            break
+    return TimingSnapshot(*(startup or (None,)*3), *(verification or (None,)*3))
 
 
 @dataclass(frozen=True)

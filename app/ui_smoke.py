@@ -62,6 +62,13 @@ def run() -> int:
         if (aperture._art_opacity != 1 or aperture._movie is None
                 or aperture._movie.frameCount() < 2 or not _has_content(aperture)):
             return 8
+        center.show_page(5)
+        app.processEvents()
+        if (center._health_values["Camera"].text() != "Not reported"
+                or center._startup_breakdown.text() != "--"
+                or not _has_content(center._stack.currentWidget())):
+            return 10
+        center.show_page(0)
         supervisor.runtime_status = RuntimeStatus.STOPPED
         center.refresh()
         center._quick.adjustSize()

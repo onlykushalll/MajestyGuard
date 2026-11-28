@@ -38,7 +38,7 @@ from app import activity
 from app.aperture import Aperture
 from app.cc_theme import THEMES, reduced_motion, stylesheet
 from app.cc_widgets import Dot, EventMarker, MemoryTrace, NavButton, Surface, TabStrip, Toggle, TransportButton, WorkspaceBackground, make_tray_icon
-from app.diagnostics import ResourceSampler, read_verify_timing
+from app.diagnostics import ResourceSampler, TimingSnapshot, format_ms, read_timing_snapshot
 from app.quick_controls import QuickControls
 from app.runtime import RuntimeStatus
 from ui.brand import BrandTrace
@@ -201,6 +201,7 @@ class ControlCenter(QMainWindow):
         self._operation_poll = QTimer(self, interval=30)
         self._operation_poll.timeout.connect(self._complete_operation)
         self._resource_sampler = ResourceSampler()
+        self._timings = TimingSnapshot()
         self._integrity_key: tuple | None = None
         self._recent_key = None
         self._recent_events = []
@@ -471,6 +472,28 @@ class ControlCenter(QMainWindow):
 
     def _page_diagnostics(self) -> QWidget:
         page, box = self._page()
+        health, health_box = _card(page)
+        health_header = QHBoxLayout()
+        health_header.addWidget(_label("Protection health", "cardTitle", health), 1)
+        camera_details = QPushButton("Camera activity", health)
+        camera_details.setObjectName("secondary")
+        camera_details.clicked.connect(lambda: self.show_page(_ACTIVITY_PAGE))
+        health_header.addWidget(camera_details)
+        health_box.addLayout(health_header)
+        self._health_values = {}
+        self._health_dots = {}
+        for name in ("Worker", "Engine", "Camera"):
+            row = QHBoxLayout()
+            dot = Dot("idle", 10, health)
+            row.addWidget(dot)
+            row.addWidget(_label(name, "rowTitle", health), 1)
+            value = _label("Not reported", "detail", health, True)
+            value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(value, 2)
+            health_box.addLayout(row)
+            self._health_values[name] = value
+            self._health_dots[name] = dot
+        box.addWidget(health)
         row = QHBoxLayout()
         row.setSpacing(14)
         self._worker_ram = self._stat_card(page, row, "WORKER RAM")
@@ -515,13 +538,67 @@ class ControlCenter(QMainWindow):
         copy_row.addStretch(1)
         detail.addLayout(copy_row)
         box.addWidget(card)
-        timings = QHBoxLayout()
-        timings.setSpacing(14)
-        self._verify_time = self._stat_card(page, timings, "LAST FACE UNLOCK")
-        self._camera_open_time = self._stat_card(page, timings, "CAMERA START")
-        box.addLayout(timings)
+        timings, timing_box = _card(page)
+        timing_box.addWidget(_label("Last recorded timings", "cardTitle", timings))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        for row, (caption, field) in enumerate((
+            ("Protection startup", "_startup_breakdown"),
+            ("Face unlock", "_verify_time"),
+            ("Camera ready", "_camera_open_time"),
+            ("First recognition result", "_first_result_time"),
+        )):
+            grid.addWidget(_label(caption, "rowTitle", timings, True), row, 0)
+            value = _label("--", "detail", timings, True)
+            grid.addWidget(value, row, 1)
+            setattr(self, field, value)
+        self._startup_breakdown.setToolTip("Last worker startup measured in the daemon. Excludes Windows process launch.")
+        self._verify_time.setToolTip("Time from a verification request to a successful face decision.")
+        self._camera_open_time.setToolTip("Time from that request until the camera was ready.")
+        self._first_result_time.setToolTip("Time from that request until the first recognition result.")
+        grid.setColumnStretch(1, 1)
+        timing_box.addLayout(grid)
+        box.addWidget(timings)
         box.addStretch(1)
         return page
+
+    def _startup_reading(self, status):
+        if status is RuntimeStatus.RUNNING:
+            return getattr(self._supervisor, "startup_reading", lambda: None)()
+        return None
+
+    def _refresh_health(self, status, readings):
+        startup = self._startup_reading(status)
+        inactive = status in (RuntimeStatus.STOPPED, RuntimeStatus.PAUSED, RuntimeStatus.DEGRADED)
+        workers = [item for item in readings or () if item.group == "Protection"]
+        count = len(workers)
+        if readings is None:
+            worker = "Readings unavailable", "idle"
+        elif count:
+            worker = (f"{count} tracked process" if count == 1 else f"{count} tracked processes"), "info"
+        elif status is RuntimeStatus.DEGRADED:
+            worker = "Exited unexpectedly", "warn"
+        elif inactive:
+            worker = "Offloaded", "idle"
+        else:
+            worker = "No tracked worker readings", "idle"
+        engine = {
+            "ready": ("Ready", "ok"),
+            "loading": ("Loading", "info"),
+            "profile-unavailable": ("Face profile unavailable", "warn"),
+            "unconfirmed": ("Startup not confirmed", "warn"),
+        }.get(startup, ("Not running", "idle") if inactive else
+              ("Loading", "info") if status is RuntimeStatus.STARTING else ("Not reported", "idle"))
+        camera = ("Not requested", "idle") if inactive else (
+            ("Awaiting worker", "idle") if startup == "loading" or status is RuntimeStatus.STARTING else {
+                "In use": ("In use", "ok"),
+                "Parked": ("Parked", "idle"),
+                "Needs attention": ("Needs attention", "warn"),
+            }.get(self._camera_caption.text(), ("Not reported", "idle"))
+        )
+        for name, (text, tone) in zip(("Worker", "Engine", "Camera"), (worker, engine, camera)):
+            self._health_values[name].setText(text)
+            self._health_dots[name].set_tone(tone)
 
     def _refresh_diagnostics(self) -> None:
         if self._operation is not None or self.current_page() != len(_PAGES) - 1:
@@ -531,16 +608,24 @@ class ControlCenter(QMainWindow):
             status in (RuntimeStatus.RUNNING, RuntimeStatus.STARTING, RuntimeStatus.DEGRADED)
             and not self._controls_locked()
         )
-        verify_time, camera_time = read_verify_timing(self._state_dir() / "daemon.log")
-        if verify_time != "--" or not self._verify_time.property("hasReading"):
-            self._verify_time.setText(verify_time)
-            self._camera_open_time.setText(camera_time)
-            self._verify_time.setProperty("hasReading", verify_time != "--")
+        latest = read_timing_snapshot(self._state_dir() / "daemon.log")
+        old = self._timings
+        cold = latest if latest.startup_ms is not None else old
+        unlock = latest if latest.decision_ms is not None else old
+        self._timings = TimingSnapshot(cold.model_ms, cold.warmup_ms, cold.startup_ms,
+                                       unlock.camera_ms, unlock.first_result_ms, unlock.decision_ms)
+        self._startup_breakdown.setText("--" if cold.startup_ms is None else
+                                       f"Models {format_ms(cold.model_ms)}  |  Warmup {format_ms(cold.warmup_ms)}"
+                                       f"  |  Total {format_ms(cold.startup_ms)}")
+        self._verify_time.setText(format_ms(unlock.decision_ms))
+        self._camera_open_time.setText(format_ms(unlock.camera_ms))
+        self._first_result_time.setText(format_ms(unlock.first_result_ms))
         query = getattr(self._supervisor, "diagnostic_processes", None)
         try:
             readings = self._resource_sampler.sample(query()) if callable(query) else None
         except (OSError, RuntimeError):
             readings = None
+        self._refresh_health(status, readings)
         if readings is None:
             self._memory_trace.observe(None)
             for label in (self._worker_ram, self._center_ram, self._worker_cpu):
@@ -1029,8 +1114,7 @@ class ControlCenter(QMainWindow):
             maintain()
         enrolled = self._supervisor.enrollment_present()
         status = self._supervisor.status()
-        startup = (getattr(self._supervisor, "startup_reading", lambda: None)()
-                   if status is RuntimeStatus.RUNNING else None)
+        startup = self._startup_reading(status)
         if not enrolled:
             text, action, color = "Enrollment required", "Enroll face", "#c06a00"
             detail = "Create a local face profile before starting protection."
@@ -1356,15 +1440,18 @@ class ControlCenter(QMainWindow):
         self._refresh_diagnostics()
         # Share curated fields only. Do not copy paths, logs, enrollment info,
         # process names or IDs, or free-form text from the camera driver.
-        status = _STATUS_COPY[self._supervisor.status()][0]
+        status = self.status_text()
         QApplication.clipboard().setText("\n".join((
             "MajestyGuard diagnostics",
             f"Status: {status}",
+            *(f"{name}: {label.text()}" for name, label in self._health_values.items()),
             f"Worker RAM: {self._worker_ram.text()}",
             f"App RAM: {self._center_ram.text()}",
             f"Worker CPU: {self._worker_cpu.text()}",
             f"Last face unlock: {self._verify_time.text()}",
-            f"Camera start: {self._camera_open_time.text()}",
+            f"Camera ready: {self._camera_open_time.text()}",
+            f"First recognition result: {self._first_result_time.text()}",
+            f"Protection startup: {self._startup_breakdown.text()}",
         )))
         self._action_note = "Diagnostics summary copied."
         self._diagnostic_note.setText(self._action_note)

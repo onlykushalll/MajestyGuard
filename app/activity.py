@@ -230,6 +230,7 @@ class CameraInfo:
     events: tuple
     age_s: float
     capture_open: Optional[bool] = None
+    fault: str = ""
 
 
 def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[CameraInfo]:
@@ -256,6 +257,7 @@ def read_camera_health(path: Path, now: Optional[float] = None) -> Optional[Came
             events=tuple(str(e) for e in events[-6:]),
             age_s=max(0.0, (time.time() if now is None else now) - updated) if updated else 1e9,
             capture_open=data.get("capture_open") if isinstance(data.get("capture_open"), bool) else None,
+                fault=data.get("fault") if isinstance(data.get("fault"), str) else "",
         )
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         return None

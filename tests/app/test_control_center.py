@@ -34,6 +34,7 @@ class FakeSupervisor:
     def pause(self):
         self.stop_calls += 1
         self._status = RuntimeStatus.PAUSED
+        return True
 
     def resume(self):
         self.start_calls += 1
@@ -65,6 +66,111 @@ def test_control_center_start_action_starts_stopped_supervisor(qapp, tmp_path):
 
     assert supervisor.start_calls == 1
     assert view.status_text() == "Protection running"
+    view.close()
+
+
+def test_pause_reminder_only_arms_on_success_and_never_resumes(qapp, tmp_path, monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(control_center_module, "monotonic", lambda: now[0])
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    notices = []
+    monkeypatch.setattr(view, "_show_pause_notice", notices.append)
+    pause = sup.pause
+    sup.pause = lambda: False
+    view._pause_actions[15].trigger()
+    assert view._pause_reminder_until is None
+    sup.pause = pause
+    view._pause_actions[15].trigger()
+    assert view._pause_reminder_until == 100 + 15*60
+    assert view._quick.primary.text() == "Resume protection"
+    now[0] += 901
+    view.refresh()
+    view.refresh()
+    assert len(notices) == 1
+    assert sup.start_calls == 0 and sup.status() is RuntimeStatus.PAUSED
+    assert "Reminder due" in view._pause_reminder_text.text()
+    view.show_page(0)
+    view._primary_button.click()
+    assert sup.start_calls == 1 and not view._pause_reminder_due
+
+
+def test_reminder_can_be_cancelled_without_resuming_protection(qapp, tmp_path):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._pause_actions[5].trigger()
+    view._cancel_reminder_button.click()
+    assert view._pause_reminder_until is None
+    assert sup.status() is RuntimeStatus.PAUSED
+    assert sup.start_calls == 0
+    assert not hasattr(view, "_resume_here_button")
+
+
+def test_motion_preview_does_not_act_on_the_supervisor(qapp, tmp_path, monkeypatch):
+    monkeypatch.delenv("MG_UI_REDUCE_MOTION", raising=False)
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    view._preview_motion_button.click()
+    preview = view._motion_preview
+    assert preview is not None and preview.isVisible()
+    preview._play_startup.click()
+    assert preview.aperture._intro
+    preview._show_running.click()
+    assert preview.aperture._mode == "running"
+    assert not preview.aperture._intro and preview.aperture._movie.frameCount() == 72
+    preview._close_shutter.click()
+    assert preview.aperture._mode is None
+    preview.reject()
+    assert view._motion_preview is None
+    assert sup.start_calls == sup.stop_calls == 0
+
+
+def test_new_lifecycle_commands_refuse_when_session_is_locked(qapp, tmp_path):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    sup.controls_locked = lambda: True
+    view.pause_with_reminder(15)
+    view.stop_protection()
+    view.show_motion_preview()
+    view.refresh()
+    assert sup.stop_calls == 0 and view._motion_preview is None
+    assert not view._pause_reminder_button.isEnabled()
+def test_camera_privacy_button_opens_only_the_fixed_settings_page(qapp, tmp_path, monkeypatch):
+    sup = FakeSupervisor(RuntimeStatus.RUNNING)
+    opened = []
+    monkeypatch.setattr(control_center_module.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True)
+    path = tmp_path / "camera_health.json"
+
+    def fault(code):
+        path.write_text(json.dumps({"status": "failed", "fault": code, "updated_at": time.time()}))
+
+    view = ControlCenter(sup, tmp_path / "settings.json")
+    fault("open_failed")
+    view.refresh()
+    assert view._camera_privacy_button.isHidden()
+    fault("privacy_blocked")
+    view.refresh()
+    assert not view._camera_privacy_button.isHidden()
+    view._camera_privacy_button.click()
+    assert opened == ["ms-settings:privacy-webcam"]
+    sup.controls_locked = lambda: True
+    view.open_camera_privacy_settings()
+    assert len(opened) == 1
+
+
+def test_media_preference_is_saved_without_starting_or_stopping_protection(qapp, tmp_path):
+    from app.runtime import Supervisor
+    from app.config import load_settings
+
+    settings = tmp_path / "settings.json"
+    sup = Supervisor(tmp_path, tmp_path / "python.exe", settings)
+    view = ControlCenter(sup, settings)
+    assert view._media_stop_switch.isChecked()
+    view._media_stop_switch.click()
+    assert load_settings(settings).stop_media_on_lock is False
+    assert sup.set_idle_timeout(90)
+    assert load_settings(settings).stop_media_on_lock is False
+    assert sup.status() is RuntimeStatus.STOPPED
     view.close()
 
 
@@ -898,7 +1004,10 @@ def test_overview_plays_supplied_reel_only_while_visible_and_active(qapp, tmp_pa
             assert art.opening == 0
             assert view._quick.aperture._movie is None
             if before is None:
-                QTest.qWait(150)
+                for _ in range(20):
+                    QTest.qWait(20)
+                    if art._movie.currentFrameNumber() > 0:
+                        break
             else:
                 assert before > 0 and art._movie.currentFrameNumber() == before
         first = art._movie.currentFrameNumber()

@@ -959,16 +959,7 @@ class MajestyGuardDaemon:
             self._transition(State.HOSTILE_LOCK)
             return
         if command == "windows_lock_used":
-            if getattr(self, "_persistent_idle_loop", False):
-                log.info("[CMD] Windows lock used — parking camera in SYSTEM_LOCKED until session unlock")
-                try:
-                    (_MG_STATE_DIR / "lock_state.txt").write_text("UNLOCKED\n", encoding="utf-8")
-                except OSError:
-                    pass
-                self._transition(State.SYSTEM_LOCKED)
-                return
-            log.info("[CMD] Windows lock used by user — scheduling clean teardown")
-            self.schedule_exit()
+            log.info("[CMD] Windows lock requested; awaiting session notification")
             return
         if command != "verify_requested":
             log.warning("Ignoring unknown UI command: %s", command)

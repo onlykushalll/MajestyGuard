@@ -137,8 +137,8 @@ def test_cursor_lock_released_in_atexit_handler():
     assert "_atexit_release_all" in source or "_uninstall_hooks" in source
 
 
-def test_cursor_lock_released_before_hostile_lock_lockworkstation():
-    """_use_windows_lock must call _uninstall_hooks before LockWorkStation."""
+def test_windows_lock_request_does_not_release_input_hooks():
+    """Only the observed Windows session transition can release the shield."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     lines = source.split("\n")
     in_method = False
@@ -154,9 +154,8 @@ def test_cursor_lock_released_before_hostile_lock_lockworkstation():
                 unhook_line = i
             if "LockWorkStation" in line:
                 lock_line = i
-    assert unhook_line > 0, "_uninstall_hooks not found in _use_windows_lock"
+    assert unhook_line == -1
     assert lock_line > 0, "LockWorkStation not found in _use_windows_lock"
-    assert unhook_line < lock_line, "_uninstall_hooks must be called before LockWorkStation"
 
 
 def test_cursor_lock_reasserted_every_tick():
@@ -369,12 +368,9 @@ def test_successful_verification_resets_the_failure_streak():
 
 
 def test_windows_lock_failure_keeps_overlay_up():
-    """TAB-TAB must never drop the overlay unless LockWorkStation actually succeeded."""
+    """Acceptance or rejection of the request must not hide the overlay."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     body = source[source.index("def _use_windows_lock"):source.index("def getOverlayOpacity")]
-    assert "locked = bool(ctypes.windll.user32.LockWorkStation())" in body
-    fail = body.index("if not locked:")
-    assert "return" in body[fail:body.index("self._on_windows_lock_used()")]
-    assert body.index("_resume_lock_state") > fail                       # lock taken back on failure
-    assert body.index("self._on_windows_lock_used()") > fail             # daemon told only after success
-    assert body.index("self.hide()") > body.index("self._on_windows_lock_used()")
+    assert "requested = bool(ctypes.windll.user32.LockWorkStation())" in body
+    assert "elif self._on_windows_lock_used:" in body
+    assert "self.hide()" not in body and "_set_taskbar_visible" not in body

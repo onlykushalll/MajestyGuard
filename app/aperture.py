@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, pyqtProperty
+from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QImageReader, QLinearGradient, QMovie, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
@@ -21,6 +21,8 @@ def _polar(r, angle):
 
 class Aperture(QWidget):
     """Report camera state separately from decorative protection motion."""
+
+    intro_finished = pyqtSignal()
 
     def __init__(self, parent, *, miniature=False):
         super().__init__(parent)
@@ -62,13 +64,14 @@ class Aperture(QWidget):
 
     artOpacity = pyqtProperty(float, lambda self: self._art_opacity, _set_art_opacity)
 
-    def set_protection_art(self, mode):
-        if self._mini or self._mode == mode:
+    def set_protection_art(self, mode, *, skip_intro=False):
+        if self._mini or (self._mode == mode and not (skip_intro and self._intro)):
             return
-        if mode == "starting":
-            self._intro = self.isVisible() and not self.window().isMinimized() and not reduced_motion(self)
-        elif mode is None:
+        if skip_intro or mode is None:
             self._intro = False
+            self._handoff.stop()
+        elif mode == "starting":
+            self._intro = self.isVisible() and not self.window().isMinimized() and not reduced_motion(self)
         self._closing = mode is None and self._art_opacity > 0
         if self._closing and self._movie is not None:
             self._last_image = self._movie.currentPixmap()
@@ -84,6 +87,7 @@ class Aperture(QWidget):
         if self._intro:
             self._intro = False
             self._sync_art()
+            self.intro_finished.emit()
 
     def _sync_art(self):
         speed = _REEL_SPEED.get(self._mode)

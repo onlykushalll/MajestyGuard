@@ -25,6 +25,8 @@ from PyQt6.QtCore import Qt, QTimer, QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+if not getattr(sys, "frozen", False):
+    sys.path.insert(1, str(Path(__file__).resolve().parents[1]))
 from island import IslandWidget
 from soft_lock import SoftLockOverlay
 from states import get_state, COMMAND_PIPE_NAME, PIPE_NAME

@@ -68,6 +68,17 @@ def run() -> int:
                 or center._startup_breakdown.text() != "--"
                 or not _has_content(center._stack.currentWidget())):
             return 10
+        center.show_page(4)
+        center._preview_motion_button.click()
+        preview = center._motion_preview
+        if preview is None:
+            return 11
+        preview.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        preview._show_running.click()
+        app.processEvents()
+        if not _has_content(preview.aperture):
+            return 12
+        preview.reject()
         center.show_page(0)
         supervisor.runtime_status = RuntimeStatus.STOPPED
         center.refresh()

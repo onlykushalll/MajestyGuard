@@ -646,8 +646,8 @@ def test_soft_lock_fast_owner_consensus_keeps_security_gates(monkeypatch):
     FaceState.clear()
 
 
-def test_windows_lock_used_command_schedules_exit(tmp_path, monkeypatch):
-    import time
+def test_windows_lock_request_cannot_release_lock_without_session_event(tmp_path, monkeypatch):
+    from session_monitor import SessionEvent
     # Mock _MG_STATE_DIR in daemon_main
     mock_state_dir = tmp_path / "state"
     mock_state_dir.mkdir()
@@ -656,16 +656,14 @@ def test_windows_lock_used_command_schedules_exit(tmp_path, monkeypatch):
     daemon = _bare_daemon(State.SOFT_LOCK)
     daemon._exit_at = None
     
-    # Invoke command handler
-    daemon._handle_ui_command("windows_lock_used", "ui")
-    
-    # Assertions
-    assert daemon._exit_at is not None
-    assert daemon._exit_at > time.monotonic()
-    
     lock_state_file = mock_state_dir / "lock_state.txt"
-    assert lock_state_file.exists()
-    assert lock_state_file.read_text(encoding="utf-8").strip() == "UNLOCKED"
+    lock_state_file.write_text("LOCKED\n", encoding="utf-8")
+    daemon._handle_ui_command("windows_lock_used", "ui")
+    assert daemon._exit_at is None and daemon.state is State.SOFT_LOCK
+    assert lock_state_file.read_text(encoding="utf-8").strip() == "LOCKED"
+    daemon._handle_session_event(SessionEvent.SESSION_LOCK)
+    assert daemon.state is State.SYSTEM_LOCKED
+    assert daemon.ipc.states[-1][0] == "locked"
 
 def test_repeated_stranger_strikes_while_locked_escalate_to_hostile_lock(monkeypatch):
     called = []

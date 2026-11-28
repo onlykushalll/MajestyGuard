@@ -39,6 +39,9 @@ __pycache__/
 *.mgd
 config.json
 .env
+.env.*
+!.env.example
+docs/MAJESTYGUARD_LIVE_TEST_REPORT_*.md
 
 # Local agent/operator state & AI traces
 .agents/
@@ -75,6 +78,11 @@ logs/
 *SESSION_HANDOFF*
 # Secrets / key material (FIX-1, AUD-E repo hygiene)
 *.pfx
+*.p12
+*.ppk
 *.key
 *.pem
 *.env
+*.bundle
+.netrc
+credentials.json

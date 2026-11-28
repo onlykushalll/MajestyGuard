@@ -163,7 +163,7 @@ def test_media_stopped_on_lock_engage():
     """Kio's real-world scenario: watching a movie in a background tab,
     soft-lock engaged, media kept playing (and the spacebar leak on top of
     that could control it). Stopping media -- not just muting -- must
-    fire as part of the lock-engagement sequence, not be optional/absent."""
+    fire on new locks by default and never use a play/pause toggle."""
     source = (UI / "soft_lock.py").read_text(encoding="utf-8")
     assert "VK_MEDIA_STOP" in source
     # PLAY_PAUSE is a toggle: when the media session is already paused it
@@ -176,6 +176,7 @@ def test_media_stopped_on_lock_engage():
     lock_seq_idx = source.index("_install_hooks(self)")
     lock_seq_region = source[lock_seq_idx:lock_seq_idx + 300]
     assert "_stop_background_media()" in lock_seq_region
+    assert "if new_lock and _should_stop_media():" in lock_seq_region
 
 def test_modifier_check_includes_shift_and_capture_protection():
     """Shift+Space/Tab must be blocked alongside Ctrl/Alt/Win, and WDA_MONITOR

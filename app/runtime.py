@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional, Sequence
@@ -350,11 +351,7 @@ class Supervisor:
             return False
         settings = load_settings(self._settings_path)
         if not self._save_settings(
-            RuntimeSettings(
-                idle_timeout_seconds=settings.idle_timeout_seconds,
-                paused=True,
-                enable_windows_lock=settings.enable_windows_lock,
-            ),
+            replace(settings, paused=True),
         ):
             return False
         if not self.stop():
@@ -366,11 +363,7 @@ class Supervisor:
     def resume(self) -> bool:
         settings = load_settings(self._settings_path)
         if not self._save_settings(
-            RuntimeSettings(
-                idle_timeout_seconds=settings.idle_timeout_seconds,
-                paused=False,
-                enable_windows_lock=settings.enable_windows_lock,
-            ),
+            replace(settings, paused=False),
         ):
             return False
         if self.start():
@@ -387,13 +380,12 @@ class Supervisor:
         if not MIN_IDLE_TIMEOUT_SECONDS <= seconds <= MAX_IDLE_TIMEOUT_SECONDS:
             return False
         settings = load_settings(self._settings_path)
-        return self._save_settings(
-            RuntimeSettings(
-                idle_timeout_seconds=seconds,
-                paused=settings.paused,
-                enable_windows_lock=settings.enable_windows_lock,
-            ),
-        )
+        return self._save_settings(replace(settings, idle_timeout_seconds=seconds))
+
+    def set_stop_media_on_lock(self, enabled: bool) -> bool:
+        if self.controls_locked() or not isinstance(enabled, bool):
+            return False
+        return self._save_settings(replace(load_settings(self._settings_path), stop_media_on_lock=enabled))
 
     def windows_lock_enabled(self) -> bool:
         return load_settings(self._settings_path).enable_windows_lock
@@ -408,11 +400,7 @@ class Supervisor:
             return True
         was_running = self.status() is RuntimeStatus.RUNNING
         if not self._save_settings(
-            RuntimeSettings(
-                idle_timeout_seconds=settings.idle_timeout_seconds,
-                paused=settings.paused,
-                enable_windows_lock=enabled,
-            ),
+            replace(settings, enable_windows_lock=enabled),
         ):
             return False
         if was_running and not self.stop():

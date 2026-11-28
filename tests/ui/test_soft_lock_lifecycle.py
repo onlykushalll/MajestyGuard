@@ -54,6 +54,42 @@ def test_relock_cancels_stale_dissolve_and_reinstalls_hooks(monkeypatch, qapp):
     overlay.hide()
 
 
+@pytest.mark.parametrize("accepted", [False, True])
+def test_windows_request_keeps_screen_guarded_until_observed(monkeypatch, qapp, accepted):
+    from types import SimpleNamespace
+
+    requests, releases = [], []
+
+    def lock_request():
+        requests.append(True)
+        return accepted
+
+    overlay = soft_lock.SoftLockOverlay(on_windows_lock_used=lambda: requests.append("reported"))
+    overlay._state = get_state("soft_locked")
+    monkeypatch.setattr(soft_lock.ctypes, "windll",
+                        SimpleNamespace(user32=SimpleNamespace(LockWorkStation=lock_request)), raising=False)
+    monkeypatch.setattr(soft_lock, "_uninstall_hooks", lambda: releases.append("unhook"))
+    monkeypatch.setattr(overlay, "isVisible", lambda: True)
+    monkeypatch.setattr(overlay, "dissolve", lambda: releases.append("dissolve"))
+    overlay._use_windows_lock()
+    assert releases == []
+    assert requests == ([True, "reported"] if accepted else [True])
+    if accepted:
+        overlay._use_windows_lock()
+        assert requests == [True, "reported"]
+    overlay.apply_state(get_state("locked"))
+    assert releases == ["dissolve"]
+
+
+def test_media_setting_defaults_to_stop_and_respects_explicit_opt_out(tmp_path, monkeypatch):
+    from app.config import RuntimeSettings, save_settings
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert soft_lock._should_stop_media()
+    save_settings(tmp_path / "MajestyGuard" / "settings.json", RuntimeSettings(stop_media_on_lock=False))
+    assert not soft_lock._should_stop_media()
+
+
 def test_delayed_backdrop_is_discarded_after_unlock_begins(qapp):
     """A background-blur worker from the prior lock must not repaint glass
     after ACTIVE has begun its dissolve animation."""

@@ -11,6 +11,9 @@ import os
 import ctypes
 import atexit
 import time
+from pathlib import Path
+
+from app.config import load_settings
 
 from PyQt6.QtCore import QAbstractAnimation, QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRect, QRectF, Qt, QTimer, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import (
@@ -248,6 +251,11 @@ def _stop_background_media():
         logging.getLogger("MajestyGuard.UI").warning(
             "Failed to send media-stop keys on lock engage", exc_info=True,
         )
+
+
+def _should_stop_media():
+    local = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    return load_settings(local / "MajestyGuard" / "settings.json").stop_media_on_lock
 
 
 # --- Accessibility-shortcut lockdown (Sticky/Toggle/Filter Keys) ---
@@ -623,6 +631,7 @@ class SoftLockOverlay(QWidget):
         self._opacity_value = 0.0
         self._allow_close = False
         self._lock_shown_at = None
+        self._windows_lock_retry_at = 0.0
         self._lock_generation = 0
         self._dissolve_generation = -1
         self._last_win32_reassert_at = 0.0
@@ -780,6 +789,7 @@ class SoftLockOverlay(QWidget):
             return
 
         if state.name not in _LOCK_NAMES:
+            self._windows_lock_retry_at = 0.0
             if self.isVisible():
                 self.dissolve()
             else:
@@ -799,7 +809,7 @@ class SoftLockOverlay(QWidget):
         self._timer.start()
         _install_hooks(self)
         _set_taskbar_visible(False)
-        if new_lock:
+        if new_lock and _should_stop_media():
             _stop_background_media()
 
     @staticmethod
@@ -1059,34 +1069,27 @@ class SoftLockOverlay(QWidget):
             self.update()
 
     def _use_windows_lock(self) -> None:
-        import ctypes
         import logging
-        _uninstall_hooks()
-        _set_taskbar_visible(True)
-        try:
-            locked = bool(ctypes.windll.user32.LockWorkStation())
-        except Exception:
-            locked = False
-        if not locked:
-            # Fail closed. LockWorkStation can be refused (the DisableLockWorkstation policy,
-            # a session that is not interactive). Hiding the overlay anyway would hand the
-            # desktop to whoever pressed TAB twice, so take the lock back instead.
-            logging.getLogger("MajestyGuard.UI").error(
-                "LockWorkStation failed (GetLastError=%d) - keeping the lock overlay up",
-                ctypes.windll.kernel32.GetLastError(),
-            )
-            self._tab_gate.reset()
-            self._resume_lock_state(new_lock=False)
-            self._force_topmost()
-            self.raise_()
-            self.activateWindow()
-            self.update()
+
+        now = time.monotonic()
+        if now < self._windows_lock_retry_at:
             return
-        # The Windows lock is engaging: only now tell the daemon and let go of the screen.
-        if self._on_windows_lock_used:
+        self._windows_lock_retry_at = now + 4.0
+        try:
+            requested = bool(ctypes.windll.user32.LockWorkStation())
+        except Exception:
+            requested = False
+        self._tab_gate.reset()
+        if not requested:
+            self._windows_lock_retry_at = 0.0
+            logging.getLogger("MajestyGuard.UI").error(
+                "Windows declined the lock request; keeping the privacy overlay up",
+            )
+        # The API is asynchronous. The daemon's observed WTS session event
+        # will deliver "locked"; acceptance alone must not release the shield.
+        elif self._on_windows_lock_used:
             self._on_windows_lock_used()
-        self.hide()
-        self._lock_shown_at = None
+        self.update()
 
     def getOverlayOpacity(self) -> float:
         return self._opacity_value

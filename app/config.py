@@ -17,6 +17,7 @@ class RuntimeSettings:
     idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS
     paused: bool = False
     enable_windows_lock: bool = False
+    stop_media_on_lock: bool = True
 
 
 def _validated_settings(data: object) -> RuntimeSettings:
@@ -36,11 +37,15 @@ def _validated_settings(data: object) -> RuntimeSettings:
     enable_windows_lock = data.get("enable_windows_lock", False)
     if not isinstance(enable_windows_lock, bool):
         enable_windows_lock = False
+    stop_media = data.get("stop_media_on_lock", True)
+    if not isinstance(stop_media, bool):
+        stop_media = True
 
     return RuntimeSettings(
         idle_timeout_seconds=idle_timeout,
         paused=paused,
         enable_windows_lock=enable_windows_lock,
+        stop_media_on_lock=stop_media,
     )
 
 

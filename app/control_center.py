@@ -6,8 +6,10 @@ non-biometric files the daemon writes (camera_health.json, audit.log).
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
+from time import monotonic
 from typing import Protocol
 
 from concurrent.futures import ThreadPoolExecutor
@@ -38,7 +40,9 @@ from app import activity
 from app.aperture import Aperture
 from app.cc_theme import THEMES, reduced_motion, stylesheet
 from app.cc_widgets import Dot, EventMarker, MemoryTrace, NavButton, Surface, TabStrip, Toggle, TransportButton, WorkspaceBackground, make_tray_icon
+from app.config import load_settings
 from app.diagnostics import ResourceSampler, TimingSnapshot, format_ms, read_timing_snapshot
+from app.motion_preview import MotionPreview
 from app.quick_controls import QuickControls
 from app.runtime import RuntimeStatus
 from ui.brand import BrandTrace
@@ -83,6 +87,7 @@ _PAGES = (
 )
 _ACTIVITY_PAGE = 2
 _ENROLLMENT_PAGE = 3
+_PAUSE_REMINDERS = (5, 15, 30, 60)
 _HISTORY_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mg-history")
 _LIFECYCLE_WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mg-lifecycle")
 
@@ -193,6 +198,9 @@ class ControlCenter(QMainWindow):
         self._tray_color = None
         self._quitting = False
         self._about_dialog: QDialog | None = None
+        self._motion_preview: MotionPreview | None = None
+        self._pause_reminder_until: float | None = None
+        self._pause_reminder_due = False
         self._touchpad_settings_button: QPushButton | None = None
         self._touchpad_note: QLabel | None = None
         self._action_note = ""
@@ -466,6 +474,43 @@ class ControlCenter(QMainWindow):
         idle_box.addWidget(self._timeout_note)
         box.addWidget(idle)
 
+        media, media_box = _card(page)
+        media_row = QHBoxLayout()
+        media_copy = QVBoxLayout()
+        media_copy.addWidget(_label("Stop media on overlay lock", "rowTitle", media))
+        media_copy.addWidget(_label("Sends Stop to supported players. Other apps keep running.", "detail", media, True))
+        media_row.addLayout(media_copy, 1)
+        self._media_stop_switch = Toggle(media)
+        self._media_stop_switch.setAccessibleName("Stop media on overlay lock")
+        self._media_stop_switch.setChecked(load_settings(self._settings_path).stop_media_on_lock)
+        self._media_stop_switch.toggled.connect(self._save_media_stop)
+        media_row.addWidget(self._media_stop_switch)
+        media_box.addLayout(media_row)
+        self._media_note = _label("", "detail", media, True)
+        self._media_note.hide()
+        media_box.addWidget(self._media_note)
+        box.addWidget(media)
+
+        pause, pause_box = _card(page)
+        pause_box.addWidget(_label("Pause protection", "cardTitle", pause))
+        self._pause_reminder_text = _label("", "detail", pause, True)
+        pause_box.addWidget(self._pause_reminder_text)
+        actions = QHBoxLayout()
+        self._pause_reminder_button = QPushButton("Pause && remind me", pause)
+        self._pause_reminder_button.setObjectName("secondary")
+        self._pause_reminder_button.setToolTip("Pause protection and receive a reminder. Resuming is manual.")
+        self._pause_menu = QMenu(self._pause_reminder_button)
+        self._pause_actions = self._populate_pause_menu(self._pause_menu)
+        self._pause_reminder_button.setMenu(self._pause_menu)
+        self._cancel_reminder_button = QPushButton("Cancel reminder", pause)
+        self._cancel_reminder_button.setObjectName("secondary")
+        self._cancel_reminder_button.clicked.connect(self.cancel_pause_reminder)
+        actions.addWidget(self._pause_reminder_button)
+        actions.addWidget(self._cancel_reminder_button)
+        actions.addStretch(1)
+        pause_box.addLayout(actions)
+        box.addWidget(pause)
+
         box.addStretch(1)
         self._mark_current_preset()
         return page
@@ -668,6 +713,11 @@ class ControlCenter(QMainWindow):
         text.addWidget(self._camera_hint)
         row.addLayout(text, 1)
         cbox.addLayout(row)
+        self._camera_privacy_button = QPushButton("Open camera privacy settings", card)
+        self._camera_privacy_button.setObjectName("secondary")
+        self._camera_privacy_button.clicked.connect(self.open_camera_privacy_settings)
+        self._camera_privacy_button.hide()
+        cbox.addWidget(self._camera_privacy_button, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(card)
 
         self._camera_meta = _label("", "rowMeta", card, True)
@@ -906,6 +956,10 @@ class ControlCenter(QMainWindow):
         self._motion_switch.toggled.connect(self._set_reduced_motion)
         row.addWidget(self._motion_switch)
         motion_box.addLayout(row)
+        self._preview_motion_button = QPushButton("Preview protection motion", motion)
+        self._preview_motion_button.setObjectName("secondary")
+        self._preview_motion_button.clicked.connect(self.show_motion_preview)
+        motion_box.addWidget(self._preview_motion_button, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(motion)
         box.addStretch(1)
         return page
@@ -961,6 +1015,7 @@ class ControlCenter(QMainWindow):
         quit_action.triggered.connect(self.quit_application)
         menu.addAction(quit_action)
         self._tray.setContextMenu(menu)
+        self._tray.messageClicked.connect(self._pause_notice_clicked)
         self._tray.activated.connect(self._handle_tray_activation)
 
     # --------------------------------------------------------------- queries
@@ -1048,11 +1103,16 @@ class ControlCenter(QMainWindow):
     # --------------------------------------------------------------- refresh
     def _apply_lock_state(self, locked: bool) -> None:
         for widget in (self._reenroll_btn, self._startover_btn, self._timeout_input,
-                       self._save_timeout_button, self._info_button, *self._preset_buttons):
+                       self._save_timeout_button, self._info_button, self._media_stop_switch, *self._preset_buttons):
             widget.setEnabled(not locked)
         if locked:
             if self._about_dialog is not None:
                 self._about_dialog.reject()
+            if self._motion_preview is not None:
+                self._motion_preview.reject()
+            for control in (self._preview_motion_button, self._pause_reminder_button, self._cancel_reminder_button,
+                            self._camera_privacy_button):
+                control.setEnabled(False)
             self._primary_button.setEnabled(False)
             self._tray_primary_action.setEnabled(False)
             self._detail_label.setText(_LOCKED_NOTE)
@@ -1174,6 +1234,8 @@ class ControlCenter(QMainWindow):
             self._refresh_pages()
         locked = self._controls_locked()
         self._apply_lock_state(locked)
+        self._refresh_pause_controls(status, locked, enrolling)
+        self._camera_privacy_button.setEnabled(not (locked or enrolling))
         self._quick_button.setEnabled(not locked)
         if locked:
             self._quick.hide()
@@ -1205,6 +1267,7 @@ class ControlCenter(QMainWindow):
         running = self._operation is None and self._supervisor.status() is RuntimeStatus.RUNNING
         parked = cam is not None and cam.capture_open is False and cam.status == "healthy"
         live = cam is not None and (cam.age_s < 60 or parked) and running
+        self._camera_privacy_button.setVisible(bool(live and cam.status != "healthy" and cam.fault == "privacy_blocked"))
         if cam is None or not live:
             self._camera_dot.set_tone("idle")
             self._camera_headline.setText("No live camera data")
@@ -1320,6 +1383,93 @@ class ControlCenter(QMainWindow):
         return f"{minutes} min" if not rest else f"{minutes} min {rest} s"
 
     # --------------------------------------------------------------- actions
+    def _populate_pause_menu(self, menu):
+        actions = {}
+        for minutes in _PAUSE_REMINDERS:
+            action = menu.addAction("In 1 hour" if minutes == 60 else f"In {minutes} min")
+            action.triggered.connect(lambda _checked=False, value=minutes: self.pause_with_reminder(value))
+            actions[minutes] = action
+        return actions
+
+    def _clear_pause_reminder(self):
+        self._pause_reminder_until = None
+        self._pause_reminder_due = False
+
+    def cancel_pause_reminder(self):
+        if not self._refuse_while_locked():
+            self._clear_pause_reminder()
+            self.refresh()
+
+    def _refresh_pause_controls(self, status, locked, enrolling):
+        if status is not RuntimeStatus.PAUSED:
+            self._clear_pause_reminder()
+        enabled = not (locked or enrolling)
+        allow_pause = enabled and status is RuntimeStatus.RUNNING
+        self._preview_motion_button.setEnabled(not locked)
+        self._pause_reminder_button.setEnabled(allow_pause)
+        self._pause_reminder_button.setVisible(status is not RuntimeStatus.PAUSED)
+        message = ("Protection is paused until you resume." if status is RuntimeStatus.PAUSED else
+                   "Get a reminder while MajestyGuard is open. Resuming is manual.")
+        short = ""
+        if self._pause_reminder_until is not None:
+            remaining = math.ceil(self._pause_reminder_until - monotonic())
+            if remaining <= 0:
+                self._pause_reminder_until = None
+                self._pause_reminder_due = True
+                self._show_pause_notice("Protection is still paused. Resume when you're ready.")
+            else:
+                mins, secs = divmod(remaining, 60)
+                short = f"Reminder in {mins}:{secs:02d}"
+                message = f"{short}. Protection will stay paused."
+        if self._pause_reminder_due:
+            short = "Reminder due"
+            message = "Reminder due. Protection is still paused."
+        self._pause_reminder_text.setText(message)
+        self._cancel_reminder_button.setVisible(bool(short))
+        self._cancel_reminder_button.setEnabled(enabled and bool(short))
+        if short and not locked and not enrolling and not self._action_note:
+            self._detail_label.setText(message)
+
+    def _show_pause_notice(self, message):
+        if self._tray.isVisible():
+            self._tray.showMessage("MajestyGuard", message)
+
+    def _pause_notice_clicked(self):
+        if self._pause_reminder_due and not self._refuse_while_locked():
+            self.show_page(0)
+            self.show_center()
+
+    def pause_with_reminder(self, minutes):
+        if minutes not in _PAUSE_REMINDERS or self._refuse_while_locked():
+            return
+        if (self._supervisor.status() is not RuntimeStatus.RUNNING
+                or getattr(self._supervisor, "enrollment_running", lambda: False)()):
+            return
+
+        def done(ok):
+            if ok and self._supervisor.status() is RuntimeStatus.PAUSED:
+                self._pause_reminder_until = monotonic() + minutes * 60
+                self._pause_reminder_due = False
+            self._result_note(ok, "Could not pause protection. No reminder was set.")
+
+        self._run_lifecycle("Pausing protection...", self._supervisor.pause, done)
+
+    def show_motion_preview(self):
+        if self._refuse_while_locked():
+            return
+        if self._motion_preview is not None:
+            self._motion_preview.raise_()
+            return
+        dialog = MotionPreview(self)
+        self._motion_preview = dialog
+
+        def closed(_result):
+            self._motion_preview = None
+            dialog.deleteLater()
+
+        dialog.finished.connect(closed)
+        dialog.open()
+
     def _run_lifecycle(self, label, work, done, *, protection_start=False):
         if not self._async_actions:
             done(work())
@@ -1393,6 +1543,19 @@ class ControlCenter(QMainWindow):
         else:
             self._timeout_note.setText("The idle timeout could not be saved.")
 
+    def _save_media_stop(self, enabled: bool) -> None:
+        save = getattr(self._supervisor, "set_stop_media_on_lock", None)
+        if not self._refuse_while_locked() and callable(save) and save(enabled):
+            self._media_note.setText("Saved for the next overlay lock.")
+        else:
+            previous = self._media_stop_switch.blockSignals(True)
+            try:
+                self._media_stop_switch.setChecked(load_settings(self._settings_path).stop_media_on_lock)
+            finally:
+                self._media_stop_switch.blockSignals(previous)
+            self._media_note.setText("The playback preference could not be changed.")
+        self._media_note.show()
+
     def start_reenrollment(self) -> None:
         if self._refuse_while_locked():
             return
@@ -1433,6 +1596,12 @@ class ControlCenter(QMainWindow):
         if self._touchpad_note is not None:
             self._touchpad_note.setText("Open Windows Settings > Bluetooth & devices > Touchpad.")
             self._touchpad_note.setVisible(not opened)
+
+    def open_camera_privacy_settings(self) -> None:
+        if self._refuse_while_locked() or self._camera_privacy_button.isHidden():
+            return
+        if not QDesktopServices.openUrl(QUrl("ms-settings:privacy-webcam")):
+            self._camera_hint.setText("Open Windows Settings > Privacy & security > Camera.")
 
     def copy_diagnostics(self) -> None:
         if self._operation is not None:
